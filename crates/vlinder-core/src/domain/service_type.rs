@@ -18,6 +18,8 @@ pub enum ServiceType {
     Kv,
     /// Vector storage (embeddings).
     Vec,
+    /// SQL storage (relational).
+    Sql,
     /// LLM inference.
     Infer,
     /// Text embedding.
@@ -29,6 +31,7 @@ impl ServiceType {
         match self {
             ServiceType::Kv => "kv",
             ServiceType::Vec => "vec",
+            ServiceType::Sql => "sql",
             ServiceType::Infer => "infer",
             ServiceType::Embed => "embed",
         }
@@ -42,6 +45,7 @@ impl FromStr for ServiceType {
         match s {
             "kv" => Ok(ServiceType::Kv),
             "vec" => Ok(ServiceType::Vec),
+            "sql" => Ok(ServiceType::Sql),
             "infer" => Ok(ServiceType::Infer),
             "embed" => Ok(ServiceType::Embed),
             _ => Err(format!("unknown service type: {}", s)),
@@ -63,6 +67,7 @@ mod tests {
     fn as_str_values() {
         assert_eq!(ServiceType::Kv.as_str(), "kv");
         assert_eq!(ServiceType::Vec.as_str(), "vec");
+        assert_eq!(ServiceType::Sql.as_str(), "sql");
         assert_eq!(ServiceType::Infer.as_str(), "infer");
         assert_eq!(ServiceType::Embed.as_str(), "embed");
     }
@@ -72,6 +77,7 @@ mod tests {
         for st in [
             ServiceType::Kv,
             ServiceType::Vec,
+            ServiceType::Sql,
             ServiceType::Infer,
             ServiceType::Embed,
         ] {

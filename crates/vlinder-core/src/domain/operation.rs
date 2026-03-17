@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
+    /// Execute a SQL query.
+    Execute,
     Get,
     Put,
     List,
@@ -29,6 +31,7 @@ pub enum Operation {
 impl Operation {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Operation::Execute => "execute",
             Operation::Get => "get",
             Operation::Put => "put",
             Operation::List => "list",
@@ -47,6 +50,7 @@ impl FromStr for Operation {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
+            "execute" => Ok(Operation::Execute),
             "get" => Ok(Operation::Get),
             "put" => Ok(Operation::Put),
             "list" => Ok(Operation::List),
@@ -74,6 +78,7 @@ mod tests {
     #[test]
     fn as_str_round_trips() {
         let ops = [
+            Operation::Execute,
             Operation::Get,
             Operation::Put,
             Operation::List,

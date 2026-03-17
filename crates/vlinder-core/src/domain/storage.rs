@@ -74,3 +74,34 @@ impl VectorStorageType {
         }
     }
 }
+
+// ============================================================================
+// SqlStorageType (available implementations)
+// ============================================================================
+
+/// Available SQL storage implementations.
+///
+/// Registered with the Registry to track what backends are available.
+/// Follows the same pattern as `RuntimeType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, Deserialize)]
+pub enum SqlStorageType {
+    /// Doltgres-backed storage.
+    Doltgres,
+}
+
+impl SqlStorageType {
+    /// String representation for queue routing.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SqlStorageType::Doltgres => "doltgres",
+        }
+    }
+
+    /// Determine storage type from URI scheme.
+    pub fn from_scheme(scheme: Option<&str>) -> Option<Self> {
+        match scheme {
+            Some("doltgres") => Some(SqlStorageType::Doltgres),
+            _ => None,
+        }
+    }
+}

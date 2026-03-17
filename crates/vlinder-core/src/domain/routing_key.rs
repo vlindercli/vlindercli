@@ -7,8 +7,13 @@
 use std::str::FromStr;
 
 use super::{
+<<<<<<< HEAD
     BranchId, HarnessType, ObjectStorageType, Operation, RuntimeType, Sequence, ServiceType,
     SessionId, SubmissionId, VectorStorageType,
+=======
+    HarnessType, ObjectStorageType, Operation, RuntimeType, Sequence, ServiceType, SqlStorageType,
+    SubmissionId, TimelineId, VectorStorageType,
+>>>>>>> 6e8f77d (feat(vlinder-core): add SQL backend support (SqlStorageType, ServiceType::Sql, Operation::Execute, ServiceBackend::Sql))
 };
 
 /// Agent identity within the routing bounded context.
@@ -96,6 +101,7 @@ impl std::str::FromStr for EmbeddingBackendType {
 pub enum ServiceBackend {
     Kv(ObjectStorageType),
     Vec(VectorStorageType),
+    Sql(SqlStorageType),
     Infer(InferenceBackendType),
     Embed(EmbeddingBackendType),
 }
@@ -106,6 +112,7 @@ impl ServiceBackend {
         match self {
             ServiceBackend::Kv(_) => ServiceType::Kv,
             ServiceBackend::Vec(_) => ServiceType::Vec,
+            ServiceBackend::Sql(_) => ServiceType::Sql,
             ServiceBackend::Infer(_) => ServiceType::Infer,
             ServiceBackend::Embed(_) => ServiceType::Embed,
         }
@@ -116,6 +123,7 @@ impl ServiceBackend {
         match self {
             ServiceBackend::Kv(b) => b.as_str(),
             ServiceBackend::Vec(b) => b.as_str(),
+            ServiceBackend::Sql(b) => b.as_str(),
             ServiceBackend::Infer(b) => b.as_str(),
             ServiceBackend::Embed(b) => b.as_str(),
         }
@@ -132,6 +140,10 @@ impl ServiceBackend {
             ServiceType::Vec => match backend {
                 "sqlite-vec" => Some(Self::Vec(VectorStorageType::SqliteVec)),
                 "memory" => Some(Self::Vec(VectorStorageType::InMemory)),
+                _ => None,
+            },
+            ServiceType::Sql => match backend {
+                "doltgres" => Some(Self::Sql(SqlStorageType::Doltgres)),
                 _ => None,
             },
             ServiceType::Infer => InferenceBackendType::from_str(backend)
@@ -490,6 +502,15 @@ mod tests {
         } = key
         {
             *service = ServiceBackend::Vec(VectorStorageType::SqliteVec);
+        }
+        assert_ne!(base_request(), key);
+    }
+
+    #[test]
+    fn request_differs_by_sql_service_type() {
+        let mut key = base_request();
+        if let RoutingKey::Request { ref mut service, .. } = key {
+            *service = ServiceBackend::Sql(SqlStorageType::Doltgres);
         }
         assert_ne!(base_request(), key);
     }
