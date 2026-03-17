@@ -45,8 +45,11 @@ impl SqlWorker {
                     duration_ms,
                 );
 
-                let mut response =
-                    ResponseMessage::from_request_with_diagnostics(&request, response_payload, diag);
+                let mut response = ResponseMessage::from_request_with_diagnostics(
+                    &request,
+                    response_payload,
+                    diag,
+                );
                 response.state = new_state.or_else(|| request.state.clone());
 
                 let _ = self.queue.send_response(response);
@@ -68,7 +71,8 @@ impl SqlWorker {
                     error: Some(format!("invalid request: {}", e)),
                 };
                 return (
-                    serde_json::to_vec(&resp).unwrap_or_else(|e| format!("[error] {}", e).into_bytes()),
+                    serde_json::to_vec(&resp)
+                        .unwrap_or_else(|e| format!("[error] {}", e).into_bytes()),
                     None,
                 );
             }
@@ -228,11 +232,7 @@ impl SqlWorker {
 
 fn is_mutation_sql(sql: &str) -> bool {
     let s = sql.trim_start();
-    let upper = s
-        .chars()
-        .take(32)
-        .collect::<String>()
-        .to_ascii_uppercase();
+    let upper = s.chars().take(32).collect::<String>().to_ascii_uppercase();
     upper.starts_with("INSERT")
         || upper.starts_with("UPDATE")
         || upper.starts_with("DELETE")
@@ -267,7 +267,9 @@ fn row_to_json_values(row: &tokio_postgres::Row) -> Vec<serde_json::Value> {
                     Err(_) => serde_json::Value::Null,
                 },
                 "jsonb" => match row.try_get::<_, Option<Vec<u8>>>(idx) {
-                    Ok(Some(bytes)) => jsonb_bytes_to_value(&bytes).unwrap_or(serde_json::Value::Null),
+                    Ok(Some(bytes)) => {
+                        jsonb_bytes_to_value(&bytes).unwrap_or(serde_json::Value::Null)
+                    }
                     Ok(None) => serde_json::Value::Null,
                     Err(_) => serde_json::Value::Null,
                 },

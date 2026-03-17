@@ -7,13 +7,8 @@
 use std::str::FromStr;
 
 use super::{
-<<<<<<< HEAD
-    BranchId, HarnessType, ObjectStorageType, Operation, RuntimeType, Sequence, ServiceType,
-    SessionId, SubmissionId, VectorStorageType,
-=======
-    HarnessType, ObjectStorageType, Operation, RuntimeType, Sequence, ServiceType, SqlStorageType,
-    SubmissionId, TimelineId, VectorStorageType,
->>>>>>> 6e8f77d (feat(vlinder-core): add SQL backend support (SqlStorageType, ServiceType::Sql, Operation::Execute, ServiceBackend::Sql))
+BranchId, HarnessType, ObjectStorageType, Operation, RuntimeType, Sequence, ServiceType,
+SessionId, SqlStorageType, SubmissionId, TimelineId, VectorStorageType,
 };
 
 /// Agent identity within the routing bounded context.
