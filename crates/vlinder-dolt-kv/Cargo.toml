@@ -7,12 +7,13 @@ publish = false
 [features]
 default = ["routing", "worker"]
 routing = []
-worker = ["dep:tokio-postgres"]
+worker = ["dep:tokio", "dep:tokio-postgres"]
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", optional = true, features = ["rt", "time", "net", "io-util", "sync"] }
 tokio-postgres = { version = "0.7", optional = true }
 
 

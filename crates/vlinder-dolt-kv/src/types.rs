@@ -13,4 +13,5 @@ pub struct SqlQueryResponse {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<serde_json::Value>>,
     pub rows_affected: u64,
+    pub error: Option<String>,
 }
