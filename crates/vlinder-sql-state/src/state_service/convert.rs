@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 
 use super::proto;
 use vlinder_core::domain::{
-    Branch, BranchId, DagNode, DagNodeId, ObservableMessage, SessionId, SessionSummary,
+    Branch, BranchId, DagNode, DagNodeId, SessionId, SessionPlane, SessionSummary,
 };
 
 // =============================================================================
@@ -129,7 +129,7 @@ impl TryFrom<proto::DagNode> for DagNode {
         }
 
         {
-            let mut message: ObservableMessage = serde_json::from_str(blob)
+            let mut message: SessionPlane = serde_json::from_str(blob)
                 .map_err(|e| format!("invalid message_blob JSON: {e}"))?;
             if !node.payload.is_empty() {
                 message.set_payload(node.payload);
@@ -247,8 +247,8 @@ mod tests {
         PROTOCOL_VERSION,
     };
 
-    fn sample_observable() -> ObservableMessage {
-        ObservableMessage::Fork(ForkMessage {
+    fn sample_observable() -> SessionPlane {
+        SessionPlane::Fork(ForkMessage {
             id: MessageId::new(),
             protocol_version: PROTOCOL_VERSION.to_string(),
             branch: BranchId::from(1),

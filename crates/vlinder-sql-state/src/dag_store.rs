@@ -11,7 +11,7 @@ use rusqlite::Connection;
 
 use vlinder_core::domain::session::Session;
 use vlinder_core::domain::{
-    Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, ObservableMessage, SessionId,
+    Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, SessionId, SessionPlane,
     SessionSummary,
 };
 
@@ -239,7 +239,7 @@ fn row_to_dag_node(row: &rusqlite::Row) -> Result<DagNode, rusqlite::Error> {
     }
 
     {
-        let mut message: ObservableMessage = serde_json::from_str(&blob).map_err(|e| {
+        let mut message: SessionPlane = serde_json::from_str(&blob).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(
                 4,
                 rusqlite::types::Type::Text,
@@ -268,7 +268,7 @@ fn row_to_dag_node(row: &rusqlite::Row) -> Result<DagNode, rusqlite::Error> {
 ///
 /// For v1 messages: extracts from `ObservableMessage` variants.
 fn insert_typed_node(conn: &Connection, node: &DagNode) -> Result<(), rusqlite::Error> {
-    use vlinder_core::domain::ObservableMessage;
+    use vlinder_core::domain::SessionPlane;
 
     let hash = node.id.as_str();
 
@@ -277,14 +277,14 @@ fn insert_typed_node(conn: &Connection, node: &DagNode) -> Result<(), rusqlite::
     };
 
     match msg {
-        ObservableMessage::Fork(m) => {
+        SessionPlane::Fork(m) => {
             conn.execute(
                 "INSERT OR IGNORE INTO fork_nodes (dag_hash, agent, branch_name, fork_point, message_id)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![hash, m.agent_name.as_str(), &m.branch_name, m.fork_point.as_str(), m.id.as_str()],
             )?;
         }
-        ObservableMessage::Promote(m) => {
+        SessionPlane::Promote(m) => {
             conn.execute(
                 "INSERT OR IGNORE INTO promote_nodes (dag_hash, agent, message_id)
                  VALUES (?1, ?2, ?3)",
@@ -1257,8 +1257,8 @@ mod tests {
     }
 
     /// Build a test `ObservableMessage` using `ForkMessage`.
-    fn make_observable(_payload: &[u8], session: SessionId) -> ObservableMessage {
-        ObservableMessage::Fork(ForkMessage {
+    fn make_observable(_payload: &[u8], session: SessionId) -> SessionPlane {
+        SessionPlane::Fork(ForkMessage {
             id: MessageId::new(),
             protocol_version: PROTOCOL_VERSION.to_string(),
             branch: BranchId::from(1),

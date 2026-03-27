@@ -15,7 +15,7 @@ use super::promote::PromoteMessage;
 /// Used for polymorphic handling when the specific message type isn't known
 /// at compile time (e.g., receiving from a queue).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ObservableMessage {
+pub enum SessionPlane {
     Fork(ForkMessage),
     Promote(PromoteMessage),
 }
@@ -51,7 +51,7 @@ pub enum MessageDetails {
 
 impl ObservableMessageHeaders {
     /// Assemble a full `ObservableMessage` by attaching a payload.
-    pub fn assemble(self, _payload: Vec<u8>) -> ObservableMessage {
+    pub fn assemble(self, _payload: Vec<u8>) -> SessionPlane {
         let id = self.id;
         let protocol_version = self.protocol_version;
         let session = self.routing_key.session;
@@ -65,7 +65,7 @@ impl ObservableMessageHeaders {
                     branch_name,
                     fork_point,
                 },
-            ) => ObservableMessage::Fork(ForkMessage {
+            ) => SessionPlane::Fork(ForkMessage {
                 id,
                 protocol_version,
                 branch,
@@ -76,7 +76,7 @@ impl ObservableMessageHeaders {
                 fork_point,
             }),
             (RoutingKind::Promote { agent_name }, MessageDetails::Promote) => {
-                ObservableMessage::Promote(PromoteMessage {
+                SessionPlane::Promote(PromoteMessage {
                     id,
                     protocol_version,
                     branch,
@@ -90,53 +90,53 @@ impl ObservableMessageHeaders {
     }
 }
 
-impl ObservableMessage {
+impl SessionPlane {
     pub fn message_type(&self) -> MessageType {
         match self {
-            ObservableMessage::Fork(_) => MessageType::Fork,
-            ObservableMessage::Promote(_) => MessageType::Promote,
+            SessionPlane::Fork(_) => MessageType::Fork,
+            SessionPlane::Promote(_) => MessageType::Promote,
         }
     }
 
     pub fn protocol_version(&self) -> &str {
         match self {
-            ObservableMessage::Fork(m) => &m.protocol_version,
-            ObservableMessage::Promote(m) => &m.protocol_version,
+            SessionPlane::Fork(m) => &m.protocol_version,
+            SessionPlane::Promote(m) => &m.protocol_version,
         }
     }
 
     pub fn id(&self) -> &MessageId {
         match self {
-            ObservableMessage::Fork(m) => &m.id,
-            ObservableMessage::Promote(m) => &m.id,
+            SessionPlane::Fork(m) => &m.id,
+            SessionPlane::Promote(m) => &m.id,
         }
     }
 
     pub fn submission(&self) -> &SubmissionId {
         match self {
-            ObservableMessage::Fork(m) => &m.submission,
-            ObservableMessage::Promote(m) => &m.submission,
+            SessionPlane::Fork(m) => &m.submission,
+            SessionPlane::Promote(m) => &m.submission,
         }
     }
 
     pub fn branch(&self) -> &BranchId {
         match self {
-            ObservableMessage::Fork(m) => &m.branch,
-            ObservableMessage::Promote(m) => &m.branch,
+            SessionPlane::Fork(m) => &m.branch,
+            SessionPlane::Promote(m) => &m.branch,
         }
     }
 
     pub fn session(&self) -> &SessionId {
         match self {
-            ObservableMessage::Fork(m) => &m.session,
-            ObservableMessage::Promote(m) => &m.session,
+            SessionPlane::Fork(m) => &m.session,
+            SessionPlane::Promote(m) => &m.session,
         }
     }
 
     /// Get the payload as raw bytes.
     pub fn payload(&self) -> &[u8] {
         match self {
-            ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => &[],
+            SessionPlane::Fork(_) | SessionPlane::Promote(_) => &[],
         }
     }
 
@@ -146,22 +146,22 @@ impl ObservableMessage {
     /// so it's lost during JSON round-trip through `message_blob`.
     pub fn set_payload(&mut self, _payload: Vec<u8>) {
         match self {
-            ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => {}
+            SessionPlane::Fork(_) | SessionPlane::Promote(_) => {}
         }
     }
 
     /// Extract (sender, receiver) routing pair.
     pub fn sender_receiver(&self) -> (String, String) {
         match self {
-            ObservableMessage::Fork(m) => ("platform".to_string(), m.agent_name.to_string()),
-            ObservableMessage::Promote(m) => ("platform".to_string(), m.agent_name.to_string()),
+            SessionPlane::Fork(m) => ("platform".to_string(), m.agent_name.to_string()),
+            SessionPlane::Promote(m) => ("platform".to_string(), m.agent_name.to_string()),
         }
     }
 
     /// State hash (ADR 055).
     pub fn state(&self) -> Option<&str> {
         match self {
-            ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => None,
+            SessionPlane::Fork(_) | SessionPlane::Promote(_) => None,
         }
     }
 
@@ -186,14 +186,14 @@ impl ObservableMessage {
     }
 }
 
-impl From<ForkMessage> for ObservableMessage {
+impl From<ForkMessage> for SessionPlane {
     fn from(msg: ForkMessage) -> Self {
-        ObservableMessage::Fork(msg)
+        SessionPlane::Fork(msg)
     }
 }
 
-impl From<PromoteMessage> for ObservableMessage {
+impl From<PromoteMessage> for SessionPlane {
     fn from(msg: PromoteMessage) -> Self {
-        ObservableMessage::Promote(msg)
+        SessionPlane::Promote(msg)
     }
 }

@@ -50,7 +50,7 @@ use git2::{FileMode, Oid, Repository, RepositoryInitOptions, Signature, TreeBuil
 use vlinder_core::domain::workers::dag::build_dag_node;
 use vlinder_core::domain::{
     hash_dag_node, DagNodeId, DagWorker, DataMessageKind, DataRoutingKey, InvokeMessage,
-    MessageType, ObservableMessage, Registry, Snapshot,
+    MessageType, Registry, SessionPlane, Snapshot,
 };
 
 /// DAG worker that writes commits to a git repository.
@@ -186,7 +186,7 @@ impl GitDagWorker {
     /// Returns (tree OID, canonical hash) so the caller can update the chain.
     fn build_message_subtree(
         &self,
-        msg: &ObservableMessage,
+        msg: &SessionPlane,
         created_at: DateTime<Utc>,
         canonical_parent: &DagNodeId,
     ) -> Result<(Oid, String), String> {
@@ -210,12 +210,12 @@ impl GitDagWorker {
 
         // Type-specific fields + diagnostics
         match msg {
-            ObservableMessage::Fork(m) => {
+            SessionPlane::Fork(m) => {
                 self.insert_field(&mut tb, "type", "fork")?;
                 self.insert_field(&mut tb, "branch_name", &m.branch_name)?;
                 self.insert_field(&mut tb, "fork_point", m.fork_point.as_str())?;
             }
-            ObservableMessage::Promote(_) => {
+            SessionPlane::Promote(_) => {
                 self.insert_field(&mut tb, "type", "promote")?;
             }
         }
@@ -239,7 +239,7 @@ impl GitDagWorker {
     #[allow(clippy::too_many_arguments, clippy::too_many_lines, dead_code)]
     fn build_accumulated_tree(
         &self,
-        msg: &ObservableMessage,
+        msg: &SessionPlane,
         created_at: DateTime<Utc>,
         from: &str,
         _to: &str,
@@ -295,8 +295,8 @@ impl GitDagWorker {
 
         // Determine which timeline to append to
         let active_timeline = match msg {
-            ObservableMessage::Fork(m) => m.branch_name.as_str(),
-            ObservableMessage::Promote(_) => "main",
+            SessionPlane::Fork(m) => m.branch_name.as_str(),
+            SessionPlane::Promote(_) => "main",
         };
 
         // Append new message dir to the active timeline index file
@@ -720,7 +720,7 @@ impl GitDagWorker {
 }
 
 impl DagWorker for GitDagWorker {
-    fn on_observable_message(&mut self, msg: &ObservableMessage, created_at: DateTime<Utc>) {
+    fn on_observable_message(&mut self, msg: &SessionPlane, created_at: DateTime<Utc>) {
         let result = (|| -> Result<(), String> {
             let session_id = msg.session().as_str().to_string();
             let agent_name = message_agent_name(msg);
@@ -752,12 +752,12 @@ impl DagWorker for GitDagWorker {
 
             // 3. Determine fork/promote and timeline values
             let active_timeline = match msg {
-                ObservableMessage::Fork(m) => m.branch_name.as_str(),
-                ObservableMessage::Promote(_) => "main",
+                SessionPlane::Fork(m) => m.branch_name.as_str(),
+                SessionPlane::Promote(_) => "main",
             };
             let fork_branch = match msg {
-                ObservableMessage::Fork(m) => Some(m.branch_name.as_str()),
-                ObservableMessage::Promote(_) => None,
+                SessionPlane::Fork(m) => Some(m.branch_name.as_str()),
+                SessionPlane::Promote(_) => None,
             };
 
             // 4. Nest under agent/session, commit, handle fork/promote
@@ -1208,34 +1208,32 @@ impl DagWorker for GitDagWorker {
 }
 
 /// Extract (from, to, `type_str`) from an `ObservableMessage` for commit metadata.
-fn message_routing(msg: &ObservableMessage) -> (String, String, &'static str) {
+fn message_routing(msg: &SessionPlane) -> (String, String, &'static str) {
     match msg {
-        ObservableMessage::Fork(m) => ("platform".to_string(), m.branch_name.clone(), "fork"),
-        ObservableMessage::Promote(m) => {
-            ("platform".to_string(), m.agent_name.to_string(), "promote")
-        }
+        SessionPlane::Fork(m) => ("platform".to_string(), m.branch_name.clone(), "fork"),
+        SessionPlane::Promote(m) => ("platform".to_string(), m.agent_name.to_string(), "promote"),
     }
 }
 
 /// Extract the agent name for registry lookup.
-fn message_agent_name(msg: &ObservableMessage) -> String {
+fn message_agent_name(msg: &SessionPlane) -> String {
     match msg {
-        ObservableMessage::Fork(m) => m.agent_name.to_string(),
-        ObservableMessage::Promote(m) => m.agent_name.to_string(),
+        SessionPlane::Fork(m) => m.agent_name.to_string(),
+        SessionPlane::Promote(m) => m.agent_name.to_string(),
     }
 }
 
 /// Extract state from the message if present.
-fn message_state(msg: &ObservableMessage) -> Option<&str> {
+fn message_state(msg: &SessionPlane) -> Option<&str> {
     match msg {
-        ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => None,
+        SessionPlane::Fork(_) | SessionPlane::Promote(_) => None,
     }
 }
 
 /// Extract checkpoint handler name from the message (ADR 111).
-fn message_checkpoint(msg: &ObservableMessage) -> Option<&str> {
+fn message_checkpoint(msg: &SessionPlane) -> Option<&str> {
     match msg {
-        ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => None,
+        SessionPlane::Fork(_) | SessionPlane::Promote(_) => None,
     }
 }
 
@@ -1770,7 +1768,7 @@ mod tests {
         branch_name: &str,
         fork_point: &str,
         epoch_secs: i64,
-    ) -> (ObservableMessage, DateTime<Utc>) {
+    ) -> (SessionPlane, DateTime<Utc>) {
         use vlinder_core::domain::ForkMessage;
         let msg = ForkMessage::new(
             BranchId::from(1),
@@ -1781,7 +1779,7 @@ mod tests {
             DagNodeId::from(fork_point.to_string()),
         );
         let created_at = DateTime::from_timestamp(epoch_secs, 0).unwrap();
-        (ObservableMessage::Fork(msg), created_at)
+        (SessionPlane::Fork(msg), created_at)
     }
 
     #[test]

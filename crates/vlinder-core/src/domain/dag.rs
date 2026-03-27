@@ -107,7 +107,7 @@ pub struct DagNode {
     pub branch: super::BranchId,
     pub protocol_version: String,
     /// Legacy message format. `None` for typed-table rows (invoke).
-    pub message: Option<super::ObservableMessage>,
+    pub message: Option<super::SessionPlane>,
 }
 
 impl DagNode {
@@ -188,7 +188,7 @@ pub struct Branch {
 /// preserve the chronological message stream would implement this.
 pub trait DagWorker: Send {
     /// Persist a single observable message (legacy path).
-    fn on_observable_message(&mut self, msg: &super::ObservableMessage, created_at: DateTime<Utc>);
+    fn on_observable_message(&mut self, msg: &super::SessionPlane, created_at: DateTime<Utc>);
 
     /// Persist an invoke message (data-plane path, ADR 121).
     fn on_invoke(

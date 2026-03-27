@@ -7,7 +7,7 @@
 
 use chrono::Utc;
 
-use crate::domain::message::ObservableMessage;
+use crate::domain::message::SessionPlane;
 use crate::domain::{hash_dag_node, DagNode, DagNodeId, Instance, Snapshot, StateHash};
 
 /// Build a `DagNode` from an `ObservableMessage` and Merkle chain state.
@@ -17,7 +17,7 @@ use crate::domain::{hash_dag_node, DagNode, DagNodeId, Instance, Snapshot, State
 /// empty. Callers that have the parent node should call `with_parent_snapshot`
 /// to inherit unchanged store states.
 pub fn build_dag_node(
-    msg: &ObservableMessage,
+    msg: &SessionPlane,
     parent_id: &DagNodeId,
     parent_state: &Snapshot,
 ) -> DagNode {

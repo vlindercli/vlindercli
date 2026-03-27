@@ -28,10 +28,10 @@ pub mod data_plane;
 pub mod fork;
 pub mod identity;
 pub mod invoke;
-pub mod observable;
 pub mod promote;
 pub mod request;
 pub mod response;
+pub mod session_plane;
 pub mod session_start;
 
 // Re-export everything at the module level for backwards compatibility.
@@ -43,10 +43,10 @@ pub use identity::{
     StateHash, SubmissionId,
 };
 pub use invoke::InvokeMessage;
-pub use observable::{MessageDetails, ObservableMessage, ObservableMessageHeaders};
 pub use promote::PromoteMessage;
 pub use request::RequestMessage;
 pub use response::ResponseMessage;
+pub use session_plane::{MessageDetails, ObservableMessageHeaders, SessionPlane};
 pub use session_start::SessionStartMessage;
 
 /// Protocol version stamped on every message at construction time.

@@ -14,8 +14,8 @@ use chrono::Utc;
 use crate::domain::workers::dag::build_dag_node;
 use crate::domain::{
     hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataRoutingKey,
-    ForkMessage, Instance, InvokeMessage, MessageQueue, MessageType, ObservableMessage,
-    PromoteMessage, QueueError, Snapshot, StateHash, SubmissionId,
+    ForkMessage, Instance, InvokeMessage, MessageQueue, MessageType, PromoteMessage, QueueError,
+    SessionPlane, Snapshot, StateHash, SubmissionId,
 };
 
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
@@ -40,13 +40,13 @@ impl RecordingQueue {
     }
 
     /// Record a DAG node for the given observable message.
-    fn record(&self, observable: &ObservableMessage) {
+    fn record(&self, observable: &SessionPlane) {
         let branch_id = *observable.branch();
 
         // Explicit dag_parent on Fork overrides the latest node on the timeline.
         let dag_parent_override: Option<DagNodeId> = match observable {
-            ObservableMessage::Fork(m) => Some(m.fork_point.clone()),
-            ObservableMessage::Promote(_) => None,
+            SessionPlane::Fork(m) => Some(m.fork_point.clone()),
+            SessionPlane::Promote(_) => None,
         };
 
         // Look up parent node: dag_parent override → latest node on branch
