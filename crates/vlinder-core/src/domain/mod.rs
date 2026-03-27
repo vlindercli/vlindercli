@@ -57,8 +57,8 @@ pub use service_type::ServiceType;
 // ============================================================================
 
 pub use diagnostics::{
-    DelegateDiagnostics, HealthSnapshot, HealthWindow, InvokeDiagnostics, RequestDiagnostics,
-    RuntimeDiagnostics, RuntimeInfo, ServiceDiagnostics, ServiceMetrics,
+    HealthSnapshot, HealthWindow, InvokeDiagnostics, RequestDiagnostics, RuntimeDiagnostics,
+    RuntimeInfo, ServiceDiagnostics, ServiceMetrics,
 };
 pub use message::{
     BranchId, CompleteMessage, DagNodeId, DataPlane, ForkMessage, HarnessType, Instance,

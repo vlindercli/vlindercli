@@ -10,7 +10,6 @@
 //! | Request   | RequestDiagnostics     | Provider server        |
 //! | Response  | ServiceDiagnostics     | Service workers          |
 //! | Complete  | RuntimeDiagnostics     | Runtime                  |
-//! | Delegate  | DelegateDiagnostics    | Runtime                  |
 
 use serde::{Deserialize, Serialize};
 
@@ -271,17 +270,6 @@ impl HealthWindow {
     }
 }
 
-// ============================================================================
-// DelegateDiagnostics — Runtime (Delegate)
-// ============================================================================
-
-/// Diagnostics emitted when an agent delegates to another agent.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct DelegateDiagnostics {
-    /// Delegation involves runtime execution — same diagnostics.
-    pub runtime: RuntimeDiagnostics,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,26 +451,6 @@ mod tests {
             }
             other @ RuntimeInfo::Lambda { .. } => panic!("expected Container, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn delegate_diagnostics_json_round_trip() {
-        let diag = DelegateDiagnostics {
-            runtime: RuntimeDiagnostics::placeholder(50),
-        };
-        let json = serde_json::to_string(&diag).unwrap();
-        let back: DelegateDiagnostics = serde_json::from_str(&json).unwrap();
-        assert_eq!(diag, back);
-    }
-
-    #[test]
-    fn delegate_diagnostics_toml_round_trip() {
-        let diag = DelegateDiagnostics {
-            runtime: RuntimeDiagnostics::placeholder(50),
-        };
-        let toml_str = toml::to_string_pretty(&diag).unwrap();
-        let back: DelegateDiagnostics = toml::from_str(&toml_str).unwrap();
-        assert_eq!(diag, back);
     }
 
     #[test]
