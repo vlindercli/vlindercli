@@ -216,11 +216,6 @@ pub struct RoutingKey {
 /// Variant-specific routing dimensions.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RoutingKind {
-    /// Repair: Platform → Sidecar (replay a failed service call, ADR 113).
-    Repair {
-        harness: HarnessType,
-        agent: AgentName,
-    },
     /// Fork: CLI → Platform (create a branch).
     Fork { agent_name: AgentName },
     /// Promote: CLI → Platform (promote a branch to main).
@@ -304,69 +299,6 @@ mod tests {
 
     fn agent_alt() -> AgentName {
         AgentName::new("pensieve")
-    }
-
-    // ========================================================================
-    // Collision-freedom: Repair (4 dimensions)
-    // ========================================================================
-
-    fn base_repair() -> RoutingKey {
-        RoutingKey {
-            session: session(),
-            branch: branch(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        }
-    }
-
-    #[test]
-    fn repair_equal_when_all_dimensions_match() {
-        assert_eq!(base_repair(), base_repair());
-    }
-
-    #[test]
-    fn repair_differs_by_session() {
-        let mut key = base_repair();
-        key.session = session_alt();
-        assert_ne!(base_repair(), key);
-    }
-
-    #[test]
-    fn repair_differs_by_branch() {
-        let mut key = base_repair();
-        key.branch = branch_alt();
-        assert_ne!(base_repair(), key);
-    }
-
-    #[test]
-    fn repair_differs_by_submission() {
-        let mut key = base_repair();
-        key.submission = submission_alt();
-        assert_ne!(base_repair(), key);
-    }
-
-    #[test]
-    fn repair_differs_by_harness() {
-        let mut key = base_repair();
-        if let RoutingKind::Repair {
-            ref mut harness, ..
-        } = key.kind
-        {
-            *harness = HarnessType::Web;
-        }
-        assert_ne!(base_repair(), key);
-    }
-
-    #[test]
-    fn repair_differs_by_agent() {
-        let mut key = base_repair();
-        if let RoutingKind::Repair { ref mut agent, .. } = key.kind {
-            *agent = agent_alt();
-        }
-        assert_ne!(base_repair(), key);
     }
 
     // ========================================================================
@@ -478,16 +410,6 @@ mod tests {
     // ========================================================================
     // Cross-variant: different variants never equal
     // ========================================================================
-
-    #[test]
-    fn repair_and_fork_never_equal() {
-        assert_ne!(base_repair(), base_fork());
-    }
-
-    #[test]
-    fn repair_and_promote_never_equal() {
-        assert_ne!(base_repair(), base_promote());
-    }
 
     #[test]
     fn fork_and_promote_never_equal() {

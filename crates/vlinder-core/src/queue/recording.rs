@@ -15,7 +15,7 @@ use crate::domain::workers::dag::build_dag_node;
 use crate::domain::{
     hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataRoutingKey,
     ForkMessage, Instance, InvokeMessage, MessageQueue, MessageType, ObservableMessage,
-    PromoteMessage, QueueError, RepairMessage, Snapshot, StateHash, SubmissionId,
+    PromoteMessage, QueueError, Snapshot, StateHash, SubmissionId,
 };
 
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
@@ -46,7 +46,7 @@ impl RecordingQueue {
         // Explicit dag_parent on Fork overrides the latest node on the timeline.
         let dag_parent_override: Option<DagNodeId> = match observable {
             ObservableMessage::Fork(m) => Some(m.fork_point.clone()),
-            _ => None,
+            ObservableMessage::Promote(_) => None,
         };
 
         // Look up parent node: dag_parent override → latest node on branch
@@ -419,22 +419,6 @@ impl MessageQueue for RecordingQueue {
     > {
         self.inner
             .receive_response(submission, service, operation, sequence)
-    }
-
-    // -------------------------------------------------------------------------
-    // Repair methods — record + forward on send, delegate on receive
-    // -------------------------------------------------------------------------
-
-    fn send_repair(&self, msg: RepairMessage) -> Result<(), QueueError> {
-        self.record(&msg.clone().into());
-        self.inner.send_repair(msg)
-    }
-
-    fn receive_repair(
-        &self,
-        agent: &crate::domain::AgentName,
-    ) -> Result<(RepairMessage, Acknowledgement), QueueError> {
-        self.inner.receive_repair(agent)
     }
 
     // -------------------------------------------------------------------------

@@ -63,8 +63,8 @@ pub use diagnostics::{
 pub use message::{
     BranchId, CompleteMessage, DagNodeId, DataPlane, ForkMessage, HarnessType, Instance,
     InvokeMessage, MessageDetails, MessageId, ObservableMessage, ObservableMessageHeaders,
-    PromoteMessage, RepairMessage, RequestMessage, ResponseMessage, Sequence, SequenceCounter,
-    SessionId, SessionStartMessage, StateHash, SubmissionId, PROTOCOL_VERSION,
+    PromoteMessage, RequestMessage, ResponseMessage, Sequence, SequenceCounter, SessionId,
+    SessionStartMessage, StateHash, SubmissionId, PROTOCOL_VERSION,
 };
 pub use message_queue::{agent_routing_key, Acknowledgement, MessageQueue, QueueError};
 pub use routing_key::{

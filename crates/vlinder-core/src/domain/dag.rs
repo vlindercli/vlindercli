@@ -53,7 +53,6 @@ pub enum MessageType {
     Response,
     Complete,
     Delegate,
-    Repair,
     Fork,
     Promote,
 }
@@ -66,7 +65,6 @@ impl MessageType {
             MessageType::Response => "response",
             MessageType::Complete => "complete",
             MessageType::Delegate => "delegate",
-            MessageType::Repair => "repair",
             MessageType::Fork => "fork",
             MessageType::Promote => "promote",
         }
@@ -85,7 +83,6 @@ impl std::str::FromStr for MessageType {
             "res" | "response" => Ok(MessageType::Response),
             "complete" => Ok(MessageType::Complete),
             "delegate" => Ok(MessageType::Delegate),
-            "repair" => Ok(MessageType::Repair),
             "fork" => Ok(MessageType::Fork),
             "promote" => Ok(MessageType::Promote),
             _ => Err(format!("unknown message type: {s}")),
@@ -832,7 +829,6 @@ mod tests {
             MessageType::Response,
             MessageType::Complete,
             MessageType::Delegate,
-            MessageType::Repair,
             MessageType::Fork,
             MessageType::Promote,
         ] {

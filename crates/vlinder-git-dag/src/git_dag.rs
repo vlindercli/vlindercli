@@ -210,20 +210,6 @@ impl GitDagWorker {
 
         // Type-specific fields + diagnostics
         match msg {
-            ObservableMessage::Repair(m) => {
-                self.insert_field(&mut tb, "type", "repair")?;
-                self.insert_field(&mut tb, "agent_id", m.agent_name.as_str())?;
-                self.insert_field(&mut tb, "harness", m.harness.as_str())?;
-                self.insert_field(&mut tb, "service", m.service.service_type().as_str())?;
-                self.insert_field(&mut tb, "backend", m.service.backend_str())?;
-                self.insert_field(&mut tb, "operation", m.operation.as_str())?;
-                self.insert_field(&mut tb, "sequence", &m.sequence.as_u32().to_string())?;
-                self.insert_field(&mut tb, "checkpoint", &m.checkpoint)?;
-                self.insert_field(&mut tb, "dag_parent", m.dag_parent.as_str())?;
-                if let Some(ref state) = m.state {
-                    self.insert_field(&mut tb, "state", state)?;
-                }
-            }
             ObservableMessage::Fork(m) => {
                 self.insert_field(&mut tb, "type", "fork")?;
                 self.insert_field(&mut tb, "branch_name", &m.branch_name)?;
@@ -310,7 +296,7 @@ impl GitDagWorker {
         // Determine which timeline to append to
         let active_timeline = match msg {
             ObservableMessage::Fork(m) => m.branch_name.as_str(),
-            _ => "main",
+            ObservableMessage::Promote(_) => "main",
         };
 
         // Append new message dir to the active timeline index file
@@ -767,11 +753,11 @@ impl DagWorker for GitDagWorker {
             // 3. Determine fork/promote and timeline values
             let active_timeline = match msg {
                 ObservableMessage::Fork(m) => m.branch_name.as_str(),
-                _ => "main",
+                ObservableMessage::Promote(_) => "main",
             };
             let fork_branch = match msg {
                 ObservableMessage::Fork(m) => Some(m.branch_name.as_str()),
-                _ => None,
+                ObservableMessage::Promote(_) => None,
             };
 
             // 4. Nest under agent/session, commit, handle fork/promote
@@ -1224,11 +1210,6 @@ impl DagWorker for GitDagWorker {
 /// Extract (from, to, `type_str`) from an `ObservableMessage` for commit metadata.
 fn message_routing(msg: &ObservableMessage) -> (String, String, &'static str) {
     match msg {
-        ObservableMessage::Repair(m) => (
-            m.harness.as_str().to_string(),
-            m.agent_name.to_string(),
-            "repair",
-        ),
         ObservableMessage::Fork(m) => ("platform".to_string(), m.branch_name.clone(), "fork"),
         ObservableMessage::Promote(m) => {
             ("platform".to_string(), m.agent_name.to_string(), "promote")
@@ -1239,7 +1220,6 @@ fn message_routing(msg: &ObservableMessage) -> (String, String, &'static str) {
 /// Extract the agent name for registry lookup.
 fn message_agent_name(msg: &ObservableMessage) -> String {
     match msg {
-        ObservableMessage::Repair(m) => m.agent_name.to_string(),
         ObservableMessage::Fork(m) => m.agent_name.to_string(),
         ObservableMessage::Promote(m) => m.agent_name.to_string(),
     }
@@ -1248,7 +1228,6 @@ fn message_agent_name(msg: &ObservableMessage) -> String {
 /// Extract state from the message if present.
 fn message_state(msg: &ObservableMessage) -> Option<&str> {
     match msg {
-        ObservableMessage::Repair(m) => m.state.as_deref(),
         ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => None,
     }
 }
@@ -1256,8 +1235,7 @@ fn message_state(msg: &ObservableMessage) -> Option<&str> {
 /// Extract checkpoint handler name from the message (ADR 111).
 fn message_checkpoint(msg: &ObservableMessage) -> Option<&str> {
     match msg {
-        ObservableMessage::Repair(m) => Some(m.checkpoint.as_str()),
-        _ => None,
+        ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => None,
     }
 }
 

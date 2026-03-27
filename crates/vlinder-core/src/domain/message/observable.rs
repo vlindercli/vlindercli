@@ -5,12 +5,10 @@
 //! the final `ObservableMessage` by attaching the payload via `assemble()`.
 
 use super::super::dag::MessageType;
-use super::super::operation::Operation;
-use super::super::routing_key::{RoutingKey, RoutingKind, ServiceBackend};
+use super::super::routing_key::{RoutingKey, RoutingKind};
 use super::fork::ForkMessage;
-use super::identity::{BranchId, DagNodeId, MessageId, Sequence, SessionId, SubmissionId};
+use super::identity::{BranchId, DagNodeId, MessageId, SessionId, SubmissionId};
 use super::promote::PromoteMessage;
-use super::repair::RepairMessage;
 
 /// Unified message type wrapping all typed messages.
 ///
@@ -18,7 +16,6 @@ use super::repair::RepairMessage;
 /// at compile time (e.g., receiving from a queue).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ObservableMessage {
-    Repair(RepairMessage),
     Fork(ForkMessage),
     Promote(PromoteMessage),
 }
@@ -45,13 +42,6 @@ pub struct ObservableMessageHeaders {
 /// Variant-specific message metadata not carried by the routing key.
 #[derive(Debug)]
 pub enum MessageDetails {
-    Repair {
-        dag_parent: DagNodeId,
-        checkpoint: String,
-        service: ServiceBackend,
-        operation: Operation,
-        sequence: Sequence,
-    },
     Fork {
         branch_name: String,
         fork_point: DagNodeId,
@@ -61,40 +51,14 @@ pub enum MessageDetails {
 
 impl ObservableMessageHeaders {
     /// Assemble a full `ObservableMessage` by attaching a payload.
-    pub fn assemble(self, payload: Vec<u8>) -> ObservableMessage {
+    pub fn assemble(self, _payload: Vec<u8>) -> ObservableMessage {
         let id = self.id;
         let protocol_version = self.protocol_version;
-        let state = self.state;
         let session = self.routing_key.session;
         let branch = self.routing_key.branch;
         let submission = self.routing_key.submission;
 
         match (self.routing_key.kind, self.details) {
-            (
-                RoutingKind::Repair { harness, agent },
-                MessageDetails::Repair {
-                    dag_parent,
-                    checkpoint,
-                    service,
-                    operation,
-                    sequence,
-                },
-            ) => ObservableMessage::Repair(RepairMessage {
-                id,
-                protocol_version,
-                branch,
-                submission,
-                session,
-                agent_name: agent,
-                harness,
-                dag_parent,
-                checkpoint,
-                service,
-                operation,
-                sequence,
-                payload,
-                state,
-            }),
             (
                 RoutingKind::Fork { agent_name },
                 MessageDetails::Fork {
@@ -129,7 +93,6 @@ impl ObservableMessageHeaders {
 impl ObservableMessage {
     pub fn message_type(&self) -> MessageType {
         match self {
-            ObservableMessage::Repair(_) => MessageType::Repair,
             ObservableMessage::Fork(_) => MessageType::Fork,
             ObservableMessage::Promote(_) => MessageType::Promote,
         }
@@ -137,7 +100,6 @@ impl ObservableMessage {
 
     pub fn protocol_version(&self) -> &str {
         match self {
-            ObservableMessage::Repair(m) => &m.protocol_version,
             ObservableMessage::Fork(m) => &m.protocol_version,
             ObservableMessage::Promote(m) => &m.protocol_version,
         }
@@ -145,7 +107,6 @@ impl ObservableMessage {
 
     pub fn id(&self) -> &MessageId {
         match self {
-            ObservableMessage::Repair(m) => &m.id,
             ObservableMessage::Fork(m) => &m.id,
             ObservableMessage::Promote(m) => &m.id,
         }
@@ -153,7 +114,6 @@ impl ObservableMessage {
 
     pub fn submission(&self) -> &SubmissionId {
         match self {
-            ObservableMessage::Repair(m) => &m.submission,
             ObservableMessage::Fork(m) => &m.submission,
             ObservableMessage::Promote(m) => &m.submission,
         }
@@ -161,7 +121,6 @@ impl ObservableMessage {
 
     pub fn branch(&self) -> &BranchId {
         match self {
-            ObservableMessage::Repair(m) => &m.branch,
             ObservableMessage::Fork(m) => &m.branch,
             ObservableMessage::Promote(m) => &m.branch,
         }
@@ -169,7 +128,6 @@ impl ObservableMessage {
 
     pub fn session(&self) -> &SessionId {
         match self {
-            ObservableMessage::Repair(m) => &m.session,
             ObservableMessage::Fork(m) => &m.session,
             ObservableMessage::Promote(m) => &m.session,
         }
@@ -178,7 +136,6 @@ impl ObservableMessage {
     /// Get the payload as raw bytes.
     pub fn payload(&self) -> &[u8] {
         match self {
-            ObservableMessage::Repair(m) => &m.payload,
             ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => &[],
         }
     }
@@ -187,9 +144,8 @@ impl ObservableMessage {
     ///
     /// Needed because payload is `#[serde(skip)]` on some message types,
     /// so it's lost during JSON round-trip through `message_blob`.
-    pub fn set_payload(&mut self, payload: Vec<u8>) {
+    pub fn set_payload(&mut self, _payload: Vec<u8>) {
         match self {
-            ObservableMessage::Repair(m) => m.payload = payload,
             ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => {}
         }
     }
@@ -197,9 +153,6 @@ impl ObservableMessage {
     /// Extract (sender, receiver) routing pair.
     pub fn sender_receiver(&self) -> (String, String) {
         match self {
-            ObservableMessage::Repair(m) => {
-                (m.harness.as_str().to_string(), m.agent_name.to_string())
-            }
             ObservableMessage::Fork(m) => ("platform".to_string(), m.agent_name.to_string()),
             ObservableMessage::Promote(m) => ("platform".to_string(), m.agent_name.to_string()),
         }
@@ -208,25 +161,18 @@ impl ObservableMessage {
     /// State hash (ADR 055).
     pub fn state(&self) -> Option<&str> {
         match self {
-            ObservableMessage::Repair(m) => m.state.as_deref(),
             ObservableMessage::Fork(_) | ObservableMessage::Promote(_) => None,
         }
     }
 
     /// Checkpoint handler name (ADR 111).
     pub fn checkpoint(&self) -> Option<&str> {
-        match self {
-            ObservableMessage::Repair(m) => Some(&m.checkpoint),
-            _ => None,
-        }
+        None
     }
 
     /// Operation name (ADR 113).
     pub fn operation(&self) -> Option<&str> {
-        match self {
-            ObservableMessage::Repair(m) => Some(m.operation.as_str()),
-            _ => None,
-        }
+        None
     }
 
     /// Serialize diagnostics to JSON bytes.
@@ -237,12 +183,6 @@ impl ObservableMessage {
     /// Raw stderr from container execution.
     pub fn stderr(&self) -> &[u8] {
         &[]
-    }
-}
-
-impl From<RepairMessage> for ObservableMessage {
-    fn from(msg: RepairMessage) -> Self {
-        ObservableMessage::Repair(msg)
     }
 }
 

@@ -21,7 +21,7 @@ use std::str::FromStr;
 use vlinder_core::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DagNodeId, DataMessageKind,
     DataRoutingKey, HarnessType, InvokeMessage, MessageId, MessageQueue, Operation, QueueError,
-    RepairMessage, RequestMessage, ResponseMessage, RoutingKey, RoutingKind, RuntimeType, Sequence,
+    RequestMessage, ResponseMessage, RoutingKey, RoutingKind, RuntimeType, Sequence,
     ServiceBackend, ServiceType, SessionId, SubmissionId,
 };
 
@@ -441,90 +441,6 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn send_repair(&self, msg: RepairMessage) -> Result<(), QueueError> {
-        let subject = routing_key_to_subject(&msg.routing_key());
-
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("msg-id", msg.id.as_str());
-            headers.insert("protocol-version", msg.protocol_version.as_str());
-            headers.insert("branch-id", msg.branch.to_string());
-            headers.insert("submission-id", msg.submission.as_str());
-            headers.insert("session-id", msg.session.as_str());
-            headers.insert("agent-id", msg.agent_name.as_str());
-            headers.insert("harness", msg.harness.as_str());
-            headers.insert("dag-parent", msg.dag_parent.as_str());
-            headers.insert("checkpoint", msg.checkpoint.as_str());
-            headers.insert("service", msg.service.service_type().as_str());
-            headers.insert("backend", msg.service.backend_str());
-            headers.insert("operation", msg.operation.as_str());
-            headers.insert("sequence", msg.sequence.to_string());
-            if let Some(ref state) = msg.state {
-                headers.insert("state", state.as_str());
-            }
-
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, msg.payload.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-
-            Ok(())
-        })
-    }
-
-    fn receive_repair(
-        &self,
-        agent: &AgentName,
-    ) -> Result<(RepairMessage, Acknowledgement), QueueError> {
-        // Build filter: vlinder.{session}.{branch}.{submission}.repair.{harness}.{agent}
-        let filter = format!("vlinder.*.*.*.repair.*.{}", agent.as_str());
-
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
-
-            let headers = js_msg
-                .headers
-                .as_ref()
-                .ok_or_else(|| QueueError::ReceiveFailed("missing headers".to_string()))?;
-
-            let msg = RepairMessage {
-                id: MessageId::from(get_header(headers, "msg-id")?),
-                protocol_version: get_header(headers, "protocol-version").unwrap_or_default(),
-                branch: get_header(headers, "branch-id")
-                    .ok()
-                    .and_then(|s| s.parse::<i64>().ok())
-                    .map_or(BranchId::from(1), BranchId::from),
-                submission: SubmissionId::from(get_header(headers, "submission-id")?),
-                session: SessionId::try_from(get_header(headers, "session-id")?)
-                    .map_err(QueueError::ReceiveFailed)?,
-                agent_name: AgentName::new(get_header(headers, "agent-id")?),
-                harness: HarnessType::from_str(&get_header(headers, "harness")?)
-                    .map_err(|_| QueueError::ReceiveFailed("unknown harness type".to_string()))?,
-                dag_parent: DagNodeId::from(get_header(headers, "dag-parent")?),
-                checkpoint: get_header(headers, "checkpoint")?,
-                service: ServiceBackend::from_parts(
-                    ServiceType::from_str(&get_header(headers, "service")?).map_err(|_| {
-                        QueueError::ReceiveFailed("unknown service type".to_string())
-                    })?,
-                    &get_header(headers, "backend")?,
-                )
-                .ok_or_else(|| QueueError::ReceiveFailed("invalid service/backend".to_string()))?,
-                operation: Operation::from_str(&get_header(headers, "operation")?)
-                    .map_err(|_| QueueError::ReceiveFailed("unknown operation".to_string()))?,
-                sequence: Sequence::from(
-                    get_header(headers, "sequence")?.parse::<u32>().unwrap_or(1),
-                ),
-                payload: js_msg.payload.to_vec(),
-                state: get_header(headers, "state").ok(),
-            };
-
-            Ok((msg, ack_fn))
-        })
-    }
-
     fn send_fork(&self, msg: vlinder_core::domain::ForkMessage) -> Result<(), QueueError> {
         let subject = routing_key_to_subject(&RoutingKey {
             session: msg.session.clone(),
@@ -858,9 +774,6 @@ fn response_filter(
 fn routing_key_to_subject(key: &RoutingKey) -> String {
     let prefix = format!("vlinder.{}.{}.{}", key.session, key.branch, key.submission);
     let suffix = match &key.kind {
-        RoutingKind::Repair { harness, agent } => {
-            format!("repair.{harness}.{agent}")
-        }
         RoutingKind::Fork { agent_name } => {
             format!("fork.{agent_name}")
         }
@@ -886,10 +799,6 @@ pub fn subject_to_routing_key(subject: &str) -> Option<RoutingKey> {
     let submission = SubmissionId::from(s[3].to_string());
 
     let kind = match s[4] {
-        "repair" if s.len() == 7 => Some(RoutingKind::Repair {
-            harness: HarnessType::from_str(s[5]).ok()?,
-            agent: AgentName::new(s[6]),
-        }),
         "fork" if s.len() == 6 => Some(RoutingKind::Fork {
             agent_name: AgentName::new(s[5]),
         }),
@@ -905,28 +814,6 @@ pub fn subject_to_routing_key(subject: &str) -> Option<RoutingKey> {
         submission,
         kind,
     })
-}
-
-/// Serialize a `RepairMessage` into NATS headers (sans payload).
-#[allow(dead_code)]
-pub fn repair_to_nats_headers(msg: &RepairMessage) -> HashMap<String, String> {
-    let mut h = HashMap::new();
-    h.insert("msg-id".to_string(), msg.id.as_str().to_string());
-    h.insert("protocol-version".to_string(), msg.protocol_version.clone());
-    h.insert("session-id".to_string(), msg.session.as_str().to_string());
-    h.insert("dag-parent".to_string(), msg.dag_parent.to_string());
-    h.insert("checkpoint".to_string(), msg.checkpoint.clone());
-    h.insert(
-        "service".to_string(),
-        msg.service.service_type().as_str().to_string(),
-    );
-    h.insert("backend".to_string(), msg.service.backend_str().to_string());
-    h.insert("operation".to_string(), msg.operation.as_str().to_string());
-    h.insert("sequence".to_string(), msg.sequence.to_string());
-    if let Some(ref state) = msg.state {
-        h.insert("state".to_string(), state.clone());
-    }
-    h
 }
 
 /// Reconstruct typed message headers from a `RoutingKey` and NATS header map.
@@ -946,23 +833,6 @@ pub fn from_nats_headers<S: BuildHasher>(
     let state = headers.get("state").cloned();
 
     let details = match &key.kind {
-        RoutingKind::Repair { .. } => {
-            let dag_parent = DagNodeId::from(headers.get("dag-parent").cloned()?);
-            let checkpoint = headers.get("checkpoint").cloned()?;
-            let service = ServiceBackend::from_parts(
-                ServiceType::from_str(headers.get("service")?).ok()?,
-                headers.get("backend")?,
-            )?;
-            let operation = Operation::from_str(headers.get("operation")?).ok()?;
-            let sequence = Sequence::from(headers.get("sequence")?.parse::<u32>().ok()?);
-            Some(MessageDetails::Repair {
-                dag_parent,
-                checkpoint,
-                service,
-                operation,
-                sequence,
-            })
-        }
         RoutingKind::Fork { .. } => {
             let branch_name = headers.get("branch-name").cloned()?;
             let fork_point = DagNodeId::from(headers.get("fork-point").cloned()?);
@@ -991,14 +861,6 @@ fn filter_to_consumer_name(filter: &str) -> String {
     filter.replace('.', "_").replace('*', "W").replace('>', "G")
 }
 
-/// Extract a header value from NATS headers.
-fn get_header(headers: &async_nats::HeaderMap, key: &str) -> Result<String, QueueError> {
-    headers
-        .get(key)
-        .map(std::string::ToString::to_string)
-        .ok_or_else(|| QueueError::ReceiveFailed(format!("missing header: {key}")))
-}
-
 // ============================================================================
 // Tests — subject serialization injectivity (ADR 096 §9)
 // ============================================================================
@@ -1013,14 +875,8 @@ mod tests {
     fn timeline() -> BranchId {
         BranchId::from(1)
     }
-    fn timeline_alt() -> BranchId {
-        BranchId::from(2)
-    }
     fn submission() -> SubmissionId {
         SubmissionId::from("sub-1".to_string())
-    }
-    fn submission_alt() -> SubmissionId {
-        SubmissionId::from("sub-2".to_string())
     }
     fn agent() -> AgentName {
         AgentName::new("echo")
@@ -1032,28 +888,6 @@ mod tests {
     // ========================================================================
     // Format sanity — subjects have the expected shape
     // ========================================================================
-
-    #[test]
-    fn repair_subject_format() {
-        let key = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        };
-        assert_eq!(
-            routing_key_to_subject(&key),
-            format!(
-                "vlinder.{}.{}.{}.repair.cli.echo",
-                session(),
-                timeline(),
-                submission()
-            ),
-        );
-    }
 
     #[test]
     fn fork_subject_format() {
@@ -1112,98 +946,6 @@ mod tests {
     }
 
     #[test]
-    fn repair_injective_by_timeline() {
-        let a = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        };
-        let b = RoutingKey {
-            session: session(),
-            branch: timeline_alt(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        };
-        assert_injective(&a, &b);
-    }
-
-    #[test]
-    fn repair_injective_by_submission() {
-        let a = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        };
-        let b = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission_alt(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        };
-        assert_injective(&a, &b);
-    }
-
-    #[test]
-    fn repair_injective_by_harness() {
-        let a = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        };
-        let b = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Web,
-                agent: agent(),
-            },
-        };
-        assert_injective(&a, &b);
-    }
-
-    #[test]
-    fn repair_injective_by_agent() {
-        let a = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        };
-        let b = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent_alt(),
-            },
-        };
-        assert_injective(&a, &b);
-    }
-
-    #[test]
     fn fork_injective_by_agent() {
         let a = RoutingKey {
             session: session(),
@@ -1250,28 +992,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn repair_and_fork_subjects_differ() {
-        let repair = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        };
-        let fork = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Fork {
-                agent_name: agent(),
-            },
-        };
-        assert_injective(&repair, &fork);
-    }
-
-    #[test]
     fn fork_and_promote_subjects_differ() {
         let fork = RoutingKey {
             session: session(),
@@ -1301,19 +1021,6 @@ mod tests {
         let recovered = subject_to_routing_key(&subject)
             .unwrap_or_else(|| panic!("failed to parse subject: {subject}"));
         assert_eq!(&recovered, key, "round-trip failed for subject: {subject}");
-    }
-
-    #[test]
-    fn repair_round_trips() {
-        assert_round_trips(&RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Repair {
-                harness: HarnessType::Cli,
-                agent: agent(),
-            },
-        });
     }
 
     #[test]

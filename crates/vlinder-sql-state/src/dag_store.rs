@@ -300,13 +300,6 @@ fn insert_typed_node(conn: &Connection, node: &DagNode) -> Result<(), rusqlite::
     };
 
     match msg {
-        ObservableMessage::Repair(m) => {
-            conn.execute(
-                "INSERT OR IGNORE INTO repair_nodes (dag_hash, agent, harness, service, operation, sequence, message_id, dag_parent, checkpoint, state, payload)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                rusqlite::params![hash, m.agent_name.as_str(), m.harness.as_str(), m.service.to_string(), m.operation.as_str(), m.sequence.as_u32(), m.id.as_str(), m.dag_parent.as_str(), &m.checkpoint, m.state.as_deref(), &m.payload],
-            )?;
-        }
         ObservableMessage::Fork(m) => {
             conn.execute(
                 "INSERT OR IGNORE INTO fork_nodes (dag_hash, agent, branch_name, fork_point, message_id)
@@ -1270,8 +1263,7 @@ mod tests {
     use super::*;
     use vlinder_core::domain::workers::dag::build_dag_node;
     use vlinder_core::domain::{
-        AgentName, BranchId, HarnessType, Operation, RepairMessage, Sequence, ServiceBackend,
-        Snapshot, SubmissionId,
+        AgentName, BranchId, ForkMessage, MessageId, Snapshot, SubmissionId, PROTOCOL_VERSION,
     };
 
     fn test_store() -> SqliteDagStore {
@@ -1287,27 +1279,23 @@ mod tests {
         SubmissionId::from("sub-1".to_string())
     }
 
-    /// Build a test `ObservableMessage` using `RepairMessage`.
-    fn make_repair(payload: &[u8], session: SessionId) -> ObservableMessage {
-        ObservableMessage::Repair(RepairMessage::new(
-            BranchId::from(1),
-            sub(),
+    /// Build a test `ObservableMessage` using `ForkMessage`.
+    fn make_observable(_payload: &[u8], session: SessionId) -> ObservableMessage {
+        ObservableMessage::Fork(ForkMessage {
+            id: MessageId::new(),
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            branch: BranchId::from(1),
+            submission: sub(),
             session,
-            AgentName::new("agent-a"),
-            HarnessType::Cli,
-            DagNodeId::root(),
-            "on_error".to_string(),
-            ServiceBackend::Kv(vlinder_core::domain::ObjectStorageType::Sqlite),
-            Operation::Get,
-            Sequence::first(),
-            payload.to_vec(),
-            None,
-        ))
+            agent_name: AgentName::new("agent-a"),
+            branch_name: "test-branch".to_string(),
+            fork_point: DagNodeId::root(),
+        })
     }
 
     /// Build a test `DagNode` with a valid message.
     fn test_node(payload: &[u8], parent: &DagNodeId) -> DagNode {
-        let msg = make_repair(payload, sess());
+        let msg = make_observable(payload, sess());
         build_dag_node(&msg, parent, &Snapshot::empty())
     }
 
@@ -1352,7 +1340,7 @@ mod tests {
 
         let parent = test_node(b"parent", &DagNodeId::root());
 
-        let child_msg = make_repair(b"child", sess());
+        let child_msg = make_observable(b"child", sess());
         let mut child = build_dag_node(&child_msg, &parent.id, &Snapshot::empty());
         child.created_at = chrono::TimeZone::with_ymd_and_hms(&Utc, 2025, 1, 1, 0, 1, 0).unwrap();
 
@@ -1378,10 +1366,10 @@ mod tests {
         let sess2 =
             SessionId::try_from("e2660cff-33d6-4428-acca-2d297dcc1cad".to_string()).unwrap();
 
-        let msg_a = make_repair(b"a", sess1.clone());
+        let msg_a = make_observable(b"a", sess1.clone());
         let node_a = build_dag_node(&msg_a, &DagNodeId::root(), &Snapshot::empty());
 
-        let msg_b = make_repair(b"b", sess2.clone());
+        let msg_b = make_observable(b"b", sess2.clone());
         let node_b = build_dag_node(&msg_b, &DagNodeId::root(), &Snapshot::empty());
 
         store.insert_node(&node_a).unwrap();
@@ -1465,7 +1453,7 @@ mod tests {
         let node1 = test_node(b"first", &DagNodeId::root());
         store.insert_node(&node1).unwrap();
 
-        let msg2 = make_repair(b"response", sess());
+        let msg2 = make_observable(b"response", sess());
         let node2 = build_dag_node(&msg2, &node1.id, &Snapshot::empty());
         store.insert_node(&node2).unwrap();
 

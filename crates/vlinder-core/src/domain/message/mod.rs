@@ -5,7 +5,6 @@
 //! - `RequestMessage`: Runtime → Service (agent calls a service)
 //! - `ResponseMessage`: Service → Runtime (service replies)
 //! - `CompleteMessage`: Runtime → Harness (submission finished)
-//! - `RepairMessage`: Platform → Sidecar (replay a failed service call, ADR 113)
 //! - `ForkMessage`: CLI → Platform (create a timeline fork)
 //! - `SessionStartMessage`: CLI → Platform (create a conversation session)
 
@@ -31,7 +30,6 @@ pub mod identity;
 pub mod invoke;
 pub mod observable;
 pub mod promote;
-pub mod repair;
 pub mod request;
 pub mod response;
 pub mod session_start;
@@ -47,7 +45,6 @@ pub use identity::{
 pub use invoke::InvokeMessage;
 pub use observable::{MessageDetails, ObservableMessage, ObservableMessageHeaders};
 pub use promote::PromoteMessage;
-pub use repair::RepairMessage;
 pub use request::RequestMessage;
 pub use response::ResponseMessage;
 pub use session_start::SessionStartMessage;

@@ -243,29 +243,25 @@ mod tests {
     use chrono::Utc;
     use vlinder_core::domain::workers::dag::build_dag_node;
     use vlinder_core::domain::{
-        AgentName, BranchId, DagNodeId, HarnessType, Operation, RepairMessage, Sequence,
-        ServiceBackend, SessionId, Snapshot, SubmissionId,
+        AgentName, BranchId, DagNodeId, ForkMessage, MessageId, SessionId, Snapshot, SubmissionId,
+        PROTOCOL_VERSION,
     };
 
-    fn sample_repair(state: Option<String>) -> ObservableMessage {
-        ObservableMessage::Repair(RepairMessage::new(
-            BranchId::from(1),
-            SubmissionId::from("sub-001".to_string()),
-            SessionId::new(),
-            AgentName::new("agent-echo"),
-            HarnessType::Cli,
-            DagNodeId::from("parent456".to_string()),
-            "on_error".to_string(),
-            ServiceBackend::Kv(vlinder_core::domain::ObjectStorageType::Sqlite),
-            Operation::Get,
-            Sequence::first(),
-            b"hello".to_vec(),
-            state,
-        ))
+    fn sample_observable() -> ObservableMessage {
+        ObservableMessage::Fork(ForkMessage {
+            id: MessageId::new(),
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            branch: BranchId::from(1),
+            submission: SubmissionId::from("sub-001".to_string()),
+            session: SessionId::new(),
+            agent_name: AgentName::new("agent-echo"),
+            branch_name: "test-branch".to_string(),
+            fork_point: DagNodeId::from("parent456".to_string()),
+        })
     }
 
     fn sample_dag_node() -> DagNode {
-        let msg = sample_repair(Some("state-hash-abc".to_string()));
+        let msg = sample_observable();
         build_dag_node(
             &msg,
             &DagNodeId::from("parent456".to_string()),
@@ -284,17 +280,12 @@ mod tests {
         assert_eq!(recovered.message_type(), original.message_type());
         assert_eq!(recovered.session_id(), original.session_id());
         assert_eq!(recovered.submission_id(), original.submission_id());
-        assert_eq!(recovered.payload(), original.payload());
-        assert_eq!(
-            recovered.message.as_ref().unwrap().state(),
-            original.message.as_ref().unwrap().state()
-        );
         assert_eq!(recovered.protocol_version(), original.protocol_version());
     }
 
     #[test]
     fn dag_node_without_state_round_trips() {
-        let msg = sample_repair(None);
+        let msg = sample_observable();
         let node = build_dag_node(&msg, &DagNodeId::root(), &Snapshot::empty());
 
         let proto_node: proto::DagNode = node.clone().into();

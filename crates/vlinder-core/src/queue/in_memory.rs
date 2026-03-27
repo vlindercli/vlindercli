@@ -4,9 +4,8 @@
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
     Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataPlane, DataRoutingKey,
-    ForkMessage, HarnessType, InvokeMessage, MessageQueue, ObservableMessage, Operation,
-    QueueError, RepairMessage, RequestMessage, ResponseMessage, RoutingKey, RoutingKind, Sequence,
-    ServiceBackend, SubmissionId,
+    ForkMessage, HarnessType, InvokeMessage, MessageQueue, Operation, QueueError, RequestMessage,
+    ResponseMessage, Sequence, ServiceBackend, SubmissionId,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -21,15 +20,12 @@ use std::sync::{Arc, Mutex};
 pub struct InMemoryQueue {
     /// Data-plane messages keyed by `DataRoutingKey` (ADR 121).
     data_queues: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<DataPlane>>>>,
-    /// Legacy messages keyed by `RoutingKey` (ADR 096 §5).
-    pub(crate) typed_queues: Arc<Mutex<HashMap<RoutingKey, VecDeque<ObservableMessage>>>>,
 }
 
 impl InMemoryQueue {
     pub fn new() -> Self {
         Self {
             data_queues: Arc::new(Mutex::new(HashMap::new())),
-            typed_queues: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -202,42 +198,6 @@ impl MessageQueue for InMemoryQueue {
                 if let Some(DataPlane::Response { msg, .. }) = queue.pop_front() {
                     let key = key.clone();
                     return Ok((key, msg, Box::new(|| Ok(()))));
-                }
-            }
-        }
-
-        Err(QueueError::Timeout)
-    }
-
-    fn send_repair(&self, msg: RepairMessage) -> Result<(), QueueError> {
-        let key = msg.routing_key();
-        let mut typed = self.typed_queues.lock().unwrap();
-        typed
-            .entry(key)
-            .or_default()
-            .push_back(ObservableMessage::Repair(msg));
-        Ok(())
-    }
-
-    fn receive_repair(
-        &self,
-        agent: &AgentName,
-    ) -> Result<(RepairMessage, Acknowledgement), QueueError> {
-        let mut typed = self.typed_queues.lock().unwrap();
-
-        for (key, queue) in typed.iter_mut() {
-            let matches = match key {
-                RoutingKey {
-                    kind: RoutingKind::Repair { agent: ref a, .. },
-                    ..
-                } => a == agent,
-                _ => false,
-            };
-            if matches {
-                if let Some(ObservableMessage::Repair(msg)) = queue.front() {
-                    let msg = msg.clone();
-                    queue.pop_front();
-                    return Ok((msg, Box::new(|| Ok(()))));
                 }
             }
         }

@@ -163,31 +163,6 @@ impl Sidecar {
                         break;
                     }
                 }
-            } else if let Ok((repair, ack)) = self.dispatch.queue.receive_repair(&agent_id) {
-                let _ = ack();
-                tracing::info!(
-                    event = "repair.received",
-                    sha = %repair.submission,
-                    session = %repair.session,
-                    agent = %self.agent_name,
-                    checkpoint = %repair.checkpoint,
-                    "Dispatching repair"
-                );
-                match dispatch::handle_repair(&self.dispatch, &repair) {
-                    Ok(InvokeOutcome::Done) => {}
-                    Ok(InvokeOutcome::Pending(session)) => {
-                        durable_session = Some(*session);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            event = "repair.error",
-                            error = %e,
-                            agent = %self.agent_name,
-                            "Repair dispatch failed"
-                        );
-                        break;
-                    }
-                }
             } else {
                 std::thread::sleep(Duration::from_millis(50));
             }

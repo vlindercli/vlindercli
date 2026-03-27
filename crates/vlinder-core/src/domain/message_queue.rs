@@ -11,8 +11,8 @@
 
 use super::{
     AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, ForkMessage, HarnessType,
-    InvokeMessage, Operation, PromoteMessage, RepairMessage, RequestMessage, ResourceId,
-    ResponseMessage, Sequence, ServiceBackend, SubmissionId,
+    InvokeMessage, Operation, PromoteMessage, RequestMessage, ResourceId, ResponseMessage,
+    Sequence, ServiceBackend, SubmissionId,
 };
 use std::fmt;
 
@@ -104,23 +104,6 @@ pub trait MessageQueue {
     }
 
     // -------------------------------------------------------------------------
-    // Repair methods (ADR 113)
-    // -------------------------------------------------------------------------
-
-    /// Send a `RepairMessage` (Platform → Sidecar).
-    ///
-    /// Instructs the sidecar to replay a failed service call.
-    fn send_repair(&self, msg: RepairMessage) -> Result<(), QueueError>;
-
-    /// Receive a `RepairMessage` for a specific agent.
-    ///
-    /// The sidecar subscribes to repair messages alongside invoke.
-    fn receive_repair(
-        &self,
-        agent: &AgentName,
-    ) -> Result<(RepairMessage, Acknowledgement), QueueError>;
-
-    // -------------------------------------------------------------------------
     // Fork methods
     // -------------------------------------------------------------------------
 
@@ -181,28 +164,13 @@ pub trait MessageQueue {
             },
         )
     }
-
-    /// Send a repair and block until the agent completes.
-    ///
-    /// Used by the harness to replay a failed service call (ADR 113).
-    fn repair_agent(&self, msg: RepairMessage) -> Result<CompleteMessage, QueueError> {
-        let submission = msg.submission.clone();
-        let harness = msg.harness;
-        send_and_wait(
-            || self.send_repair(msg),
-            || {
-                self.receive_complete(&submission, harness)
-                    .map(|(_key, msg, ack)| (msg, ack))
-            },
-        )
-    }
 }
 
 // --- Request-reply internals ---
 
 /// Send a message and poll until the correlated reply arrives (ADR 092).
 ///
-/// Single implementation behind `call_service()` and `repair_agent()`.
+/// Single implementation behind `call_service()`.
 fn send_and_wait<T>(
     send: impl FnOnce() -> Result<(), QueueError>,
     receive: impl Fn() -> Result<(T, Acknowledgement), QueueError>,

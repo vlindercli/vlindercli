@@ -154,7 +154,7 @@ impl CoreHarness {
     ) -> Result<(DataRoutingKey, InvokeMessage, JobId), String> {
         if sealed {
             return Err(
-                "Timeline is sealed. Use `vlinder timeline repair` to fork a new timeline."
+                "Timeline is sealed. Use `vlinder session fork` to create a new branch."
                     .to_string(),
             );
         }
