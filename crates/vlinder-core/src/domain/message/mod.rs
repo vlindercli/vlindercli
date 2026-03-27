@@ -25,11 +25,11 @@ pub(crate) mod base64_serde {
 }
 
 pub mod complete;
+pub mod data_plane;
 pub mod fork;
 pub mod identity;
 pub mod invoke;
 pub mod observable;
-pub mod observable_v2;
 pub mod promote;
 pub mod repair;
 pub mod request;
@@ -38,6 +38,7 @@ pub mod session_start;
 
 // Re-export everything at the module level for backwards compatibility.
 pub use complete::CompleteMessage;
+pub use data_plane::ObservableMessageV2;
 pub use fork::ForkMessage;
 pub use identity::{
     BranchId, DagNodeId, HarnessType, Instance, MessageId, Sequence, SequenceCounter, SessionId,
@@ -45,7 +46,6 @@ pub use identity::{
 };
 pub use invoke::InvokeMessage;
 pub use observable::{MessageDetails, ObservableMessage, ObservableMessageHeaders};
-pub use observable_v2::ObservableMessageV2;
 pub use promote::PromoteMessage;
 pub use repair::RepairMessage;
 pub use request::RequestMessage;
