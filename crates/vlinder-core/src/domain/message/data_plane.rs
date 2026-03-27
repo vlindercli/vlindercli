@@ -11,20 +11,20 @@ use super::response::ResponseMessage;
 /// New message types are added here as they migrate from `ObservableMessage`.
 /// Old variants are removed from `ObservableMessage` once fully migrated.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ObservableMessageV2 {
-    InvokeV2 {
+pub enum DataPlane {
+    Invoke {
         key: DataRoutingKey,
         msg: InvokeMessage,
     },
-    CompleteV2 {
+    Complete {
         key: DataRoutingKey,
         msg: CompleteMessage,
     },
-    RequestV2 {
+    Request {
         key: DataRoutingKey,
         msg: RequestMessage,
     },
-    ResponseV2 {
+    Response {
         key: DataRoutingKey,
         msg: ResponseMessage,
     },

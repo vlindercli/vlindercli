@@ -38,7 +38,7 @@ pub mod session_start;
 
 // Re-export everything at the module level for backwards compatibility.
 pub use complete::CompleteMessage;
-pub use data_plane::ObservableMessageV2;
+pub use data_plane::DataPlane;
 pub use fork::ForkMessage;
 pub use identity::{
     BranchId, DagNodeId, HarnessType, Instance, MessageId, Sequence, SequenceCounter, SessionId,

@@ -245,9 +245,7 @@ fn row_to_dag_node(row: &rusqlite::Row) -> Result<DagNode, rusqlite::Error> {
     let protocol_version: String = row.get(10)?;
 
     // Empty or v2 blob = typed table row. Callers use get_invoke_node for content.
-    if blob.is_empty()
-        || serde_json::from_str::<vlinder_core::domain::ObservableMessageV2>(&blob).is_ok()
-    {
+    if blob.is_empty() || serde_json::from_str::<vlinder_core::domain::DataPlane>(&blob).is_ok() {
         return Ok(DagNode {
             id: DagNodeId::from(row.get::<_, String>(0)?),
             parent_id: DagNodeId::from(row.get::<_, String>(1)?),

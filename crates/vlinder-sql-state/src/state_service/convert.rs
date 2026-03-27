@@ -113,7 +113,7 @@ impl TryFrom<proto::DagNode> for DagNode {
         }
 
         // V2 blob = typed table row. Callers use get_invoke_node for content.
-        if serde_json::from_str::<vlinder_core::domain::ObservableMessageV2>(blob).is_ok() {
+        if serde_json::from_str::<vlinder_core::domain::DataPlane>(blob).is_ok() {
             return Ok(Self {
                 id: DagNodeId::from(node.hash),
                 parent_id: DagNodeId::from(node.parent_hash),

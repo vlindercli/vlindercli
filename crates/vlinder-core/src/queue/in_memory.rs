@@ -3,8 +3,8 @@
 #[cfg(test)]
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
-    Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, ForkMessage,
-    HarnessType, InvokeMessage, MessageQueue, ObservableMessage, ObservableMessageV2, Operation,
+    Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataPlane, DataRoutingKey,
+    ForkMessage, HarnessType, InvokeMessage, MessageQueue, ObservableMessage, Operation,
     QueueError, RepairMessage, RequestMessage, ResponseMessage, RoutingKey, RoutingKind, Sequence,
     ServiceBackend, SubmissionId,
 };
@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 /// immediately on receive (no durability or redelivery support).
 pub struct InMemoryQueue {
     /// Data-plane messages keyed by `DataRoutingKey` (ADR 121).
-    data_queues: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<ObservableMessageV2>>>>,
+    data_queues: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<DataPlane>>>>,
     /// Legacy messages keyed by `RoutingKey` (ADR 096 §5).
     pub(crate) typed_queues: Arc<Mutex<HashMap<RoutingKey, VecDeque<ObservableMessage>>>>,
 }
@@ -42,7 +42,7 @@ impl Default for InMemoryQueue {
 
 impl MessageQueue for InMemoryQueue {
     fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
-        let v2 = ObservableMessageV2::InvokeV2 {
+        let v2 = DataPlane::Invoke {
             key: key.clone(),
             msg,
         };
@@ -68,7 +68,7 @@ impl MessageQueue for InMemoryQueue {
                 continue;
             };
             if a == agent {
-                if let Some(ObservableMessageV2::InvokeV2 { msg, .. }) = queue.pop_front() {
+                if let Some(DataPlane::Invoke { msg, .. }) = queue.pop_front() {
                     let key = key.clone();
                     return Ok((key, msg, Box::new(|| Ok(()))));
                 }
@@ -79,7 +79,7 @@ impl MessageQueue for InMemoryQueue {
     }
 
     fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
-        let v2 = ObservableMessageV2::CompleteV2 {
+        let v2 = DataPlane::Complete {
             key: key.clone(),
             msg,
         };
@@ -108,7 +108,7 @@ impl MessageQueue for InMemoryQueue {
             let DataMessageKind::Complete { .. } = &key.kind else {
                 continue;
             };
-            if let Some(ObservableMessageV2::CompleteV2 { msg, .. }) = queue.pop_front() {
+            if let Some(DataPlane::Complete { msg, .. }) = queue.pop_front() {
                 let key = key.clone();
                 return Ok((key, msg, Box::new(|| Ok(()))));
             }
@@ -118,7 +118,7 @@ impl MessageQueue for InMemoryQueue {
     }
 
     fn send_request(&self, key: DataRoutingKey, msg: RequestMessage) -> Result<(), QueueError> {
-        let v2 = ObservableMessageV2::RequestV2 {
+        let v2 = DataPlane::Request {
             key: key.clone(),
             msg,
         };
@@ -150,7 +150,7 @@ impl MessageQueue for InMemoryQueue {
                 continue;
             };
             if *s == service && *o == operation {
-                if let Some(ObservableMessageV2::RequestV2 { msg, .. }) = queue.pop_front() {
+                if let Some(DataPlane::Request { msg, .. }) = queue.pop_front() {
                     let key = key.clone();
                     return Ok((key, msg, Box::new(|| Ok(()))));
                 }
@@ -161,7 +161,7 @@ impl MessageQueue for InMemoryQueue {
     }
 
     fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {
-        let v2 = ObservableMessageV2::ResponseV2 {
+        let v2 = DataPlane::Response {
             key: key.clone(),
             msg,
         };
@@ -199,7 +199,7 @@ impl MessageQueue for InMemoryQueue {
                 continue;
             };
             if *s == service && *o == operation && *sq == sequence {
-                if let Some(ObservableMessageV2::ResponseV2 { msg, .. }) = queue.pop_front() {
+                if let Some(DataPlane::Response { msg, .. }) = queue.pop_front() {
                     let key = key.clone();
                     return Ok((key, msg, Box::new(|| Ok(()))));
                 }
