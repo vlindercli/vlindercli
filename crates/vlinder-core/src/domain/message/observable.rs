@@ -5,7 +5,6 @@
 //! the final `ObservableMessage` by attaching the payload via `assemble()`.
 
 use super::super::dag::MessageType;
-use super::super::diagnostics::{RequestDiagnostics, RuntimeDiagnostics, ServiceDiagnostics};
 use super::super::operation::Operation;
 use super::super::routing_key::{RoutingKey, RoutingKind, ServiceBackend};
 use super::fork::ForkMessage;
@@ -46,19 +45,6 @@ pub struct ObservableMessageHeaders {
 /// Variant-specific message metadata not carried by the routing key.
 #[derive(Debug)]
 pub enum MessageDetails {
-    Request {
-        diagnostics: RequestDiagnostics,
-        checkpoint: Option<String>,
-    },
-    Response {
-        diagnostics: ServiceDiagnostics,
-        correlation_id: MessageId,
-        status_code: u16,
-        checkpoint: Option<String>,
-    },
-    Complete {
-        diagnostics: RuntimeDiagnostics,
-    },
     Repair {
         dag_parent: DagNodeId,
         checkpoint: String,

@@ -21,9 +21,8 @@ use std::str::FromStr;
 use vlinder_core::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DagNodeId, DataMessageKind,
     DataRoutingKey, HarnessType, InvokeMessage, MessageId, MessageQueue, Nonce, Operation,
-    QueueError, RepairMessage, RequestDiagnostics, RequestMessage, ResponseMessage, RoutingKey,
-    RoutingKind, RuntimeDiagnostics, RuntimeType, Sequence, ServiceBackend, ServiceDiagnostics,
-    ServiceType, SessionId, SubmissionId,
+    QueueError, RepairMessage, RequestMessage, ResponseMessage, RoutingKey, RoutingKind,
+    RuntimeType, Sequence, ServiceBackend, ServiceType, SessionId, SubmissionId,
 };
 
 /// NATS queue with `JetStream` durability.
@@ -1027,46 +1026,10 @@ pub fn from_nats_headers<S: BuildHasher>(
     let state = headers.get("state").cloned();
 
     let details = match &key.kind {
-        RoutingKind::Request { .. } => {
-            let diagnostics = headers
-                .get("diagnostics")
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_else(|| RequestDiagnostics {
-                    sequence: 0,
-                    endpoint: String::new(),
-                    request_bytes: 0,
-                    received_at_ms: 0,
-                });
-            Some(MessageDetails::Request {
-                diagnostics,
-                checkpoint: headers.get("checkpoint").cloned(),
-            })
-        }
-        RoutingKind::Response { .. } => {
-            let diagnostics = headers
-                .get("diagnostics")
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_else(ServiceDiagnostics::placeholder);
-            let correlation_id = MessageId::from(headers.get("correlation-id")?.clone());
-            let status_code = headers
-                .get("status-code")
-                .and_then(|s| s.parse::<u16>().ok())
-                .unwrap_or(200);
-            Some(MessageDetails::Response {
-                diagnostics,
-                correlation_id,
-                status_code,
-                checkpoint: headers.get("checkpoint").cloned(),
-            })
-        }
-        RoutingKind::Complete { .. } => {
-            let diagnostics = headers
-                .get("diagnostics")
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_else(|| RuntimeDiagnostics::placeholder(0));
-            Some(MessageDetails::Complete { diagnostics })
-        }
-        RoutingKind::Delegate { .. }
+        RoutingKind::Request { .. }
+        | RoutingKind::Response { .. }
+        | RoutingKind::Complete { .. }
+        | RoutingKind::Delegate { .. }
         | RoutingKind::Invoke { .. }
         | RoutingKind::DelegateReply { .. } => None,
         RoutingKind::Repair { .. } => {
