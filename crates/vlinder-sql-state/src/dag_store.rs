@@ -222,32 +222,24 @@ fn row_to_dag_node(row: &rusqlite::Row) -> Result<DagNode, rusqlite::Error> {
     let submission = vlinder_core::domain::SubmissionId::from(row.get::<_, String>(9)?);
     let protocol_version: String = row.get(10)?;
 
-    // Empty or v2 blob = typed table row. Callers use get_invoke_node for content.
-    if blob.is_empty() || serde_json::from_str::<vlinder_core::domain::DataPlane>(&blob).is_ok() {
-        return Ok(DagNode {
-            id: DagNodeId::from(row.get::<_, String>(0)?),
-            parent_id: DagNodeId::from(row.get::<_, String>(1)?),
-            created_at,
-            state,
-            msg_type,
-            session,
-            submission,
-            branch,
-            protocol_version,
-            message: None,
-        });
-    }
-
+    // Empty blob = data-plane message (content in typed tables).
+    // Non-empty blob = session-plane message (fork/promote). Parse error = corrupt data.
     {
-        let mut message: SessionPlane = serde_json::from_str(&blob).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                4,
-                rusqlite::types::Type::Text,
-                format!("invalid message_blob JSON: {e}").into(),
-            )
-        })?;
-        if !payload.is_empty() {
-            message.set_payload(payload);
+        let mut message: Option<SessionPlane> = if blob.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_str(&blob).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    format!("invalid message_blob JSON: {e}").into(),
+                )
+            })?)
+        };
+        if let Some(ref mut m) = message {
+            if !payload.is_empty() {
+                m.set_payload(payload);
+            }
         }
         Ok(DagNode {
             id: DagNodeId::from(row.get::<_, String>(0)?),
@@ -259,7 +251,7 @@ fn row_to_dag_node(row: &rusqlite::Row) -> Result<DagNode, rusqlite::Error> {
             submission,
             branch,
             protocol_version,
-            message: Some(message),
+            message,
         })
     }
 }

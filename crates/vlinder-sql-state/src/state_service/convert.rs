@@ -96,43 +96,20 @@ impl TryFrom<proto::DagNode> for DagNode {
         let submission = vlinder_core::domain::SubmissionId::from(node.submission_id);
         let pv = node.protocol_version.clone();
 
-        // Empty blob = typed table row (invoke via insert_invoke_node).
-        if blob.is_empty() {
-            return Ok(Self {
-                id: DagNodeId::from(node.hash),
-                parent_id: DagNodeId::from(node.parent_hash),
-                created_at,
-                state: vlinder_core::domain::Snapshot::empty(),
-                msg_type,
-                session,
-                submission,
-                branch: BranchId::from(node.branch_id),
-                protocol_version: pv,
-                message: None,
-            });
-        }
-
-        // V2 blob = typed table row. Callers use get_invoke_node for content.
-        if serde_json::from_str::<vlinder_core::domain::DataPlane>(blob).is_ok() {
-            return Ok(Self {
-                id: DagNodeId::from(node.hash),
-                parent_id: DagNodeId::from(node.parent_hash),
-                created_at,
-                state: vlinder_core::domain::Snapshot::empty(),
-                msg_type,
-                session,
-                submission,
-                branch: BranchId::from(node.branch_id),
-                protocol_version: pv,
-                message: None,
-            });
-        }
-
+        // Empty blob = data-plane (typed tables). Non-empty = session-plane (fork/promote).
+        let mut message: Option<SessionPlane> = if blob.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str(blob)
+                    .map_err(|e| format!("invalid message_blob JSON: {e}"))?,
+            )
+        };
         {
-            let mut message: SessionPlane = serde_json::from_str(blob)
-                .map_err(|e| format!("invalid message_blob JSON: {e}"))?;
-            if !node.payload.is_empty() {
-                message.set_payload(node.payload);
+            if let Some(ref mut m) = message {
+                if !node.payload.is_empty() {
+                    m.set_payload(node.payload);
+                }
             }
             Ok(Self {
                 id: DagNodeId::from(node.hash),
@@ -144,7 +121,7 @@ impl TryFrom<proto::DagNode> for DagNode {
                 submission,
                 protocol_version: pv,
                 branch: BranchId::from(node.branch_id),
-                message: Some(message),
+                message,
             })
         }
     }

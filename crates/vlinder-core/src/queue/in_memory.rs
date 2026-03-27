@@ -3,8 +3,8 @@
 #[cfg(test)]
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
-    Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataPlane, DataRoutingKey,
-    ForkMessage, HarnessType, InvokeMessage, MessageQueue, Operation, QueueError, RequestMessage,
+    Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, ForkMessage,
+    HarnessType, InvokeMessage, MessageQueue, Operation, QueueError, RequestMessage,
     ResponseMessage, Sequence, ServiceBackend, SubmissionId,
 };
 use std::collections::{HashMap, VecDeque};
@@ -12,20 +12,25 @@ use std::sync::{Arc, Mutex};
 
 /// In-memory message queue for single-process use.
 ///
-/// Messages are keyed by `RoutingKey` (ADR 096) — collision-freedom is
-/// structural, not dependent on string formatting.
+/// Each message type has its own typed queue keyed by `DataRoutingKey`.
+/// No wrapper enum — the routing key discriminates the type via `DataMessageKind`.
 ///
 /// ACK/NACK operations are no-ops since messages are removed from the queue
 /// immediately on receive (no durability or redelivery support).
 pub struct InMemoryQueue {
-    /// Data-plane messages keyed by `DataRoutingKey` (ADR 121).
-    data_queues: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<DataPlane>>>>,
+    invokes: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<InvokeMessage>>>>,
+    completes: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<CompleteMessage>>>>,
+    requests: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<RequestMessage>>>>,
+    responses: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<ResponseMessage>>>>,
 }
 
 impl InMemoryQueue {
     pub fn new() -> Self {
         Self {
-            data_queues: Arc::new(Mutex::new(HashMap::new())),
+            invokes: Arc::new(Mutex::new(HashMap::new())),
+            completes: Arc::new(Mutex::new(HashMap::new())),
+            requests: Arc::new(Mutex::new(HashMap::new())),
+            responses: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -38,15 +43,11 @@ impl Default for InMemoryQueue {
 
 impl MessageQueue for InMemoryQueue {
     fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
-        let v2 = DataPlane::Invoke {
-            key: key.clone(),
-            msg,
-        };
-        let mut data = self
-            .data_queues
+        let mut q = self
+            .invokes
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
-        data.entry(key).or_default().push_back(v2);
+        q.entry(key).or_default().push_back(msg);
         Ok(())
     }
 
@@ -54,17 +55,17 @@ impl MessageQueue for InMemoryQueue {
         &self,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
-        let mut data = self
-            .data_queues
+        let mut q = self
+            .invokes
             .lock()
             .map_err(|e| QueueError::ReceiveFailed(format!("lock poisoned: {e}")))?;
 
-        for (key, queue) in data.iter_mut() {
+        for (key, queue) in q.iter_mut() {
             let DataMessageKind::Invoke { agent: a, .. } = &key.kind else {
                 continue;
             };
             if a == agent {
-                if let Some(DataPlane::Invoke { msg, .. }) = queue.pop_front() {
+                if let Some(msg) = queue.pop_front() {
                     let key = key.clone();
                     return Ok((key, msg, Box::new(|| Ok(()))));
                 }
@@ -75,15 +76,11 @@ impl MessageQueue for InMemoryQueue {
     }
 
     fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
-        let v2 = DataPlane::Complete {
-            key: key.clone(),
-            msg,
-        };
-        let mut data = self
-            .data_queues
+        let mut q = self
+            .completes
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
-        data.entry(key).or_default().push_back(v2);
+        q.entry(key).or_default().push_back(msg);
         Ok(())
     }
 
@@ -92,19 +89,19 @@ impl MessageQueue for InMemoryQueue {
         submission: &SubmissionId,
         _harness: HarnessType,
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
-        let mut data = self
-            .data_queues
+        let mut q = self
+            .completes
             .lock()
             .map_err(|e| QueueError::ReceiveFailed(format!("lock poisoned: {e}")))?;
 
-        for (key, queue) in data.iter_mut() {
+        for (key, queue) in q.iter_mut() {
             if key.submission != *submission {
                 continue;
             }
             let DataMessageKind::Complete { .. } = &key.kind else {
                 continue;
             };
-            if let Some(DataPlane::Complete { msg, .. }) = queue.pop_front() {
+            if let Some(msg) = queue.pop_front() {
                 let key = key.clone();
                 return Ok((key, msg, Box::new(|| Ok(()))));
             }
@@ -114,15 +111,11 @@ impl MessageQueue for InMemoryQueue {
     }
 
     fn send_request(&self, key: DataRoutingKey, msg: RequestMessage) -> Result<(), QueueError> {
-        let v2 = DataPlane::Request {
-            key: key.clone(),
-            msg,
-        };
-        let mut data = self
-            .data_queues
+        let mut q = self
+            .requests
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
-        data.entry(key).or_default().push_back(v2);
+        q.entry(key).or_default().push_back(msg);
         Ok(())
     }
 
@@ -131,12 +124,12 @@ impl MessageQueue for InMemoryQueue {
         service: ServiceBackend,
         operation: Operation,
     ) -> Result<(DataRoutingKey, RequestMessage, Acknowledgement), QueueError> {
-        let mut data = self
-            .data_queues
+        let mut q = self
+            .requests
             .lock()
             .map_err(|e| QueueError::ReceiveFailed(format!("lock poisoned: {e}")))?;
 
-        for (key, queue) in data.iter_mut() {
+        for (key, queue) in q.iter_mut() {
             let DataMessageKind::Request {
                 service: s,
                 operation: o,
@@ -146,7 +139,7 @@ impl MessageQueue for InMemoryQueue {
                 continue;
             };
             if *s == service && *o == operation {
-                if let Some(DataPlane::Request { msg, .. }) = queue.pop_front() {
+                if let Some(msg) = queue.pop_front() {
                     let key = key.clone();
                     return Ok((key, msg, Box::new(|| Ok(()))));
                 }
@@ -157,15 +150,11 @@ impl MessageQueue for InMemoryQueue {
     }
 
     fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {
-        let v2 = DataPlane::Response {
-            key: key.clone(),
-            msg,
-        };
-        let mut data = self
-            .data_queues
+        let mut q = self
+            .responses
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
-        data.entry(key).or_default().push_back(v2);
+        q.entry(key).or_default().push_back(msg);
         Ok(())
     }
 
@@ -176,12 +165,12 @@ impl MessageQueue for InMemoryQueue {
         operation: Operation,
         sequence: Sequence,
     ) -> Result<(DataRoutingKey, ResponseMessage, Acknowledgement), QueueError> {
-        let mut data = self
-            .data_queues
+        let mut q = self
+            .responses
             .lock()
             .map_err(|e| QueueError::ReceiveFailed(format!("lock poisoned: {e}")))?;
 
-        for (key, queue) in data.iter_mut() {
+        for (key, queue) in q.iter_mut() {
             if key.submission != *submission {
                 continue;
             }
@@ -195,7 +184,7 @@ impl MessageQueue for InMemoryQueue {
                 continue;
             };
             if *s == service && *o == operation && *sq == sequence {
-                if let Some(DataPlane::Response { msg, .. }) = queue.pop_front() {
+                if let Some(msg) = queue.pop_front() {
                     let key = key.clone();
                     return Ok((key, msg, Box::new(|| Ok(()))));
                 }
