@@ -77,7 +77,7 @@ pub use routing_key::{
 // ============================================================================
 
 pub use dag::{
-    hash_dag_node, Branch, DagNode, DagStore, DagWorker, InMemoryDagStore, MessageType,
+    hash_dag_node, Branch, DagNode, DagStore, DagWorker, InMemoryDagStore, MessageType, Plane,
     SessionSummary, Snapshot,
 };
 

@@ -45,7 +45,16 @@ impl Snapshot {
     }
 }
 
-/// The message types in the Vlinder protocol (ADR 044, 113).
+/// Operational plane — determines routing, retention, and access control (ADR 121).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plane {
+    /// Agent execution: invoke, request, response, complete.
+    Data,
+    /// Compensating transactions: fork, promote.
+    Session,
+}
+
+/// The message types in the Vlinder protocol (ADR 044).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
     Invoke,
@@ -67,6 +76,17 @@ impl MessageType {
             MessageType::Delegate => "delegate",
             MessageType::Fork => "fork",
             MessageType::Promote => "promote",
+        }
+    }
+
+    pub fn plane(&self) -> Plane {
+        match self {
+            MessageType::Invoke
+            | MessageType::Request
+            | MessageType::Response
+            | MessageType::Complete
+            | MessageType::Delegate => Plane::Data,
+            MessageType::Fork | MessageType::Promote => Plane::Session,
         }
     }
 }
