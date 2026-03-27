@@ -152,10 +152,11 @@ Each step compiles and passes e2e independently. Steps 1-5 are pure additions. S
 | Complete | ✅ Complete — `CompleteMessage`, `send_complete`/`receive_complete` |
 | Request | ✅ Complete — `RequestMessage`, `send_request`/`receive_request` |
 | Response | ✅ Complete — `ResponseMessage`, `send_response`/`receive_response` |
-| Delegate | 🔲 Next — needs `DataMessageKind::Delegate { caller, target, nonce }` |
-| DelegateReply | 🔲 Next — needs `delegate_reply_nodes` table, `DataMessageKind::DelegateReply { caller, target, nonce }` |
-
-Note: Delegate currently omits the nonce from its NATS subject (`vlinder.{s}.{b}.{sub}.delegate.{caller}.{target}`). The v2 subject must include it (`vlinder.data.v1.{s}.{b}.{sub}.delegate.{caller}.{target}.{nonce}`) to prevent routing collisions when the same caller delegates to the same target multiple times within a submission.
+| Delegate | ⏸ Deferred — peer-to-peer path removed (ADR 124). Will be rebuilt as harness-mediated. |
+| DelegateReply | ⏸ Deferred — same as Delegate. |
+| Repair | 🔲 Next — session plane, same strangler fig pattern |
+| Fork | 🔲 Next — session plane |
+| Promote | 🔲 Next — session plane |
 
 ### Wire format
 
