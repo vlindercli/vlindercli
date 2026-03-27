@@ -106,29 +106,6 @@ impl SqliteDagStore {
                  status_code INTEGER NOT NULL DEFAULT 200,
                  checkpoint TEXT
              );
-             CREATE TABLE IF NOT EXISTS delegate_nodes (
-                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
-                 caller TEXT NOT NULL,
-                 target TEXT NOT NULL,
-                 nonce TEXT NOT NULL,
-                 message_id TEXT NOT NULL,
-                 state TEXT,
-                 diagnostics BLOB NOT NULL DEFAULT x'',
-                 payload BLOB NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS repair_nodes (
-                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
-                 agent TEXT NOT NULL,
-                 harness TEXT NOT NULL,
-                 service TEXT NOT NULL,
-                 operation TEXT NOT NULL,
-                 sequence INTEGER NOT NULL,
-                 message_id TEXT NOT NULL,
-                 dag_parent TEXT NOT NULL,
-                 checkpoint TEXT NOT NULL,
-                 state TEXT,
-                 payload BLOB NOT NULL
-             );
              CREATE TABLE IF NOT EXISTS fork_nodes (
                  dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
                  agent TEXT NOT NULL,
