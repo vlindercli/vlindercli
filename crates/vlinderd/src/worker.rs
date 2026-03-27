@@ -493,6 +493,7 @@ fn run_catalog_worker(config: &Config, shutdown: &AtomicBool) {
     });
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
     use crate::config::conversations_dir;
     use std::collections::HashMap;

@@ -472,6 +472,7 @@ impl Config {
     }
 
     /// Apply environment variable overrides.
+    #[allow(clippy::too_many_lines)]
     fn apply_env_overrides(&mut self) {
         // Logging
         if let Ok(v) = std::env::var("VLINDER_LOGGING_LEVEL") {

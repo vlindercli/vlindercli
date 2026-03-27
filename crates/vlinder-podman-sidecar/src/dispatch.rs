@@ -61,7 +61,11 @@ pub enum InvokeOutcome {
 }
 
 /// Handle a single invocation: POST to agent, detect mode, handle response.
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value
+)]
 pub fn handle_invoke(
     ctx: &DispatchContext,
     health: &mut HealthWindow,
@@ -402,7 +406,7 @@ pub fn handle_repair(
 }
 
 /// Parse and execute a JSON action from the agent.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_action(
     ctx: &DispatchContext,
     action_bytes: &[u8],

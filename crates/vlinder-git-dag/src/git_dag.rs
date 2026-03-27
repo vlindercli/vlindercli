@@ -250,7 +250,7 @@ impl GitDagWorker {
     ///
     /// Retained for reference — v1 `on_observable_message` now calls
     /// `build_message_subtree` + `nest_and_commit` instead.
-    #[allow(clippy::too_many_arguments, dead_code)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines, dead_code)]
     fn build_accumulated_tree(
         &self,
         msg: &ObservableMessage,
@@ -480,7 +480,7 @@ impl GitDagWorker {
     ///
     /// Both `on_observable_message` (v1) and `on_observable_message_v2` call this
     /// after building their message-specific subtree.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn nest_and_commit(
         &self,
         msg_tree_oid: Oid,
@@ -798,6 +798,7 @@ impl DagWorker for GitDagWorker {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn on_invoke(
         &mut self,
         key: &DataRoutingKey,
@@ -1000,6 +1001,7 @@ impl DagWorker for GitDagWorker {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn on_request(
         &mut self,
         key: &DataRoutingKey,
@@ -1108,6 +1110,7 @@ impl DagWorker for GitDagWorker {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn on_response(
         &mut self,
         key: &DataRoutingKey,

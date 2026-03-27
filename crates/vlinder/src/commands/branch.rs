@@ -80,6 +80,7 @@ fn list(session_id_or_name: &str) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn get(session_id_or_name: &str, branch_name: &str) {
     let config = CliConfig::load();
     let store = require_dag_store(&config);

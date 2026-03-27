@@ -94,6 +94,7 @@ fn spawn_n(workers: &mut Vec<Child>, role: WorkerRole, count: u32) {
 
 impl Supervisor {
     /// Spawn worker processes based on config.
+    #[allow(clippy::too_many_lines)]
     pub fn new(config: &Config) -> Self {
         let counts = &config.distributed.workers;
         let mut workers = Vec::new();

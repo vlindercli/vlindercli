@@ -22,6 +22,7 @@ pub struct SqliteDagStore {
 
 impl SqliteDagStore {
     /// Open (or create) a DAG store at the given path.
+    #[allow(clippy::too_many_lines)]
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)

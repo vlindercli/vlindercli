@@ -65,6 +65,7 @@ impl Sidecar {
     }
 
     /// Main loop: wait for agent, then poll invoke/delegate/response queues.
+    #[allow(clippy::too_many_lines)]
     pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
         health::wait_for_ready(
             &mut self.health,

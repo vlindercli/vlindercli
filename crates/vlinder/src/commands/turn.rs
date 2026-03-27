@@ -19,6 +19,7 @@ pub fn execute(cmd: TurnCommand) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn get(submission_id: &str) {
     let config = CliConfig::load();
     let store = open_dag_store(&config).unwrap_or_else(|| {
