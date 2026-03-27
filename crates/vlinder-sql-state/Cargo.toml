@@ -7,13 +7,14 @@ publish = false
 [features]
 default = ["client", "server"]
 client = []
-server = ["dep:rusqlite", "dep:tiny_http", "tonic/server", "tonic/router"]
+server = ["dep:rusqlite", "dep:diesel", "dep:tiny_http", "tonic/server", "tonic/router"]
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
 tiny_http = { version = "0.12", optional = true }
 tracing = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+diesel = { version = "2", features = ["sqlite", "r2d2"], optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 serde_json = "1"
 tonic = { version = "0.12", default-features = false, features = ["channel", "codegen", "prost", "transport", "tls", "tls-roots"] }
