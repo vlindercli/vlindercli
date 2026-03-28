@@ -141,7 +141,8 @@ impl SqliteDagStore {
              CREATE TABLE IF NOT EXISTS promote_nodes (
                  dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
                  agent TEXT NOT NULL,
-                 message_id TEXT NOT NULL UNIQUE
+                 message_id TEXT NOT NULL UNIQUE,
+                 branch_id INTEGER REFERENCES branches(id)
              );
              ",
         )
@@ -322,6 +323,7 @@ impl DagStore for SqliteDagStore {
                         dag_hash: hash,
                         agent: m.agent_name.as_str(),
                         message_id: m.id.as_str(),
+                        branch_id: None,
                     })
                     .execute(&mut *conn)
                     .map_err(|e| format!("insert promote_nodes failed: {e}"))?;
@@ -1089,6 +1091,130 @@ impl DagStore for SqliteDagStore {
             .map_err(|e| format!("get_session failed: {e}"))?;
 
         Ok(row.map(session_row_to_domain))
+    }
+
+    fn insert_fork_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::SessionRoutingKey,
+        msg: &vlinder_core::domain::ForkMessageV2,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewForkNode};
+        use crate::schema::{dag_nodes, fork_nodes};
+
+        let vlinder_core::domain::SessionMessageKind::Fork { agent_name } = &key.kind else {
+            return Err("insert_fork_node: expected Fork kind".into());
+        };
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let created_at_str = created_at.to_rfc3339();
+        let agent_str = agent_name.to_string();
+
+        // Fork needs a branch — look up or create it
+        let branch_id = self
+            .get_branch_by_name(&msg.branch_name)?
+            .map_or(vlinder_core::domain::BranchId::from(1), |b| b.id);
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "fork",
+                sender: "platform",
+                receiver: &agent_str,
+                session_id: key.session.as_str(),
+                submission_id: key.submission.as_str(),
+                payload: &[],
+                diagnostics: &[],
+                stderr: &[],
+                created_at: &created_at_str,
+                state: None,
+                protocol_version: "v1",
+                checkpoint: None,
+                operation: None,
+                message_blob: Some(""),
+                branch_id: branch_id.as_i64(),
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(fork_nodes::table)
+            .values(&NewForkNode {
+                dag_hash: dag_id.as_str(),
+                agent: agent_name.as_str(),
+                branch_name: &msg.branch_name,
+                fork_point: msg.fork_point.as_str(),
+                message_id: msg.id.as_str(),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert fork_nodes failed: {e}"))?;
+
+        Ok(())
+    }
+
+    fn insert_promote_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::SessionRoutingKey,
+        msg: &vlinder_core::domain::PromoteMessageV2,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewPromoteNode};
+        use crate::schema::{dag_nodes, promote_nodes};
+
+        let vlinder_core::domain::SessionMessageKind::Promote { agent_name } = &key.kind else {
+            return Err("insert_promote_node: expected Promote kind".into());
+        };
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let created_at_str = created_at.to_rfc3339();
+        let agent_str = agent_name.to_string();
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "promote",
+                sender: "platform",
+                receiver: &agent_str,
+                session_id: key.session.as_str(),
+                submission_id: key.submission.as_str(),
+                payload: &[],
+                diagnostics: &[],
+                stderr: &[],
+                created_at: &created_at_str,
+                state: None,
+                protocol_version: "v1",
+                checkpoint: None,
+                operation: None,
+                message_blob: Some(""),
+                branch_id: msg.branch_id.as_i64(),
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(promote_nodes::table)
+            .values(&NewPromoteNode {
+                dag_hash: dag_id.as_str(),
+                agent: agent_name.as_str(),
+                message_id: msg.id.as_str(),
+                branch_id: Some(msg.branch_id.as_i64()),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert promote_nodes failed: {e}"))?;
+
+        Ok(())
     }
 
     fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {

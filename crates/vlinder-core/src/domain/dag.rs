@@ -337,6 +337,34 @@ pub trait DagStore: Send + Sync {
         Err("insert_response_node not implemented".to_string())
     }
 
+    /// Insert a typed fork node. Writes to `dag_nodes` + `fork_nodes`.
+    fn insert_fork_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        key: &super::SessionRoutingKey,
+        msg: &super::ForkMessageV2,
+    ) -> Result<(), String> {
+        let _ = (dag_id, parent_id, created_at, state, key, msg);
+        Err("insert_fork_node not implemented".to_string())
+    }
+
+    /// Insert a typed promote node. Writes to `dag_nodes` + `promote_nodes`.
+    fn insert_promote_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        key: &super::SessionRoutingKey,
+        msg: &super::PromoteMessageV2,
+    ) -> Result<(), String> {
+        let _ = (dag_id, parent_id, created_at, state, key, msg);
+        Err("insert_promote_node not implemented".to_string())
+    }
+
     /// Retrieve a node by its content-addressed ID.
     fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String>;
 

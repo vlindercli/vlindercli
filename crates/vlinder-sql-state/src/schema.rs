@@ -100,6 +100,7 @@ diesel::table! {
         dag_hash -> Text,
         agent -> Text,
         message_id -> Text,
+        branch_id -> Nullable<BigInt>,
     }
 }
 

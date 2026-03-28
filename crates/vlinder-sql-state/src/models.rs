@@ -226,6 +226,7 @@ pub struct PromoteNodeRow {
     pub dag_hash: String,
     pub agent: String,
     pub message_id: String,
+    pub branch_id: Option<i64>,
 }
 
 #[derive(Insertable, Debug)]
@@ -234,6 +235,7 @@ pub struct NewPromoteNode<'a> {
     pub dag_hash: &'a str,
     pub agent: &'a str,
     pub message_id: &'a str,
+    pub branch_id: Option<i64>,
 }
 
 // ============================================================================
