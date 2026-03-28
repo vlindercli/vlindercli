@@ -37,13 +37,34 @@ impl SqliteDagStore {
 
         conn.batch_execute(
             "PRAGMA journal_mode=WAL;
+             PRAGMA foreign_keys=ON;
+
+             CREATE TABLE IF NOT EXISTS sessions (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL UNIQUE,
+                 agent_name TEXT NOT NULL,
+                 default_branch INTEGER NOT NULL DEFAULT 1,
+                 created_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS branches (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name TEXT NOT NULL,
+                 session_id TEXT NOT NULL REFERENCES sessions(id),
+                 fork_point TEXT,
+                 head TEXT,
+                 created_at TEXT NOT NULL,
+                 broken_at TEXT,
+                 UNIQUE(name, session_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_branches_session
+                 ON branches (session_id);
              CREATE TABLE IF NOT EXISTS dag_nodes (
                  hash TEXT PRIMARY KEY,
                  parent_hash TEXT NOT NULL,
                  message_type TEXT NOT NULL,
                  sender TEXT NOT NULL,
                  receiver TEXT NOT NULL,
-                 session_id TEXT NOT NULL,
+                 session_id TEXT NOT NULL REFERENCES sessions(id),
                  submission_id TEXT NOT NULL,
                  payload BLOB NOT NULL,
                  diagnostics BLOB NOT NULL DEFAULT x'',
@@ -54,7 +75,7 @@ impl SqliteDagStore {
                  checkpoint TEXT,
                  operation TEXT,
                  message_blob TEXT,
-                 branch_id INTEGER NOT NULL DEFAULT 0,
+                 branch_id INTEGER NOT NULL REFERENCES branches(id),
                  snapshot TEXT NOT NULL DEFAULT '{}'
              );
              CREATE INDEX IF NOT EXISTS idx_dag_nodes_session
@@ -122,25 +143,7 @@ impl SqliteDagStore {
                  agent TEXT NOT NULL,
                  message_id TEXT NOT NULL UNIQUE
              );
-             CREATE TABLE IF NOT EXISTS branches (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 name TEXT NOT NULL,
-                 session_id TEXT NOT NULL DEFAULT '',
-                 fork_point TEXT,
-                 head TEXT,
-                 created_at TEXT NOT NULL,
-                 broken_at TEXT,
-                 UNIQUE(name, session_id)
-             );
-             CREATE INDEX IF NOT EXISTS idx_branches_session
-                 ON branches (session_id);
-             CREATE TABLE IF NOT EXISTS sessions (
-                 id TEXT PRIMARY KEY,
-                 name TEXT NOT NULL UNIQUE,
-                 agent_name TEXT NOT NULL,
-                 default_branch INTEGER NOT NULL DEFAULT 1,
-                 created_at TEXT NOT NULL
-             );",
+             ",
         )
         .map_err(|e| format!("failed to initialize dag store: {e}"))?;
 
@@ -1115,6 +1118,16 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.db");
         let store = SqliteDagStore::open(&path).unwrap();
+        // Create session + default branch to satisfy FK constraints.
+        let session = vlinder_core::domain::session::Session {
+            id: sess(),
+            name: "test-session".to_string(),
+            agent: "agent-a".to_string(),
+            default_branch: BranchId::from(1),
+            created_at: Utc::now(),
+        };
+        store.create_session(&session).unwrap();
+        store.create_branch("main", &sess(), None).unwrap();
         (store, dir)
     }
 
@@ -1213,6 +1226,17 @@ mod tests {
         let sess2 =
             SessionId::try_from("e2660cff-33d6-4428-acca-2d297dcc1cad".to_string()).unwrap();
 
+        // Create second session + branch for FK constraints
+        let session2 = vlinder_core::domain::session::Session {
+            id: sess2.clone(),
+            name: "test-session-2".to_string(),
+            agent: "agent-b".to_string(),
+            default_branch: BranchId::from(1),
+            created_at: Utc::now(),
+        };
+        store.create_session(&session2).unwrap();
+        store.create_branch("main", &sess2, None).unwrap();
+
         let msg_a = make_observable(b"a", sess1.clone());
         let node_a = build_dag_node(&msg_a, &DagNodeId::root(), &Snapshot::empty());
 
@@ -1258,7 +1282,7 @@ mod tests {
         let (store, _dir) = test_store();
 
         let session_id = sess();
-        let _parent_id = store.create_branch("main", &session_id, None).unwrap();
+        // "main" branch already created by test_store()
         let fork = DagNodeId::from("abc123".to_string());
         let fork_id = store
             .create_branch("repair-1", &session_id, Some(&fork))
@@ -1272,7 +1296,7 @@ mod tests {
     fn get_timeline_by_branch() {
         let (store, _dir) = test_store();
         let session_id = sess();
-        store.create_branch("main", &session_id, None).unwrap();
+        // "main" branch already created by test_store()
 
         let tl = store.get_branch_by_name("main").unwrap().unwrap();
         assert_eq!(tl.session_id, session_id);
@@ -1394,8 +1418,8 @@ mod tests {
         let (store, _dir) = test_store();
         let mut conn = store.conn.lock().unwrap();
         conn.batch_execute(
-            "INSERT INTO dag_nodes (hash, parent_hash, message_type, sender, receiver, session_id, submission_id, payload, diagnostics, stderr, created_at, state, protocol_version, checkpoint, message_blob)
-             VALUES ('h1', '', 'bogus', 'cli', 'agent-a', 'sess-1', 'sub-1', x'', x'', x'', '2025-01-01T00:00:00Z', NULL, '', NULL, '{\"bad\": true}')",
+            "INSERT INTO dag_nodes (hash, parent_hash, message_type, sender, receiver, session_id, submission_id, payload, diagnostics, stderr, created_at, state, protocol_version, checkpoint, message_blob, branch_id)
+             VALUES ('h1', '', 'bogus', 'cli', 'agent-a', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', x'', x'', x'', '2025-01-01T00:00:00Z', NULL, '', NULL, '{\"bad\": true}', 1)",
         ).unwrap();
         drop(conn);
 
