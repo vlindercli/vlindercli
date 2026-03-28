@@ -70,7 +70,7 @@ impl SqliteDagStore {
                  harness TEXT NOT NULL,
                  runtime TEXT NOT NULL,
                  agent TEXT NOT NULL,
-                 message_id TEXT NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE,
                  state TEXT,
                  diagnostics BLOB NOT NULL DEFAULT x'',
                  payload BLOB NOT NULL
@@ -79,7 +79,7 @@ impl SqliteDagStore {
                  dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
                  agent TEXT NOT NULL,
                  harness TEXT NOT NULL,
-                 message_id TEXT NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE,
                  state TEXT,
                  diagnostics BLOB NOT NULL DEFAULT x'',
                  payload BLOB NOT NULL
@@ -90,7 +90,7 @@ impl SqliteDagStore {
                  service TEXT NOT NULL,
                  operation TEXT NOT NULL,
                  sequence INTEGER NOT NULL,
-                 message_id TEXT NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE,
                  state TEXT,
                  diagnostics BLOB NOT NULL DEFAULT x'',
                  payload BLOB NOT NULL,
@@ -102,7 +102,7 @@ impl SqliteDagStore {
                  service TEXT NOT NULL,
                  operation TEXT NOT NULL,
                  sequence INTEGER NOT NULL,
-                 message_id TEXT NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE,
                  correlation_id TEXT NOT NULL,
                  state TEXT,
                  diagnostics BLOB NOT NULL DEFAULT x'',
@@ -115,12 +115,12 @@ impl SqliteDagStore {
                  agent TEXT NOT NULL,
                  branch_name TEXT NOT NULL,
                  fork_point TEXT NOT NULL,
-                 message_id TEXT NOT NULL
+                 message_id TEXT NOT NULL UNIQUE
              );
              CREATE TABLE IF NOT EXISTS promote_nodes (
                  dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
                  agent TEXT NOT NULL,
-                 message_id TEXT NOT NULL
+                 message_id TEXT NOT NULL UNIQUE
              );
              CREATE TABLE IF NOT EXISTS branches (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
