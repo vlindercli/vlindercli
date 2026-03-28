@@ -14,8 +14,9 @@ use chrono::Utc;
 use crate::domain::workers::dag::build_dag_node;
 use crate::domain::{
     hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataRoutingKey,
-    ForkMessage, Instance, InvokeMessage, MessageQueue, MessageType, PromoteMessage, QueueError,
-    SessionPlane, Snapshot, StateHash, SubmissionId,
+    ForkMessage, ForkMessageV2, Instance, InvokeMessage, MessageQueue, MessageType, PromoteMessage,
+    PromoteMessageV2, QueueError, SessionMessageKind, SessionPlane, SessionRoutingKey,
+    SessionStartMessageV2, Snapshot, StateHash, SubmissionId,
 };
 
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
@@ -531,6 +532,182 @@ impl MessageQueue for RecordingQueue {
         }
         let _ = self.inner.send_session_start(msg);
         Ok(default_branch)
+    }
+
+    // -------------------------------------------------------------------------
+    // Session plane v2
+    // -------------------------------------------------------------------------
+
+    fn send_fork_v2(&self, key: SessionRoutingKey, msg: ForkMessageV2) -> Result<(), QueueError> {
+        self.record_fork(&key, &msg);
+
+        // Create the branch row
+        match self
+            .store
+            .create_branch(&msg.branch_name, &key.session, Some(&msg.fork_point))
+        {
+            Ok(id) => {
+                tracing::info!(
+                    branch_id = id.as_i64(),
+                    branch = %msg.branch_name,
+                    "Created branch on fork (v2)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    branch = %msg.branch_name,
+                    "Failed to create branch on fork (v2)"
+                );
+            }
+        }
+
+        // Forward to inner (fire-and-forget)
+        let _ = self.inner.send_fork_v2(key, msg);
+        Ok(())
+    }
+
+    fn send_promote_v2(
+        &self,
+        key: SessionRoutingKey,
+        msg: PromoteMessageV2,
+    ) -> Result<(), QueueError> {
+        self.record_promote(&key, &msg);
+
+        // Promote: seal old main, rename promoted branch to "main"
+        let branch_to_promote = self.store.get_branch(msg.branch_id).ok().flatten();
+
+        let old_main = self
+            .store
+            .get_branch_by_name("main")
+            .ok()
+            .flatten()
+            .filter(|b| b.session_id == key.session);
+
+        if let Some(old) = old_main {
+            let sealed_name = format!("broken-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+            if let Err(e) = self.store.seal_branch(old.id, chrono::Utc::now()) {
+                tracing::warn!(error = %e, branch = old.id.as_i64(), "Failed to seal old main");
+            }
+            if let Err(e) = self.store.rename_branch(old.id, &sealed_name) {
+                tracing::warn!(error = %e, branch = old.id.as_i64(), "Failed to rename old main");
+            }
+        }
+
+        if let Some(promoted) = branch_to_promote {
+            if let Err(e) = self.store.rename_branch(promoted.id, "main") {
+                tracing::warn!(error = %e, "Failed to rename promoted branch to main");
+            }
+            if let Err(e) = self
+                .store
+                .update_session_default_branch(&key.session, promoted.id)
+            {
+                tracing::warn!(error = %e, "Failed to update session default branch");
+            }
+        }
+
+        let _ = self.inner.send_promote_v2(key, msg);
+        Ok(())
+    }
+
+    fn send_session_start_v2(
+        &self,
+        key: SessionRoutingKey,
+        msg: SessionStartMessageV2,
+    ) -> Result<crate::domain::BranchId, QueueError> {
+        let SessionMessageKind::Start { agent_name } = &key.kind else {
+            return Err(QueueError::SendFailed("expected Start kind".into()));
+        };
+
+        // Create session first (branches FK to sessions), then default branch.
+        let placeholder_branch = crate::domain::BranchId::from(1);
+        let session = crate::domain::Session::new(
+            key.session.clone(),
+            agent_name.as_str(),
+            placeholder_branch,
+        );
+        if let Err(e) = self.store.create_session(&session) {
+            tracing::warn!(error = %e, "Failed to persist session (v2)");
+        }
+        let default_branch = self
+            .store
+            .create_branch("main", &key.session, None)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to create default branch (v2)");
+                placeholder_branch
+            });
+        if let Err(e) = self
+            .store
+            .update_session_default_branch(&key.session, default_branch)
+        {
+            tracing::warn!(error = %e, "Failed to update session default branch (v2)");
+        }
+
+        let _ = self.inner.send_session_start_v2(key, msg);
+        Ok(default_branch)
+    }
+}
+
+impl RecordingQueue {
+    /// Record a fork DAG node.
+    fn record_fork(&self, key: &SessionRoutingKey, msg: &ForkMessageV2) {
+        let SessionMessageKind::Fork { .. } = &key.kind else {
+            return;
+        };
+
+        // Fork's parent is the fork point itself
+        let parent_node = self.store.get_node(&msg.fork_point).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to look up fork point node");
+            None
+        });
+
+        let parent_id = parent_node
+            .as_ref()
+            .map_or_else(DagNodeId::root, |n| n.id.clone());
+        let parent_state = parent_node
+            .as_ref()
+            .map(|n| &n.state)
+            .cloned()
+            .unwrap_or_else(Snapshot::empty);
+
+        let id = hash_dag_node(&[], &parent_id, &MessageType::Fork, &[], &key.session);
+
+        if let Err(e) =
+            self.store
+                .insert_fork_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
+        {
+            tracing::warn!(error = %id, "Failed to record fork node: {e}");
+        }
+    }
+
+    /// Record a promote DAG node.
+    fn record_promote(&self, key: &SessionRoutingKey, msg: &PromoteMessageV2) {
+        // Promote's parent is the latest node on the branch being promoted
+        let parent_node = self
+            .store
+            .latest_node_on_branch(msg.branch_id, None)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to query latest node for promote");
+                None
+            });
+
+        let parent_id = parent_node
+            .as_ref()
+            .map_or_else(DagNodeId::root, |n| n.id.clone());
+        let parent_state = parent_node
+            .as_ref()
+            .map(|n| &n.state)
+            .cloned()
+            .unwrap_or_else(Snapshot::empty);
+
+        let id = hash_dag_node(&[], &parent_id, &MessageType::Promote, &[], &key.session);
+
+        if let Err(e) =
+            self.store
+                .insert_promote_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
+        {
+            tracing::warn!(error = %id, "Failed to record promote node: {e}");
+        }
     }
 }
 
