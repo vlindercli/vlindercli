@@ -61,15 +61,15 @@ pub use diagnostics::{
     RuntimeInfo, ServiceDiagnostics, ServiceMetrics,
 };
 pub use message::{
-    BranchId, CompleteMessage, DagNodeId, ForkMessage, HarnessType, Instance, InvokeMessage,
-    MessageDetails, MessageId, ObservableMessageHeaders, PromoteMessage, RequestMessage,
-    ResponseMessage, Sequence, SequenceCounter, SessionId, SessionPlane, SessionStartMessage,
-    StateHash, SubmissionId, PROTOCOL_VERSION,
+    BranchId, CompleteMessage, DagNodeId, ForkMessage, ForkMessageV2, HarnessType, Instance,
+    InvokeMessage, MessageDetails, MessageId, ObservableMessageHeaders, PromoteMessage,
+    PromoteMessageV2, RequestMessage, ResponseMessage, Sequence, SequenceCounter, SessionId,
+    SessionPlane, SessionStartMessage, StateHash, SubmissionId, PROTOCOL_VERSION,
 };
 pub use message_queue::{agent_routing_key, Acknowledgement, MessageQueue, QueueError};
 pub use routing_key::{
     AgentName, DataMessageKind, DataRoutingKey, EmbeddingBackendType, InferenceBackendType, Nonce,
-    RoutingKey, RoutingKind, ServiceBackend,
+    RoutingKey, RoutingKind, ServiceBackend, SessionMessageKind, SessionRoutingKey,
 };
 
 // ============================================================================

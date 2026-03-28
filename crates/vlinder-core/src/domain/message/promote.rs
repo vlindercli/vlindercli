@@ -45,3 +45,19 @@ impl PromoteMessage {
         }
     }
 }
+
+/// Promote payload (v2) — routing lives on `SessionRoutingKey`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PromoteMessageV2 {
+    pub id: MessageId,
+    pub branch_id: BranchId,
+}
+
+impl PromoteMessageV2 {
+    pub fn new(branch_id: BranchId) -> Self {
+        Self {
+            id: MessageId::new(),
+            branch_id,
+        }
+    }
+}

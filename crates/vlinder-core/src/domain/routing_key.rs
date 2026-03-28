@@ -265,6 +265,24 @@ pub enum DataMessageKind {
     },
 }
 
+/// Session plane routing key — compensating transactions (fork, promote).
+///
+/// Scoped to a session, not a branch. Session plane operations manage
+/// branches within a session.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionRoutingKey {
+    pub session: SessionId,
+    pub submission: SubmissionId,
+    pub kind: SessionMessageKind,
+}
+
+/// Session plane message kinds.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SessionMessageKind {
+    Fork { agent_name: AgentName },
+    Promote { agent_name: AgentName },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

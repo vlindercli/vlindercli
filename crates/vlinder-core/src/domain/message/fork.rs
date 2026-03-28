@@ -57,3 +57,21 @@ impl ForkMessage {
         }
     }
 }
+
+/// Fork payload (v2) — routing lives on `SessionRoutingKey`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ForkMessageV2 {
+    pub id: MessageId,
+    pub branch_name: String,
+    pub fork_point: DagNodeId,
+}
+
+impl ForkMessageV2 {
+    pub fn new(branch_name: String, fork_point: DagNodeId) -> Self {
+        Self {
+            id: MessageId::new(),
+            branch_name,
+            fork_point,
+        }
+    }
+}

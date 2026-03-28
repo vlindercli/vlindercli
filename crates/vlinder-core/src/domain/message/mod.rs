@@ -35,13 +35,13 @@ pub mod session_start;
 
 // Re-export everything at the module level for backwards compatibility.
 pub use complete::CompleteMessage;
-pub use fork::ForkMessage;
+pub use fork::{ForkMessage, ForkMessageV2};
 pub use identity::{
     BranchId, DagNodeId, HarnessType, Instance, MessageId, Sequence, SequenceCounter, SessionId,
     StateHash, SubmissionId,
 };
 pub use invoke::InvokeMessage;
-pub use promote::PromoteMessage;
+pub use promote::{PromoteMessage, PromoteMessageV2};
 pub use request::RequestMessage;
 pub use response::ResponseMessage;
 pub use session_plane::{MessageDetails, ObservableMessageHeaders, SessionPlane};
