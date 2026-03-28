@@ -531,6 +531,95 @@ impl DagStore for GrpcStateClient {
         }
     }
 
+    fn insert_fork_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::SessionRoutingKey,
+        msg: &vlinder_core::domain::ForkMessageV2,
+    ) -> Result<(), String> {
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot: {e}"))?;
+
+        let agent_name = match &key.kind {
+            vlinder_core::domain::SessionMessageKind::Fork { agent_name } => agent_name.to_string(),
+            _ => return Err("insert_fork_node: expected Fork key".into()),
+        };
+
+        let request = proto::InsertForkNodeRequest {
+            dag_hash: dag_id.to_string(),
+            parent_hash: parent_id.to_string(),
+            created_at: created_at.to_rfc3339(),
+            snapshot: snapshot_json,
+            session_id: key.session.as_str().to_string(),
+            submission_id: key.submission.as_str().to_string(),
+            agent_name,
+            message_id: msg.id.to_string(),
+            branch_name: msg.branch_name.clone(),
+            fork_point: msg.fork_point.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = self
+            .runtime
+            .block_on(async { client.insert_fork_node(request).await })
+            .map_err(|e| e.to_string())?;
+
+        let resp = response.into_inner();
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_else(|| "unknown error".to_string()))
+        }
+    }
+
+    fn insert_promote_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::SessionRoutingKey,
+        msg: &vlinder_core::domain::PromoteMessageV2,
+    ) -> Result<(), String> {
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot: {e}"))?;
+
+        let agent_name = match &key.kind {
+            vlinder_core::domain::SessionMessageKind::Promote { agent_name } => {
+                agent_name.to_string()
+            }
+            _ => return Err("insert_promote_node: expected Promote key".into()),
+        };
+
+        let request = proto::InsertPromoteNodeRequest {
+            dag_hash: dag_id.to_string(),
+            parent_hash: parent_id.to_string(),
+            created_at: created_at.to_rfc3339(),
+            snapshot: snapshot_json,
+            session_id: key.session.as_str().to_string(),
+            submission_id: key.submission.as_str().to_string(),
+            agent_name,
+            message_id: msg.id.to_string(),
+            branch_id: msg.branch_id.as_i64(),
+        };
+
+        let mut client = self.client.clone();
+        let response = self
+            .runtime
+            .block_on(async { client.insert_promote_node(request).await })
+            .map_err(|e| e.to_string())?;
+
+        let resp = response.into_inner();
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_else(|| "unknown error".to_string()))
+        }
+    }
+
     fn get_invoke_node(
         &self,
         dag_hash: &DagNodeId,

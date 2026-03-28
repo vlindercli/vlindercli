@@ -13,13 +13,14 @@ use super::proto::{
     GetRequestNodeRequest, GetRequestNodeResponse, GetResponseNodeRequest, GetResponseNodeResponse,
     GetSessionByNameRequest, GetSessionNodesRequest, GetSessionNodesResponse, GetSessionRequest,
     GetSessionResponse, InsertCompleteNodeRequest, InsertCompleteNodeResponse,
-    InsertInvokeNodeRequest, InsertInvokeNodeResponse, InsertNodeRequest, InsertNodeResponse,
-    InsertRequestNodeRequest, InsertRequestNodeResponse, InsertResponseNodeRequest,
-    InsertResponseNodeResponse, InvokeNodeProto, LatestNodeOnBranchRequest,
-    LatestNodeOnBranchResponse, ListSessionsRequest, ListSessionsResponse, PingRequest,
-    RenameBranchRequest, RenameBranchResponse, RequestNodeProto, ResponseNodeProto,
-    SealBranchRequest, SealBranchResponse, SemVer, UpdateSessionDefaultBranchRequest,
-    UpdateSessionDefaultBranchResponse,
+    InsertForkNodeRequest, InsertForkNodeResponse, InsertInvokeNodeRequest,
+    InsertInvokeNodeResponse, InsertNodeRequest, InsertNodeResponse, InsertPromoteNodeRequest,
+    InsertPromoteNodeResponse, InsertRequestNodeRequest, InsertRequestNodeResponse,
+    InsertResponseNodeRequest, InsertResponseNodeResponse, InvokeNodeProto,
+    LatestNodeOnBranchRequest, LatestNodeOnBranchResponse, ListSessionsRequest,
+    ListSessionsResponse, PingRequest, RenameBranchRequest, RenameBranchResponse, RequestNodeProto,
+    ResponseNodeProto, SealBranchRequest, SealBranchResponse, SemVer,
+    UpdateSessionDefaultBranchRequest, UpdateSessionDefaultBranchResponse,
 };
 use vlinder_core::domain::{DagNodeId, DagStore, MessageType, SessionId};
 
@@ -668,6 +669,95 @@ impl StateService for StateServiceServer {
                 error: None,
             })),
             Err(e) => Ok(Response::new(InsertResponseNodeResponse {
+                success: false,
+                error: Some(e),
+            })),
+        }
+    }
+
+    async fn insert_fork_node(
+        &self,
+        request: Request<InsertForkNodeRequest>,
+    ) -> Result<Response<InsertForkNodeResponse>, Status> {
+        let req = request.into_inner();
+
+        let dag_id = vlinder_core::domain::DagNodeId::from(req.dag_hash);
+        let parent_id = vlinder_core::domain::DagNodeId::from(req.parent_hash);
+        let created_at: chrono::DateTime<chrono::Utc> =
+            chrono::DateTime::parse_from_rfc3339(&req.created_at)
+                .map_err(|e| Status::invalid_argument(format!("invalid created_at: {e}")))?
+                .with_timezone(&chrono::Utc);
+        let snapshot: vlinder_core::domain::Snapshot = serde_json::from_str(&req.snapshot)
+            .map_err(|e| Status::invalid_argument(format!("invalid snapshot: {e}")))?;
+
+        let key = vlinder_core::domain::SessionRoutingKey {
+            session: vlinder_core::domain::SessionId::try_from(req.session_id)
+                .map_err(Status::invalid_argument)?,
+            submission: vlinder_core::domain::SubmissionId::from(req.submission_id),
+            kind: vlinder_core::domain::SessionMessageKind::Fork {
+                agent_name: vlinder_core::domain::AgentName::new(req.agent_name),
+            },
+        };
+
+        let msg = vlinder_core::domain::ForkMessageV2 {
+            id: vlinder_core::domain::MessageId::from(req.message_id),
+            branch_name: req.branch_name,
+            fork_point: vlinder_core::domain::DagNodeId::from(req.fork_point),
+        };
+
+        match self
+            .store
+            .insert_fork_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+        {
+            Ok(()) => Ok(Response::new(InsertForkNodeResponse {
+                success: true,
+                error: None,
+            })),
+            Err(e) => Ok(Response::new(InsertForkNodeResponse {
+                success: false,
+                error: Some(e),
+            })),
+        }
+    }
+
+    async fn insert_promote_node(
+        &self,
+        request: Request<InsertPromoteNodeRequest>,
+    ) -> Result<Response<InsertPromoteNodeResponse>, Status> {
+        let req = request.into_inner();
+
+        let dag_id = vlinder_core::domain::DagNodeId::from(req.dag_hash);
+        let parent_id = vlinder_core::domain::DagNodeId::from(req.parent_hash);
+        let created_at: chrono::DateTime<chrono::Utc> =
+            chrono::DateTime::parse_from_rfc3339(&req.created_at)
+                .map_err(|e| Status::invalid_argument(format!("invalid created_at: {e}")))?
+                .with_timezone(&chrono::Utc);
+        let snapshot: vlinder_core::domain::Snapshot = serde_json::from_str(&req.snapshot)
+            .map_err(|e| Status::invalid_argument(format!("invalid snapshot: {e}")))?;
+
+        let key = vlinder_core::domain::SessionRoutingKey {
+            session: vlinder_core::domain::SessionId::try_from(req.session_id)
+                .map_err(Status::invalid_argument)?,
+            submission: vlinder_core::domain::SubmissionId::from(req.submission_id),
+            kind: vlinder_core::domain::SessionMessageKind::Promote {
+                agent_name: vlinder_core::domain::AgentName::new(req.agent_name),
+            },
+        };
+
+        let msg = vlinder_core::domain::PromoteMessageV2 {
+            id: vlinder_core::domain::MessageId::from(req.message_id),
+            branch_id: vlinder_core::domain::BranchId::from(req.branch_id),
+        };
+
+        match self
+            .store
+            .insert_promote_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+        {
+            Ok(()) => Ok(Response::new(InsertPromoteNodeResponse {
+                success: true,
+                error: None,
+            })),
+            Err(e) => Ok(Response::new(InsertPromoteNodeResponse {
                 success: false,
                 error: Some(e),
             })),

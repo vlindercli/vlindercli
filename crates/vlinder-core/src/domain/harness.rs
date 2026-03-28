@@ -10,10 +10,10 @@
 use std::sync::Arc;
 
 use crate::domain::{
-    AgentName, BranchId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, ForkMessage,
+    AgentName, BranchId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, ForkMessageV2,
     HarnessType, InvokeDiagnostics, InvokeMessage, JobId, JobStatus, MessageId, MessageQueue,
-    MessageType, PromoteMessage, Registry, ResourceId, SessionId, SessionStartMessage,
-    SubmissionId,
+    MessageType, PromoteMessageV2, Registry, ResourceId, SessionId, SessionMessageKind,
+    SessionRoutingKey, SessionStartMessageV2, SubmissionId,
 };
 
 /// Common harness operations shared across all harness types.
@@ -237,15 +237,21 @@ impl Harness for CoreHarness {
 
     fn start_session(&self, agent_name: &str) -> (SessionId, BranchId) {
         let session_id = SessionId::new();
-        // Placeholder — the actual branch ID is determined by
-        // send_session_start (RecordingQueue creates the branch row).
-        let placeholder = BranchId::from(0);
-
-        let msg = SessionStartMessage::new(placeholder, session_id.clone(), agent_name.to_string());
-        let branch_id = self.queue.send_session_start(msg).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "Failed to send session start message");
-            BranchId::from(1) // fallback
-        });
+        let key = SessionRoutingKey {
+            session: session_id.clone(),
+            submission: SubmissionId::new(),
+            kind: SessionMessageKind::Start {
+                agent_name: AgentName::new(agent_name),
+            },
+        };
+        let msg = SessionStartMessageV2::new();
+        let branch_id = self
+            .queue
+            .send_session_start_v2(key, msg)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to send session start message");
+                BranchId::from(1)
+            });
 
         (session_id, branch_id)
     }
@@ -299,21 +305,19 @@ impl Harness for CoreHarness {
         &self,
         params: ForkParams,
         session_id: SessionId,
-        timeline: BranchId,
+        _timeline: BranchId,
     ) -> Result<(), String> {
-        let submission = SubmissionId::new();
-
-        let fork_msg = ForkMessage::new(
-            timeline,
-            submission,
-            session_id,
-            params.agent_name,
-            params.branch_name,
-            params.fork_point,
-        );
+        let key = SessionRoutingKey {
+            session: session_id,
+            submission: SubmissionId::new(),
+            kind: SessionMessageKind::Fork {
+                agent_name: params.agent_name,
+            },
+        };
+        let msg = ForkMessageV2::new(params.branch_name, params.fork_point);
 
         self.queue
-            .send_fork(fork_msg)
+            .send_fork_v2(key, msg)
             .map_err(|e| format!("queue error: {e}"))
     }
 
@@ -323,12 +327,17 @@ impl Harness for CoreHarness {
         session_id: SessionId,
         timeline: BranchId,
     ) -> Result<(), String> {
-        let submission = SubmissionId::new();
-
-        let promote_msg = PromoteMessage::new(timeline, submission, session_id, params.agent_name);
+        let key = SessionRoutingKey {
+            session: session_id,
+            submission: SubmissionId::new(),
+            kind: SessionMessageKind::Promote {
+                agent_name: params.agent_name,
+            },
+        };
+        let msg = PromoteMessageV2::new(timeline);
 
         self.queue
-            .send_promote(promote_msg)
+            .send_promote_v2(key, msg)
             .map_err(|e| format!("queue error: {e}"))
     }
 }

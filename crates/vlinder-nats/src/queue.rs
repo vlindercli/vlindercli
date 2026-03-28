@@ -20,9 +20,10 @@ use std::str::FromStr;
 
 use vlinder_core::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DagNodeId, DataMessageKind,
-    DataRoutingKey, HarnessType, InvokeMessage, MessageId, MessageQueue, Operation, QueueError,
-    RequestMessage, ResponseMessage, RoutingKey, RoutingKind, RuntimeType, Sequence,
-    ServiceBackend, ServiceType, SessionId, SubmissionId,
+    DataRoutingKey, ForkMessageV2, HarnessType, InvokeMessage, MessageId, MessageQueue, Operation,
+    PromoteMessageV2, QueueError, RequestMessage, ResponseMessage, RoutingKey, RoutingKind,
+    RuntimeType, Sequence, ServiceBackend, ServiceType, SessionId, SessionMessageKind,
+    SessionRoutingKey, SessionStartMessageV2, SubmissionId,
 };
 
 /// NATS queue with `JetStream` durability.
@@ -497,6 +498,80 @@ impl MessageQueue for NatsQueue {
 
             Ok(())
         })
+    }
+
+    fn send_fork_v2(&self, key: SessionRoutingKey, msg: ForkMessageV2) -> Result<(), QueueError> {
+        let SessionMessageKind::Fork { ref agent_name } = key.kind else {
+            return Err(QueueError::SendFailed("expected Fork kind".into()));
+        };
+        let subject = routing_key_to_subject(&RoutingKey {
+            session: key.session.clone(),
+            branch: BranchId::from(1), // fork is session-scoped, branch is placeholder
+            submission: key.submission.clone(),
+            kind: RoutingKind::Fork {
+                agent_name: agent_name.clone(),
+            },
+        });
+
+        self.inner.runtime.block_on(async {
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert("msg-id", msg.id.as_str());
+            headers.insert("session-id", key.session.as_str());
+            headers.insert("branch-name", msg.branch_name.as_str());
+            headers.insert("fork-point", msg.fork_point.as_str());
+
+            self.inner
+                .jetstream
+                .publish_with_headers(subject, headers, "".into())
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn send_promote_v2(
+        &self,
+        key: SessionRoutingKey,
+        msg: PromoteMessageV2,
+    ) -> Result<(), QueueError> {
+        let SessionMessageKind::Promote { ref agent_name } = key.kind else {
+            return Err(QueueError::SendFailed("expected Promote kind".into()));
+        };
+        let subject = routing_key_to_subject(&RoutingKey {
+            session: key.session.clone(),
+            branch: msg.branch_id,
+            submission: key.submission.clone(),
+            kind: RoutingKind::Promote {
+                agent_name: agent_name.clone(),
+            },
+        });
+
+        self.inner.runtime.block_on(async {
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert("msg-id", msg.id.as_str());
+            headers.insert("session-id", key.session.as_str());
+
+            self.inner
+                .jetstream
+                .publish_with_headers(subject, headers, "".into())
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn send_session_start_v2(
+        &self,
+        _key: SessionRoutingKey,
+        _msg: SessionStartMessageV2,
+    ) -> Result<BranchId, QueueError> {
+        // Session start is fire-and-forget — no NATS message needed.
+        // RecordingQueue handles persistence before this is called.
+        Ok(BranchId::from(1))
     }
 
     fn send_session_start(

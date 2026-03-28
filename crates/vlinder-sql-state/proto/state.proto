@@ -41,6 +41,8 @@ service StateService {
   rpc GetResponseNode(GetResponseNodeRequest) returns (GetResponseNodeResponse);
   rpc InsertRequestNode(InsertRequestNodeRequest) returns (InsertRequestNodeResponse);
   rpc InsertResponseNode(InsertResponseNodeRequest) returns (InsertResponseNodeResponse);
+  rpc InsertForkNode(InsertForkNodeRequest) returns (InsertForkNodeResponse);
+  rpc InsertPromoteNode(InsertPromoteNodeRequest) returns (InsertPromoteNodeResponse);
 
   // Branch head query
   rpc LatestNodeOnBranch(LatestNodeOnBranchRequest) returns (LatestNodeOnBranchResponse);
@@ -355,6 +357,39 @@ message InsertResponseNodeRequest {
   optional string checkpoint = 18;
 }
 message InsertResponseNodeResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message InsertForkNodeRequest {
+  string dag_hash = 1;
+  string parent_hash = 2;
+  string created_at = 3;
+  string snapshot = 4;
+  string session_id = 5;
+  string submission_id = 6;
+  string agent_name = 7;
+  string message_id = 8;
+  string branch_name = 9;
+  string fork_point = 10;
+}
+message InsertForkNodeResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message InsertPromoteNodeRequest {
+  string dag_hash = 1;
+  string parent_hash = 2;
+  string created_at = 3;
+  string snapshot = 4;
+  string session_id = 5;
+  string submission_id = 6;
+  string agent_name = 7;
+  string message_id = 8;
+  int64 branch_id = 9;
+}
+message InsertPromoteNodeResponse {
   bool success = 1;
   optional string error = 2;
 }

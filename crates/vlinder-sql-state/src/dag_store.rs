@@ -1109,16 +1109,16 @@ impl DagStore for SqliteDagStore {
             return Err("insert_fork_node: expected Fork kind".into());
         };
 
+        // Look up branch BEFORE locking conn (get_branch_by_name also locks conn)
+        let branch_id = self
+            .get_branch_by_name(&msg.branch_name)?
+            .map_or(vlinder_core::domain::BranchId::from(1), |b| b.id);
+
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let created_at_str = created_at.to_rfc3339();
         let agent_str = agent_name.to_string();
-
-        // Fork needs a branch — look up or create it
-        let branch_id = self
-            .get_branch_by_name(&msg.branch_name)?
-            .map_or(vlinder_core::domain::BranchId::from(1), |b| b.id);
 
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
