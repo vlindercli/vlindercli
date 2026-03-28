@@ -247,6 +247,24 @@ pub trait DagWorker: Send {
     ) {
         // Default no-op — implementations opt in.
     }
+
+    /// Persist a fork message (session-plane path).
+    fn on_fork(
+        &mut self,
+        _key: &super::SessionRoutingKey,
+        _msg: &super::ForkMessageV2,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
+
+    /// Persist a promote message (session-plane path).
+    fn on_promote(
+        &mut self,
+        _key: &super::SessionRoutingKey,
+        _msg: &super::PromoteMessageV2,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
 }
 
 /// Persistence layer for DAG nodes.

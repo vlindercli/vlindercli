@@ -49,8 +49,9 @@ use git2::{FileMode, Oid, Repository, RepositoryInitOptions, Signature, TreeBuil
 
 use vlinder_core::domain::workers::dag::build_dag_node;
 use vlinder_core::domain::{
-    hash_dag_node, DagNodeId, DagWorker, DataMessageKind, DataRoutingKey, InvokeMessage,
-    MessageType, Registry, SessionPlane, Snapshot,
+    hash_dag_node, DagNodeId, DagWorker, DataMessageKind, DataRoutingKey, ForkMessageV2,
+    InvokeMessage, MessageType, PromoteMessageV2, Registry, SessionMessageKind, SessionPlane,
+    SessionRoutingKey, Snapshot,
 };
 
 /// DAG worker that writes commits to a git repository.
@@ -781,6 +782,163 @@ impl DagWorker for GitDagWorker {
 
         if let Err(e) = result {
             tracing::error!(error = %e, "Failed to write git commit");
+        }
+    }
+
+    fn on_fork(&mut self, key: &SessionRoutingKey, msg: &ForkMessageV2, created_at: DateTime<Utc>) {
+        let SessionMessageKind::Fork { agent_name } = &key.kind else {
+            return;
+        };
+        let result = (|| -> Result<(), String> {
+            let session_id = key.session.as_str().to_string();
+            let agent_str = agent_name.to_string();
+
+            let parent_commit_oid = self.head_commit();
+            let canonical_parent = match parent_commit_oid {
+                Some(oid) => {
+                    let commit = self
+                        .repo
+                        .find_commit(oid)
+                        .map_err(|e| format!("find commit failed: {e}"))?;
+                    let tree = commit
+                        .tree()
+                        .map_err(|e| format!("tree lookup failed: {e}"))?;
+                    DagNodeId::from(self.session_canonical_hash_from_tree(
+                        &tree,
+                        &agent_str,
+                        &session_id,
+                    ))
+                }
+                None => DagNodeId::root(),
+            };
+
+            // Build fork subtree
+            let mut tb = self
+                .repo
+                .treebuilder(None)
+                .map_err(|e| format!("treebuilder failed: {e}"))?;
+            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            self.insert_field(&mut tb, "session_id", key.session.as_str())?;
+            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
+            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_field(&mut tb, "type", "fork")?;
+            self.insert_field(&mut tb, "branch_name", &msg.branch_name)?;
+            self.insert_field(&mut tb, "fork_point", msg.fork_point.as_str())?;
+            let payload_oid = self.write_blob(&[])?;
+            tb.insert("payload", payload_oid, FileMode::Blob.into())
+                .map_err(|e| format!("insert payload failed: {e}"))?;
+
+            let canonical_hash = hash_dag_node(
+                &[],
+                &canonical_parent,
+                &MessageType::Fork,
+                &[],
+                &key.session,
+            );
+            self.insert_field(&mut tb, "hash", canonical_hash.as_str())?;
+            let msg_tree_oid = tb
+                .write()
+                .map_err(|e| format!("write fork subtree failed: {e}"))?;
+
+            self.nest_and_commit(
+                msg_tree_oid,
+                &agent_str,
+                &session_id,
+                "platform",
+                &agent_str,
+                "fork",
+                &msg.branch_name,
+                parent_commit_oid,
+                created_at,
+                key.submission.as_str(),
+                None,
+                None,
+                "v1",
+                Some(&msg.branch_name),
+            )
+        })();
+        if let Err(e) = result {
+            tracing::error!(error = %e, "Failed to write fork git commit");
+        }
+    }
+
+    fn on_promote(
+        &mut self,
+        key: &SessionRoutingKey,
+        _msg: &PromoteMessageV2,
+        created_at: DateTime<Utc>,
+    ) {
+        let SessionMessageKind::Promote { agent_name } = &key.kind else {
+            return;
+        };
+        let result = (|| -> Result<(), String> {
+            let session_id = key.session.as_str().to_string();
+            let agent_str = agent_name.to_string();
+
+            let parent_commit_oid = self.head_commit();
+            let canonical_parent = match parent_commit_oid {
+                Some(oid) => {
+                    let commit = self
+                        .repo
+                        .find_commit(oid)
+                        .map_err(|e| format!("find commit failed: {e}"))?;
+                    let tree = commit
+                        .tree()
+                        .map_err(|e| format!("tree lookup failed: {e}"))?;
+                    DagNodeId::from(self.session_canonical_hash_from_tree(
+                        &tree,
+                        &agent_str,
+                        &session_id,
+                    ))
+                }
+                None => DagNodeId::root(),
+            };
+
+            // Build promote subtree
+            let mut tb = self
+                .repo
+                .treebuilder(None)
+                .map_err(|e| format!("treebuilder failed: {e}"))?;
+            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            self.insert_field(&mut tb, "session_id", key.session.as_str())?;
+            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
+            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_field(&mut tb, "type", "promote")?;
+            let payload_oid = self.write_blob(&[])?;
+            tb.insert("payload", payload_oid, FileMode::Blob.into())
+                .map_err(|e| format!("insert payload failed: {e}"))?;
+
+            let canonical_hash = hash_dag_node(
+                &[],
+                &canonical_parent,
+                &MessageType::Promote,
+                &[],
+                &key.session,
+            );
+            self.insert_field(&mut tb, "hash", canonical_hash.as_str())?;
+            let msg_tree_oid = tb
+                .write()
+                .map_err(|e| format!("write promote subtree failed: {e}"))?;
+
+            self.nest_and_commit(
+                msg_tree_oid,
+                &agent_str,
+                &session_id,
+                "platform",
+                &agent_str,
+                "promote",
+                "main",
+                parent_commit_oid,
+                created_at,
+                key.submission.as_str(),
+                None,
+                None,
+                "v1",
+                None,
+            )
+        })();
+        if let Err(e) = result {
+            tracing::error!(error = %e, "Failed to write promote git commit");
         }
     }
 
