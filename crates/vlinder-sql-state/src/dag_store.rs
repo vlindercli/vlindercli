@@ -360,9 +360,9 @@ impl DagStore for SqliteDagStore {
         key: &vlinder_core::domain::DataRoutingKey,
         msg: &vlinder_core::domain::InvokeMessage,
     ) -> Result<(), String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let snapshot_json =
-            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        use crate::models::{NewDagNode, NewInvokeNode};
+        use crate::schema::{dag_nodes, invoke_nodes};
+
         let vlinder_core::domain::DataMessageKind::Invoke {
             harness,
             runtime,
@@ -371,49 +371,54 @@ impl DagStore for SqliteDagStore {
         else {
             return Err("insert_invoke_node: expected Invoke key".into());
         };
+
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
+        let created_at_str = created_at.to_rfc3339();
+        let agent_str = agent.to_string();
 
-        conn.execute(
-            "INSERT OR IGNORE INTO dag_nodes (hash, parent_hash, message_type, sender, receiver, session_id, submission_id, payload, diagnostics, stderr, created_at, state, protocol_version, checkpoint, operation, message_blob, branch_id, snapshot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-            rusqlite::params![
-                dag_id.as_str(),
-                parent_id.as_str(),
-                "invoke",
-                harness.as_str(),
-                agent.to_string(),
-                key.session.as_str(),
-                key.submission.as_str(),
-                &msg.payload,
-                &diagnostics_json,
-                Vec::<u8>::new(),
-                created_at.to_rfc3339(),
-                msg.state.as_deref(),
-                "v1",
-                None::<String>,
-                None::<String>,
-                "",
-                key.branch.as_i64(),
-                &snapshot_json,
-            ],
-        )
-        .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "invoke",
+                sender: harness.as_str(),
+                receiver: &agent_str,
+                session_id: key.session.as_str(),
+                submission_id: key.submission.as_str(),
+                payload: &msg.payload,
+                diagnostics: &diagnostics_json,
+                stderr: &[],
+                created_at: &created_at_str,
+                state: msg.state.as_deref(),
+                protocol_version: "v1",
+                checkpoint: None,
+                operation: None,
+                message_blob: Some(""),
+                branch_id: key.branch.as_i64(),
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
 
-        conn.execute(
-            "INSERT OR IGNORE INTO invoke_nodes (dag_hash, harness, runtime, agent, message_id, state, diagnostics, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![
-                dag_id.as_str(),
-                harness.as_str(),
-                runtime.as_str(),
-                agent.as_str(),
-                msg.id.as_str(),
-                msg.state.as_deref(),
-                &diagnostics_json,
-                &msg.payload,
-            ],
-        )
-        .map_err(|e| format!("insert invoke_nodes failed: {e}"))?;
+        diesel::insert_or_ignore_into(invoke_nodes::table)
+            .values(&NewInvokeNode {
+                dag_hash: dag_id.as_str(),
+                harness: harness.as_str(),
+                runtime: runtime.as_str(),
+                agent: agent.as_str(),
+                message_id: msg.id.as_str(),
+                state: msg.state.as_deref(),
+                diagnostics: &diagnostics_json,
+                payload: &msg.payload,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert invoke_nodes failed: {e}"))?;
 
         Ok(())
     }
@@ -431,51 +436,55 @@ impl DagStore for SqliteDagStore {
         harness: vlinder_core::domain::HarnessType,
         msg: &vlinder_core::domain::CompleteMessage,
     ) -> Result<(), String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
+        use crate::models::{NewCompleteNode, NewDagNode};
+        use crate::schema::{complete_nodes, dag_nodes};
+
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
+        let created_at_str = created_at.to_rfc3339();
+        let agent_str = agent.to_string();
 
-        conn.execute(
-            "INSERT OR IGNORE INTO dag_nodes (hash, parent_hash, message_type, sender, receiver, session_id, submission_id, payload, diagnostics, stderr, created_at, state, protocol_version, checkpoint, operation, message_blob, branch_id, snapshot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-            rusqlite::params![
-                dag_id.as_str(),
-                parent_id.as_str(),
-                "complete",
-                agent.to_string(),
-                harness.as_str(),
-                session.as_str(),
-                submission.as_str(),
-                &msg.payload,
-                &diagnostics_json,
-                Vec::<u8>::new(),
-                created_at.to_rfc3339(),
-                msg.state.as_deref(),
-                "v1",
-                None::<String>,
-                None::<String>,
-                "",
-                branch.as_i64(),
-                &snapshot_json,
-            ],
-        )
-        .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "complete",
+                sender: &agent_str,
+                receiver: harness.as_str(),
+                session_id: session.as_str(),
+                submission_id: submission.as_str(),
+                payload: &msg.payload,
+                diagnostics: &diagnostics_json,
+                stderr: &[],
+                created_at: &created_at_str,
+                state: msg.state.as_deref(),
+                protocol_version: "v1",
+                checkpoint: None,
+                operation: None,
+                message_blob: Some(""),
+                branch_id: branch.as_i64(),
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
 
-        conn.execute(
-            "INSERT OR IGNORE INTO complete_nodes (dag_hash, agent, harness, message_id, state, diagnostics, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                dag_id.as_str(),
-                agent.as_str(),
-                harness.as_str(),
-                msg.id.as_str(),
-                msg.state.as_deref(),
-                &diagnostics_json,
-                &msg.payload,
-            ],
-        )
-        .map_err(|e| format!("insert complete_nodes failed: {e}"))?;
+        diesel::insert_or_ignore_into(complete_nodes::table)
+            .values(&NewCompleteNode {
+                dag_hash: dag_id.as_str(),
+                agent: agent.as_str(),
+                harness: harness.as_str(),
+                message_id: msg.id.as_str(),
+                state: msg.state.as_deref(),
+                diagnostics: &diagnostics_json,
+                payload: &msg.payload,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert complete_nodes failed: {e}"))?;
 
         Ok(())
     }
@@ -496,56 +505,59 @@ impl DagStore for SqliteDagStore {
         sequence: vlinder_core::domain::Sequence,
         msg: &vlinder_core::domain::RequestMessage,
     ) -> Result<(), String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
+        use crate::models::{NewDagNode, NewRequestNode};
+        use crate::schema::{dag_nodes, request_nodes};
+
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
+        let created_at_str = created_at.to_rfc3339();
+        let agent_str = agent.to_string();
         let service_str = service.to_string();
-        let op_str = operation.as_str();
 
-        conn.execute(
-            "INSERT OR IGNORE INTO dag_nodes (hash, parent_hash, message_type, sender, receiver, session_id, submission_id, payload, diagnostics, stderr, created_at, state, protocol_version, checkpoint, operation, message_blob, branch_id, snapshot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-            rusqlite::params![
-                dag_id.as_str(),
-                parent_id.as_str(),
-                "request",
-                agent.to_string(),
-                &service_str,
-                session.as_str(),
-                submission.as_str(),
-                &msg.payload,
-                &diagnostics_json,
-                Vec::<u8>::new(),
-                created_at.to_rfc3339(),
-                msg.state.as_deref(),
-                "v1",
-                msg.checkpoint.as_deref(),
-                op_str,
-                "",
-                branch.as_i64(),
-                &snapshot_json,
-            ],
-        )
-        .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "request",
+                sender: &agent_str,
+                receiver: &service_str,
+                session_id: session.as_str(),
+                submission_id: submission.as_str(),
+                payload: &msg.payload,
+                diagnostics: &diagnostics_json,
+                stderr: &[],
+                created_at: &created_at_str,
+                state: msg.state.as_deref(),
+                protocol_version: "v1",
+                checkpoint: msg.checkpoint.as_deref(),
+                operation: Some(operation.as_str()),
+                message_blob: Some(""),
+                branch_id: branch.as_i64(),
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
 
-        conn.execute(
-            "INSERT OR IGNORE INTO request_nodes (dag_hash, agent, service, operation, sequence, message_id, state, diagnostics, payload, checkpoint)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![
-                dag_id.as_str(),
-                agent.as_str(),
-                &service_str,
-                op_str,
-                sequence.as_u32(),
-                msg.id.as_str(),
-                msg.state.as_deref(),
-                &diagnostics_json,
-                &msg.payload,
-                msg.checkpoint.as_deref(),
-            ],
-        )
-        .map_err(|e| format!("insert request_nodes failed: {e}"))?;
+        diesel::insert_or_ignore_into(request_nodes::table)
+            .values(&NewRequestNode {
+                dag_hash: dag_id.as_str(),
+                agent: agent.as_str(),
+                service: &service_str,
+                operation: operation.as_str(),
+                sequence: i32::try_from(sequence.as_u32()).unwrap_or(0),
+                message_id: msg.id.as_str(),
+                state: msg.state.as_deref(),
+                diagnostics: &diagnostics_json,
+                payload: &msg.payload,
+                checkpoint: msg.checkpoint.as_deref(),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert request_nodes failed: {e}"))?;
 
         Ok(())
     }
@@ -566,58 +578,61 @@ impl DagStore for SqliteDagStore {
         sequence: vlinder_core::domain::Sequence,
         msg: &vlinder_core::domain::ResponseMessage,
     ) -> Result<(), String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
+        use crate::models::{NewDagNode, NewResponseNode};
+        use crate::schema::{dag_nodes, response_nodes};
+
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
+        let created_at_str = created_at.to_rfc3339();
+        let agent_str = agent.to_string();
         let service_str = service.to_string();
-        let op_str = operation.as_str();
 
-        conn.execute(
-            "INSERT OR IGNORE INTO dag_nodes (hash, parent_hash, message_type, sender, receiver, session_id, submission_id, payload, diagnostics, stderr, created_at, state, protocol_version, checkpoint, operation, message_blob, branch_id, snapshot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-            rusqlite::params![
-                dag_id.as_str(),
-                parent_id.as_str(),
-                "response",
-                &service_str,
-                agent.to_string(),
-                session.as_str(),
-                submission.as_str(),
-                &msg.payload,
-                &diagnostics_json,
-                Vec::<u8>::new(),
-                created_at.to_rfc3339(),
-                msg.state.as_deref(),
-                "v1",
-                msg.checkpoint.as_deref(),
-                op_str,
-                "",
-                branch.as_i64(),
-                &snapshot_json,
-            ],
-        )
-        .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "response",
+                sender: &service_str,
+                receiver: &agent_str,
+                session_id: session.as_str(),
+                submission_id: submission.as_str(),
+                payload: &msg.payload,
+                diagnostics: &diagnostics_json,
+                stderr: &[],
+                created_at: &created_at_str,
+                state: msg.state.as_deref(),
+                protocol_version: "v1",
+                checkpoint: msg.checkpoint.as_deref(),
+                operation: Some(operation.as_str()),
+                message_blob: Some(""),
+                branch_id: branch.as_i64(),
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
 
-        conn.execute(
-            "INSERT OR IGNORE INTO response_nodes (dag_hash, agent, service, operation, sequence, message_id, correlation_id, state, diagnostics, payload, status_code, checkpoint)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            rusqlite::params![
-                dag_id.as_str(),
-                agent.as_str(),
-                &service_str,
-                op_str,
-                sequence.as_u32(),
-                msg.id.as_str(),
-                msg.correlation_id.as_str(),
-                msg.state.as_deref(),
-                &diagnostics_json,
-                &msg.payload,
-                msg.status_code,
-                msg.checkpoint.as_deref(),
-            ],
-        )
-        .map_err(|e| format!("insert response_nodes failed: {e}"))?;
+        diesel::insert_or_ignore_into(response_nodes::table)
+            .values(&NewResponseNode {
+                dag_hash: dag_id.as_str(),
+                agent: agent.as_str(),
+                service: &service_str,
+                operation: operation.as_str(),
+                sequence: i32::try_from(sequence.as_u32()).unwrap_or(0),
+                message_id: msg.id.as_str(),
+                correlation_id: msg.correlation_id.as_str(),
+                state: msg.state.as_deref(),
+                diagnostics: &diagnostics_json,
+                payload: &msg.payload,
+                status_code: i32::from(msg.status_code),
+                checkpoint: msg.checkpoint.as_deref(),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert response_nodes failed: {e}"))?;
 
         Ok(())
     }
