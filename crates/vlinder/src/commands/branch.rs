@@ -148,19 +148,21 @@ fn get(session_id_or_name: &str, branch_name: &str) {
                     else {
                         continue;
                     };
-                    (harness.as_str().to_string(), agent.to_string(), None, None)
+                    (
+                        harness.as_str().to_string(),
+                        agent.to_string(),
+                        None::<String>,
+                        None::<String>,
+                    )
                 } else {
                     continue;
                 }
             } else if node.message_type() == vlinder_core::domain::MessageType::Complete {
-                ("agent".to_string(), "harness".to_string(), None, None)
-            } else if let Some(ref msg) = node.message {
-                let (f, t) = msg.sender_receiver();
                 (
-                    f,
-                    t,
-                    msg.operation().map(str::to_string),
-                    msg.checkpoint().map(str::to_string),
+                    "agent".to_string(),
+                    "harness".to_string(),
+                    None::<String>,
+                    None::<String>,
                 )
             } else {
                 continue;

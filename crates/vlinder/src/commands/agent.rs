@@ -310,11 +310,7 @@ fn resolve_branch_tip(
                 .and_then(|m| m.state)
                 .unwrap_or_default()
         } else {
-            node.message
-                .as_ref()
-                .and_then(|m| m.state())
-                .unwrap_or("")
-                .to_string()
+            String::new()
         };
         if state.is_empty() {
             None

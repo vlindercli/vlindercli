@@ -30,22 +30,20 @@ pub mod invoke;
 pub mod promote;
 pub mod request;
 pub mod response;
-pub mod session_plane;
 pub mod session_start;
 
 // Re-export everything at the module level for backwards compatibility.
 pub use complete::CompleteMessage;
-pub use fork::{ForkMessage, ForkMessageV2};
+pub use fork::ForkMessageV2;
 pub use identity::{
     BranchId, DagNodeId, HarnessType, Instance, MessageId, Sequence, SequenceCounter, SessionId,
     StateHash, SubmissionId,
 };
 pub use invoke::InvokeMessage;
-pub use promote::{PromoteMessage, PromoteMessageV2};
+pub use promote::PromoteMessageV2;
 pub use request::RequestMessage;
 pub use response::ResponseMessage;
-pub use session_plane::{MessageDetails, ObservableMessageHeaders, SessionPlane};
-pub use session_start::{SessionStartMessage, SessionStartMessageV2};
+pub use session_start::SessionStartMessageV2;
 
 /// Protocol version stamped on every message at construction time.
 pub const PROTOCOL_VERSION: &str = env!("CARGO_PKG_VERSION");

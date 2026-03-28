@@ -149,20 +149,22 @@ fn get(session_id_or_name: &str) {
                     else {
                         continue;
                     };
-                    (harness.as_str().to_string(), agent.to_string(), None, None)
+                    (
+                        harness.as_str().to_string(),
+                        agent.to_string(),
+                        None::<String>,
+                        None::<String>,
+                    )
                 } else {
                     continue;
                 }
             } else if node.message_type() == vlinder_core::domain::MessageType::Complete {
                 // Complete: skip display details — payload read via get_complete_node elsewhere
-                ("agent".to_string(), "harness".to_string(), None, None)
-            } else if let Some(ref msg) = node.message {
-                let (f, t) = msg.sender_receiver();
                 (
-                    f,
-                    t,
-                    msg.operation().map(str::to_string),
-                    msg.checkpoint().map(str::to_string),
+                    "agent".to_string(),
+                    "harness".to_string(),
+                    None::<String>,
+                    None::<String>,
                 )
             } else {
                 continue;
@@ -356,7 +358,7 @@ fn find_agent_name(store: &dyn DagStore, session_id: &SessionId) -> Option<Strin
                 };
                 Some(agent.to_string())
             } else {
-                n.message.as_ref().map(|m| m.sender_receiver().1)
+                None
             }
         })
 }

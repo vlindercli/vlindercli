@@ -72,16 +72,6 @@ fn get(submission_id: &str) {
                 } else {
                     continue;
                 }
-            } else if let Some(ref msg) = node.message {
-                let (f, t) = msg.sender_receiver();
-                (
-                    f,
-                    t,
-                    msg.operation().map(str::to_string),
-                    msg.checkpoint().map(str::to_string),
-                    msg.state().map(str::to_string),
-                    msg.payload().to_vec(),
-                )
             } else {
                 continue;
             };

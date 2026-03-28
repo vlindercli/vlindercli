@@ -496,12 +496,11 @@ fn run_catalog_worker(config: &Config, shutdown: &AtomicBool) {
 #[allow(clippy::too_many_lines)]
 fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
     use crate::config::conversations_dir;
-    use std::collections::HashMap;
     use vlinder_core::domain::DagWorker;
     use vlinder_git_dag::GitDagWorker;
     use vlinder_nats::{
-        complete_parse_subject, from_nats_headers, invoke_parse_subject, request_parse_subject,
-        response_parse_subject, subject_to_routing_key, NatsQueue,
+        complete_parse_subject, invoke_parse_subject, request_parse_subject,
+        response_parse_subject, NatsQueue,
     };
 
     let nats = NatsQueue::connect(&config.queue.nats_config()).expect("Failed to connect to NATS");
@@ -554,14 +553,6 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
         match msg_result {
             Ok(Some(msg)) => {
                 let subject = msg.subject.to_string();
-                let mut headers = HashMap::new();
-                if let Some(h) = &msg.headers {
-                    for (key, values) in h.iter() {
-                        if let Some(first) = values.first() {
-                            headers.insert(key.to_string().to_lowercase(), first.to_string());
-                        }
-                    }
-                }
                 let payload = msg.payload.to_vec();
 
                 let info = msg.info().ok();
@@ -620,11 +611,6 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
                             "DAG git: failed to deserialize InvokeMessage"
                         );
                     }
-                } else if let Some(observable) = subject_to_routing_key(&subject)
-                    .and_then(|key| from_nats_headers(&key, &headers))
-                    .map(|hdrs| hdrs.assemble(payload.clone()))
-                {
-                    git_worker.on_observable_message(&observable, created_at);
                 } else {
                     tracing::warn!(
                         subject = subject.as_str(),

@@ -4,5 +4,3 @@
 //! storage/inference backends.
 
 pub mod dag;
-
-pub use dag::build_dag_node;

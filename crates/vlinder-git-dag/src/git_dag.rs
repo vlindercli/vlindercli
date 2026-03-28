@@ -47,11 +47,9 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use git2::{FileMode, Oid, Repository, RepositoryInitOptions, Signature, TreeBuilder};
 
-use vlinder_core::domain::workers::dag::build_dag_node;
 use vlinder_core::domain::{
     hash_dag_node, DagNodeId, DagWorker, DataMessageKind, DataRoutingKey, ForkMessageV2,
-    InvokeMessage, MessageType, PromoteMessageV2, Registry, SessionMessageKind, SessionPlane,
-    SessionRoutingKey, Snapshot,
+    InvokeMessage, MessageType, PromoteMessageV2, Registry, SessionMessageKind, SessionRoutingKey,
 };
 
 /// DAG worker that writes commits to a git repository.
@@ -183,223 +181,6 @@ impl GitDagWorker {
         String::new()
     }
 
-    /// Build a subtree for a single message — one file per field (ADR 078).
-    /// Returns (tree OID, canonical hash) so the caller can update the chain.
-    fn build_message_subtree(
-        &self,
-        msg: &SessionPlane,
-        created_at: DateTime<Utc>,
-        canonical_parent: &DagNodeId,
-    ) -> Result<(Oid, String), String> {
-        let mut tb = self
-            .repo
-            .treebuilder(None)
-            .map_err(|e| format!("treebuilder failed: {e}"))?;
-
-        let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-        // Common fields present on every message type
-        self.insert_field(&mut tb, "session_id", msg.session().as_str())?;
-        self.insert_field(&mut tb, "submission_id", msg.submission().as_str())?;
-        self.insert_field(&mut tb, "protocol_version", msg.protocol_version())?;
-        self.insert_field(&mut tb, "created_at", &created_at_str)?;
-
-        // Payload — raw bytes, every message has one
-        let payload_oid = self.write_blob(msg.payload())?;
-        tb.insert("payload", payload_oid, FileMode::Blob.into())
-            .map_err(|e| format!("insert payload failed: {e}"))?;
-
-        // Type-specific fields + diagnostics
-        match msg {
-            SessionPlane::Fork(m) => {
-                self.insert_field(&mut tb, "type", "fork")?;
-                self.insert_field(&mut tb, "branch_name", &m.branch_name)?;
-                self.insert_field(&mut tb, "fork_point", m.fork_point.as_str())?;
-            }
-            SessionPlane::Promote(_) => {
-                self.insert_field(&mut tb, "type", "promote")?;
-            }
-        }
-
-        // Compute canonical hash and store it in the subtree
-        // TODO(ADR-116): look up parent snapshot from store once git-dag tracks state
-        let dag_node = build_dag_node(msg, canonical_parent, &Snapshot::empty());
-        self.insert_field(&mut tb, "hash", dag_node.id.as_str())?;
-
-        let tree_oid = tb
-            .write()
-            .map_err(|e| format!("write message subtree failed: {e}"))?;
-        Ok((tree_oid, dag_node.id.to_string()))
-    }
-
-    /// Build the accumulated tree: nested under `<agent>/<session>/` with timeline
-    /// indexes (ADR 114). Returns (tree OID, canonical hash) for the new message.
-    ///
-    /// Retained for reference — v1 `on_observable_message` now calls
-    /// `build_message_subtree` + `nest_and_commit` instead.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines, dead_code)]
-    fn build_accumulated_tree(
-        &self,
-        msg: &SessionPlane,
-        created_at: DateTime<Utc>,
-        from: &str,
-        _to: &str,
-        msg_type: &str,
-        parent_commit: Option<Oid>,
-        canonical_parent: &DagNodeId,
-    ) -> Result<(Oid, String), String> {
-        let agent_name = message_agent_name(msg);
-        let session_id = msg.session().as_str().to_string();
-
-        // Get parent tree from main HEAD
-        let parent_tree = parent_commit
-            .and_then(|oid| self.repo.find_commit(oid).ok())
-            .and_then(|c| c.tree().ok());
-
-        // Navigate existing subtrees
-        let existing_agent_tree = parent_tree
-            .as_ref()
-            .and_then(|t| self.get_subtree(t, &agent_name));
-        let existing_session_tree = existing_agent_tree
-            .as_ref()
-            .and_then(|t| self.get_subtree(t, &session_id));
-        let existing_timelines_tree = existing_session_tree
-            .as_ref()
-            .and_then(|t| self.get_subtree(t, "timelines"));
-
-        // Sequence number = count of existing message dirs + 1
-        let seq = existing_session_tree
-            .as_ref()
-            .map_or(0, |t| self.session_message_count(t))
-            + 1;
-
-        // Build new message subtree
-        let (msg_tree_oid, canonical_hash) =
-            self.build_message_subtree(msg, created_at, canonical_parent)?;
-        let msg_dir = format!("{seq:03}-{from}-{msg_type}");
-
-        // Build session subtree: existing messages + new one + timelines
-        let mut session_tb = self
-            .repo
-            .treebuilder(existing_session_tree.as_ref())
-            .map_err(|e| format!("session treebuilder failed: {e}"))?;
-        let _ = session_tb.remove("timelines");
-        session_tb
-            .insert(&msg_dir, msg_tree_oid, FileMode::Tree.into())
-            .map_err(|e| format!("insert message dir failed: {e}"))?;
-
-        // Build timelines subtree
-        let mut timelines_tb = self
-            .repo
-            .treebuilder(existing_timelines_tree.as_ref())
-            .map_err(|e| format!("timelines treebuilder failed: {e}"))?;
-
-        // Determine which timeline to append to
-        let active_timeline = match msg {
-            SessionPlane::Fork(m) => m.branch_name.as_str(),
-            SessionPlane::Promote(_) => "main",
-        };
-
-        // Append new message dir to the active timeline index file
-        let timeline_content = if let Some(ref tl_tree) = existing_timelines_tree {
-            if let Some(entry) = tl_tree.get_name(active_timeline) {
-                if let Ok(blob) = self.repo.find_blob(entry.id()) {
-                    let existing = String::from_utf8_lossy(blob.content()).to_string();
-                    format!("{existing}\n{msg_dir}")
-                } else {
-                    msg_dir.clone()
-                }
-            } else {
-                msg_dir.clone()
-            }
-        } else {
-            msg_dir.clone()
-        };
-
-        let timeline_oid = self.write_blob(timeline_content.as_bytes())?;
-        timelines_tb
-            .insert(active_timeline, timeline_oid, FileMode::Blob.into())
-            .map_err(|e| format!("insert timeline '{active_timeline}' failed: {e}"))?;
-
-        // For fork: also ensure the main timeline index is preserved (it may not
-        // have been touched) and set ACTIVE to the new branch
-        let active_value = active_timeline;
-        let active_oid = self.write_blob(active_value.as_bytes())?;
-        timelines_tb
-            .insert("ACTIVE", active_oid, FileMode::Blob.into())
-            .map_err(|e| format!("insert ACTIVE failed: {e}"))?;
-
-        let timelines_tree_oid = timelines_tb
-            .write()
-            .map_err(|e| format!("write timelines tree failed: {e}"))?;
-        session_tb
-            .insert("timelines", timelines_tree_oid, FileMode::Tree.into())
-            .map_err(|e| format!("insert timelines dir failed: {e}"))?;
-
-        let session_tree_oid = session_tb
-            .write()
-            .map_err(|e| format!("write session tree failed: {e}"))?;
-
-        // Build agent subtree
-        let mut agent_tb = self
-            .repo
-            .treebuilder(existing_agent_tree.as_ref())
-            .map_err(|e| format!("agent treebuilder failed: {e}"))?;
-        agent_tb
-            .insert(&session_id, session_tree_oid, FileMode::Tree.into())
-            .map_err(|e| format!("insert session dir failed: {e}"))?;
-        let agent_tree_oid = agent_tb
-            .write()
-            .map_err(|e| format!("write agent tree failed: {e}"))?;
-
-        // Build root tree
-        let mut root_tb = self
-            .repo
-            .treebuilder(parent_tree.as_ref())
-            .map_err(|e| format!("root treebuilder failed: {e}"))?;
-        root_tb
-            .insert(&agent_name, agent_tree_oid, FileMode::Tree.into())
-            .map_err(|e| format!("insert agent dir failed: {e}"))?;
-
-        // Add top-level metadata from registry
-        let _ = root_tb.remove("agent.toml");
-        let _ = root_tb.remove("platform.toml");
-        let _ = root_tb.remove("models");
-
-        if let Some(ref registry) = self.registry {
-            if let Some(agent) = registry.get_agent_by_name(&agent_name) {
-                if let Ok(agent_toml) = toml::to_string_pretty(&agent) {
-                    if let Ok(oid) = self.write_blob(agent_toml.as_bytes()) {
-                        let _ = root_tb.insert("agent.toml", oid, FileMode::Blob.into());
-                    }
-                }
-
-                if !agent.requirements.models.is_empty() {
-                    if let Ok(models_oid) =
-                        self.build_models_subtree(registry, &agent.requirements.models)
-                    {
-                        let _ = root_tb.insert("models", models_oid, FileMode::Tree.into());
-                    }
-                }
-            }
-
-            let platform_toml = format!(
-                "version = \"{}\"\ncommit = \"{}\"\nregistry_host = \"{}\"\n",
-                env!("CARGO_PKG_VERSION"),
-                env!("VLINDER_GIT_SHA"),
-                self.registry_host,
-            );
-            if let Ok(oid) = self.write_blob(platform_toml.as_bytes()) {
-                let _ = root_tb.insert("platform.toml", oid, FileMode::Blob.into());
-            }
-        }
-
-        let tree_oid = root_tb
-            .write()
-            .map_err(|e| format!("write root tree failed: {e}"))?;
-        Ok((tree_oid, canonical_hash))
-    }
-
     /// Build a models/ subtree with one TOML file per model.
     fn build_models_subtree(
         &self,
@@ -464,9 +245,6 @@ impl GitDagWorker {
     /// Shared logic: nest the per-message subtree under `agent/session/`, build
     /// timeline indexes, add registry metadata, create the commit, and handle
     /// fork/promote branch operations.
-    ///
-    /// Both `on_observable_message` (v1) and `on_observable_message_v2` call this
-    /// after building their message-specific subtree.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn nest_and_commit(
         &self,
@@ -721,70 +499,6 @@ impl GitDagWorker {
 }
 
 impl DagWorker for GitDagWorker {
-    fn on_observable_message(&mut self, msg: &SessionPlane, created_at: DateTime<Utc>) {
-        let result = (|| -> Result<(), String> {
-            let session_id = msg.session().as_str().to_string();
-            let agent_name = message_agent_name(msg);
-            let (from, to, msg_type) = message_routing(msg);
-
-            // 1. Resolve canonical parent from HEAD (stateless — no in-memory maps)
-            let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(self.session_canonical_hash_from_tree(
-                        &tree,
-                        &agent_name,
-                        &session_id,
-                    ))
-                }
-                None => DagNodeId::root(),
-            };
-
-            // 2. Build per-message subtree
-            let (msg_tree_oid, _canonical_hash) =
-                self.build_message_subtree(msg, created_at, &canonical_parent)?;
-
-            // 3. Determine fork/promote and timeline values
-            let active_timeline = match msg {
-                SessionPlane::Fork(m) => m.branch_name.as_str(),
-                SessionPlane::Promote(_) => "main",
-            };
-            let fork_branch = match msg {
-                SessionPlane::Fork(m) => Some(m.branch_name.as_str()),
-                SessionPlane::Promote(_) => None,
-            };
-
-            // 4. Nest under agent/session, commit, handle fork/promote
-            self.nest_and_commit(
-                msg_tree_oid,
-                &agent_name,
-                &session_id,
-                &from,
-                &to,
-                msg_type,
-                active_timeline,
-                parent_commit_oid,
-                created_at,
-                msg.submission().as_str(),
-                message_state(msg),
-                message_checkpoint(msg),
-                msg.protocol_version(),
-                fork_branch,
-            )
-        })();
-
-        if let Err(e) = result {
-            tracing::error!(error = %e, "Failed to write git commit");
-        }
-    }
-
     fn on_fork(&mut self, key: &SessionRoutingKey, msg: &ForkMessageV2, created_at: DateTime<Utc>) {
         let SessionMessageKind::Fork { agent_name } = &key.kind else {
             return;
@@ -1365,45 +1079,15 @@ impl DagWorker for GitDagWorker {
     }
 }
 
-/// Extract (from, to, `type_str`) from an `ObservableMessage` for commit metadata.
-fn message_routing(msg: &SessionPlane) -> (String, String, &'static str) {
-    match msg {
-        SessionPlane::Fork(m) => ("platform".to_string(), m.branch_name.clone(), "fork"),
-        SessionPlane::Promote(m) => ("platform".to_string(), m.agent_name.to_string(), "promote"),
-    }
-}
-
-/// Extract the agent name for registry lookup.
-fn message_agent_name(msg: &SessionPlane) -> String {
-    match msg {
-        SessionPlane::Fork(m) => m.agent_name.to_string(),
-        SessionPlane::Promote(m) => m.agent_name.to_string(),
-    }
-}
-
-/// Extract state from the message if present.
-fn message_state(msg: &SessionPlane) -> Option<&str> {
-    match msg {
-        SessionPlane::Fork(_) | SessionPlane::Promote(_) => None,
-    }
-}
-
-/// Extract checkpoint handler name from the message (ADR 111).
-fn message_checkpoint(msg: &SessionPlane) -> Option<&str> {
-    match msg {
-        SessionPlane::Fork(_) | SessionPlane::Promote(_) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;
     use vlinder_core::domain::{
         Agent, AgentName, BranchId, CompleteMessage, ContainerId, DagNodeId, DataMessageKind,
-        DataRoutingKey, HarnessType, InMemoryRegistry, InMemorySecretStore, InvokeDiagnostics,
-        InvokeMessage, MessageId, RuntimeDiagnostics, RuntimeInfo, RuntimeType, SecretStore,
-        SessionId, SubmissionId,
+        DataRoutingKey, ForkMessageV2, HarnessType, InMemoryRegistry, InMemorySecretStore,
+        InvokeDiagnostics, InvokeMessage, MessageId, RuntimeDiagnostics, RuntimeInfo, RuntimeType,
+        SecretStore, SessionId, SessionRoutingKey, SubmissionId,
     };
 
     fn test_agent_id() -> AgentName {
@@ -1918,26 +1602,29 @@ mod tests {
     // --- Checkpoint tests (ADR 111) ---
 
     // ========================================================================
-    // Fork message tests
+    // Fork message tests (v2 path)
     // ========================================================================
 
-    fn test_fork(
+    fn test_fork_v2(
         agent_name: &str,
         branch_name: &str,
         fork_point: &str,
         epoch_secs: i64,
-    ) -> (SessionPlane, DateTime<Utc>) {
-        use vlinder_core::domain::ForkMessage;
-        let msg = ForkMessage::new(
-            BranchId::from(1),
-            SubmissionId::from("sub-fork".to_string()),
-            SessionId::try_from(SESSION.to_string()).unwrap(),
-            AgentName::new(agent_name),
+    ) -> (SessionRoutingKey, ForkMessageV2, DateTime<Utc>) {
+        use vlinder_core::domain::SessionMessageKind;
+        let key = SessionRoutingKey {
+            session: SessionId::try_from(SESSION.to_string()).unwrap(),
+            submission: SubmissionId::from("sub-fork".to_string()),
+            kind: SessionMessageKind::Fork {
+                agent_name: AgentName::new(agent_name),
+            },
+        };
+        let msg = ForkMessageV2::new(
             branch_name.to_string(),
             DagNodeId::from(fork_point.to_string()),
         );
         let created_at = DateTime::from_timestamp(epoch_secs, 0).unwrap();
-        (SessionPlane::Fork(msg), created_at)
+        (key, msg, created_at)
     }
 
     #[test]
@@ -1947,9 +1634,9 @@ mod tests {
         // Send a complete so there's a commit on main
         send_complete(&mut worker, b"hello", 1000);
 
-        // Send a fork message
-        let (fork, ft) = test_fork("support-agent", "repair-branch", "fake-hash", 1001);
-        worker.on_observable_message(&fork, ft);
+        // Send a fork message via v2 path
+        let (key, msg, ft) = test_fork_v2("support-agent", "repair-branch", "fake-hash", 1001);
+        worker.on_fork(&key, &msg, ft);
 
         // Verify the branch exists
         let branches = git(tmp.path(), &["branch", "--list"]).unwrap();
@@ -1965,8 +1652,8 @@ mod tests {
 
         send_complete(&mut worker, b"hello", 1000);
 
-        let (fork, ft) = test_fork("support-agent", "my-fork", "fake-hash", 1001);
-        worker.on_observable_message(&fork, ft);
+        let (key, msg, ft) = test_fork_v2("support-agent", "my-fork", "fake-hash", 1001);
+        worker.on_fork(&key, &msg, ft);
 
         // The fork branch should point to the same commit as main HEAD
         // (the fork commit was the last commit on main)
@@ -1981,8 +1668,8 @@ mod tests {
 
         send_complete(&mut worker, b"hello", 1000);
 
-        let (fork, ft) = test_fork("support-agent", "repair-branch", "fake-hash", 1001);
-        worker.on_observable_message(&fork, ft);
+        let (key, msg, ft) = test_fork_v2("support-agent", "repair-branch", "fake-hash", 1001);
+        worker.on_fork(&key, &msg, ft);
 
         // The timelines/ dir should have both 'main' and 'repair-branch' index files
         let session_path = tmp

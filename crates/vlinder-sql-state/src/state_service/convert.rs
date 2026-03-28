@@ -3,63 +3,28 @@
 use chrono::{DateTime, Utc};
 
 use super::proto;
-use vlinder_core::domain::{
-    Branch, BranchId, DagNode, DagNodeId, SessionId, SessionPlane, SessionSummary,
-};
+use vlinder_core::domain::{Branch, BranchId, DagNode, DagNodeId, SessionId, SessionSummary};
 
 // =============================================================================
 // DagNode → proto::DagNode
 // =============================================================================
 
 fn dag_node_to_proto(node: &DagNode) -> proto::DagNode {
-    let msg = node
-        .message
-        .as_ref()
-        .expect("dag_node_to_proto: message must be present");
-    let (from, to) = msg.sender_receiver();
-    let message_blob = serde_json::to_string(msg).ok();
-    let diagnostics = msg.diagnostics_json();
-    let stderr = msg.stderr().to_vec();
-    let state = msg.state().map(str::to_string);
-    let checkpoint = msg.checkpoint().map(str::to_string);
-    let operation = msg.operation().map(str::to_string);
-
     proto::DagNode {
         hash: node.id.to_string(),
         parent_hash: node.parent_id.to_string(),
         message_type: node.message_type().as_str().to_string(),
-        sender: from,
-        receiver: to,
         session_id: node.session_id().as_str().to_string(),
         submission_id: node.submission_id().to_string(),
-        payload: node.payload().to_vec(),
-        diagnostics,
-        stderr,
         created_at: node.created_at.to_rfc3339(),
-        state,
         protocol_version: node.protocol_version().to_string(),
-        checkpoint,
-        operation,
-        message_blob,
         branch_id: node.branch_id().as_i64(),
+        ..Default::default()
     }
 }
 
 impl From<DagNode> for proto::DagNode {
     fn from(node: DagNode) -> Self {
-        if node.message.is_none() {
-            return proto::DagNode {
-                hash: node.id.to_string(),
-                parent_hash: node.parent_id.to_string(),
-                message_type: node.message_type().as_str().to_string(),
-                session_id: node.session_id().as_str().to_string(),
-                submission_id: node.submission_id().to_string(),
-                created_at: node.created_at.to_rfc3339(),
-                protocol_version: node.protocol_version().to_string(),
-                branch_id: node.branch_id().as_i64(),
-                ..Default::default()
-            };
-        }
         dag_node_to_proto(&node)
     }
 }
@@ -88,42 +53,23 @@ impl TryFrom<proto::DagNode> for DagNode {
             .parse::<vlinder_core::domain::MessageType>()
             .unwrap_or(vlinder_core::domain::MessageType::Complete);
 
-        let blob = node.message_blob.as_deref().unwrap_or("");
-
         let session = SessionId::try_from(node.session_id).unwrap_or_else(|_| {
             SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string()).unwrap()
         });
         let submission = vlinder_core::domain::SubmissionId::from(node.submission_id);
         let pv = node.protocol_version.clone();
 
-        // Empty blob = data-plane (typed tables). Non-empty = session-plane (fork/promote).
-        let mut message: Option<SessionPlane> = if blob.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::from_str(blob)
-                    .map_err(|e| format!("invalid message_blob JSON: {e}"))?,
-            )
-        };
-        {
-            if let Some(ref mut m) = message {
-                if !node.payload.is_empty() {
-                    m.set_payload(node.payload);
-                }
-            }
-            Ok(Self {
-                id: DagNodeId::from(node.hash),
-                parent_id: DagNodeId::from(node.parent_hash),
-                created_at,
-                state: vlinder_core::domain::Snapshot::empty(),
-                msg_type,
-                session,
-                submission,
-                protocol_version: pv,
-                branch: BranchId::from(node.branch_id),
-                message,
-            })
-        }
+        Ok(Self {
+            id: DagNodeId::from(node.hash),
+            parent_id: DagNodeId::from(node.parent_hash),
+            created_at,
+            state: vlinder_core::domain::Snapshot::empty(),
+            msg_type,
+            session,
+            submission,
+            protocol_version: pv,
+            branch: BranchId::from(node.branch_id),
+        })
     }
 }
 
@@ -218,32 +164,22 @@ impl TryFrom<proto::SessionSummary> for SessionSummary {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use vlinder_core::domain::workers::dag::build_dag_node;
     use vlinder_core::domain::{
-        AgentName, BranchId, DagNodeId, ForkMessage, MessageId, SessionId, Snapshot, SubmissionId,
-        PROTOCOL_VERSION,
+        BranchId, DagNodeId, MessageType, SessionId, Snapshot, SubmissionId,
     };
 
-    fn sample_observable() -> SessionPlane {
-        SessionPlane::Fork(ForkMessage {
-            id: MessageId::new(),
-            protocol_version: PROTOCOL_VERSION.to_string(),
-            branch: BranchId::from(1),
-            submission: SubmissionId::from("sub-001".to_string()),
-            session: SessionId::new(),
-            agent_name: AgentName::new("agent-echo"),
-            branch_name: "test-branch".to_string(),
-            fork_point: DagNodeId::from("parent456".to_string()),
-        })
-    }
-
     fn sample_dag_node() -> DagNode {
-        let msg = sample_observable();
-        build_dag_node(
-            &msg,
-            &DagNodeId::from("parent456".to_string()),
-            &Snapshot::empty(),
-        )
+        DagNode {
+            id: DagNodeId::from("test-hash".to_string()),
+            parent_id: DagNodeId::from("parent456".to_string()),
+            created_at: Utc::now(),
+            state: Snapshot::empty(),
+            msg_type: MessageType::Fork,
+            session: SessionId::new(),
+            submission: SubmissionId::from("sub-001".to_string()),
+            branch: BranchId::from(1),
+            protocol_version: "v1".to_string(),
+        }
     }
 
     #[test]
@@ -261,17 +197,6 @@ mod tests {
     }
 
     #[test]
-    fn dag_node_without_state_round_trips() {
-        let msg = sample_observable();
-        let node = build_dag_node(&msg, &DagNodeId::root(), &Snapshot::empty());
-
-        let proto_node: proto::DagNode = node.clone().into();
-        let recovered: DagNode = proto_node.try_into().unwrap();
-
-        assert_eq!(recovered.message.as_ref().unwrap().state(), None);
-    }
-
-    #[test]
     fn missing_message_blob_returns_empty_dag_node() {
         let proto_node = proto::DagNode {
             message_type: "invoke".to_string(),
@@ -280,7 +205,6 @@ mod tests {
             ..Default::default()
         };
         let node = DagNode::try_from(proto_node).unwrap();
-        assert!(node.message.is_none());
         assert_eq!(
             node.message_type(),
             vlinder_core::domain::MessageType::Invoke

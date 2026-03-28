@@ -126,8 +126,6 @@ pub struct DagNode {
     pub submission: super::SubmissionId,
     pub branch: super::BranchId,
     pub protocol_version: String,
-    /// Legacy message format. `None` for typed-table rows (invoke).
-    pub message: Option<super::SessionPlane>,
 }
 
 impl DagNode {
@@ -141,16 +139,13 @@ impl DagNode {
         &self.submission
     }
     pub fn payload(&self) -> &[u8] {
-        self.message.as_ref().map_or(&[], |m| m.payload())
+        &[]
     }
     pub fn protocol_version(&self) -> &str {
         &self.protocol_version
     }
     pub fn branch_id(&self) -> &super::BranchId {
         &self.branch
-    }
-    pub fn message_state(&self) -> Option<&str> {
-        self.message.as_ref().and_then(|m| m.state())
     }
 }
 
@@ -207,9 +202,6 @@ pub struct Branch {
 /// Git is one implementation (`GitDagWorker`). Any backend that can
 /// preserve the chronological message stream would implement this.
 pub trait DagWorker: Send {
-    /// Persist a single observable message (legacy path).
-    fn on_observable_message(&mut self, msg: &super::SessionPlane, created_at: DateTime<Utc>);
-
     /// Persist an invoke message (data-plane path, ADR 121).
     fn on_invoke(
         &mut self,
@@ -557,7 +549,6 @@ impl DagStore for InMemoryDagStore {
             submission: key.submission.clone(),
             branch: key.branch,
             protocol_version: "v1".to_string(),
-            message: None,
         };
         self.insert_node(&node)
     }
@@ -585,7 +576,6 @@ impl DagStore for InMemoryDagStore {
             submission: submission.clone(),
             branch,
             protocol_version: "v1".to_string(),
-            message: None,
         };
         self.insert_node(&node)
     }
@@ -616,7 +606,6 @@ impl DagStore for InMemoryDagStore {
             submission: submission.clone(),
             branch,
             protocol_version: "v1".to_string(),
-            message: None,
         };
         self.insert_node(&node)
     }
@@ -647,7 +636,6 @@ impl DagStore for InMemoryDagStore {
             submission: submission.clone(),
             branch,
             protocol_version: "v1".to_string(),
-            message: None,
         };
         self.insert_node(&node)
     }
@@ -742,25 +730,10 @@ impl DagStore for InMemoryDagStore {
             .into_iter()
             .map(|(session_id, mut nodes)| {
                 nodes.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-                // Prefer Invoke for agent name (v2 path), fall back to first
-                // Complete or any node (v1 sessions may not have an Invoke node).
-                let invoke_node = nodes
-                    .iter()
-                    .find(|n| n.message_type() == MessageType::Invoke);
-                let agent_name = if let Some(n) = invoke_node {
-                    n.message
-                        .as_ref()
-                        .map(|m| m.sender_receiver().1)
-                        .unwrap_or_default()
-                } else {
-                    // No invoke node — extract agent from the first Complete
-                    nodes
-                        .iter()
-                        .find(|n| n.message_type() == MessageType::Complete)
-                        .and_then(|n| n.message.as_ref())
-                        .map(|m| m.sender_receiver().0)
-                        .unwrap_or_default()
-                };
+                // Agent name is not available from DagNode alone; typed tables
+                // or external lookup would be needed.  In-memory store returns
+                // an empty string for now (typed node queries fill this).
+                let agent_name = String::new();
                 let started_at = nodes.first().map(|n| n.created_at).unwrap_or_default();
                 let message_count = nodes
                     .iter()

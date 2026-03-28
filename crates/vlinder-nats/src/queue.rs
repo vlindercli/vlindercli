@@ -6,7 +6,6 @@
 //! Uses typed messages exclusively for full observability.
 
 use std::collections::HashMap;
-use std::hash::BuildHasher;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,11 +18,11 @@ use tokio::runtime::Runtime;
 use std::str::FromStr;
 
 use vlinder_core::domain::{
-    Acknowledgement, AgentName, BranchId, CompleteMessage, DagNodeId, DataMessageKind,
-    DataRoutingKey, ForkMessageV2, HarnessType, InvokeMessage, MessageId, MessageQueue, Operation,
-    PromoteMessageV2, QueueError, RequestMessage, ResponseMessage, RoutingKey, RoutingKind,
-    RuntimeType, Sequence, ServiceBackend, ServiceType, SessionId, SessionMessageKind,
-    SessionRoutingKey, SessionStartMessageV2, SubmissionId,
+    Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
+    ForkMessageV2, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessageV2,
+    QueueError, RequestMessage, ResponseMessage, RoutingKey, RoutingKind, RuntimeType, Sequence,
+    ServiceBackend, ServiceType, SessionId, SessionMessageKind, SessionRoutingKey,
+    SessionStartMessageV2, SubmissionId,
 };
 
 /// NATS queue with `JetStream` durability.
@@ -821,43 +820,6 @@ pub fn subject_to_routing_key(subject: &str) -> Option<RoutingKey> {
         branch,
         submission,
         kind,
-    })
-}
-
-/// Reconstruct typed message headers from a `RoutingKey` and NATS header map.
-///
-/// The `RoutingKey` provides the message type discriminant and routing fields
-/// (agent, harness, service, etc.) — already parsed by `subject_to_routing_key`.
-/// The header map provides session-scoped fields (msg-id, session-id, state,
-/// diagnostics) that aren't part of routing.
-pub fn from_nats_headers<S: BuildHasher>(
-    key: &RoutingKey,
-    headers: &HashMap<String, String, S>,
-) -> Option<vlinder_core::domain::ObservableMessageHeaders> {
-    use vlinder_core::domain::{MessageDetails, ObservableMessageHeaders};
-
-    let id = MessageId::from(headers.get("msg-id")?.clone());
-    let protocol_version = headers.get("protocol-version").cloned().unwrap_or_default();
-    let state = headers.get("state").cloned();
-
-    let details = match &key.kind {
-        RoutingKind::Fork { .. } => {
-            let branch_name = headers.get("branch-name").cloned()?;
-            let fork_point = DagNodeId::from(headers.get("fork-point").cloned()?);
-            Some(MessageDetails::Fork {
-                branch_name,
-                fork_point,
-            })
-        }
-        RoutingKind::Promote { .. } => Some(MessageDetails::Promote),
-    };
-
-    details.map(|details| ObservableMessageHeaders {
-        id,
-        protocol_version,
-        state,
-        routing_key: key.clone(),
-        details,
     })
 }
 

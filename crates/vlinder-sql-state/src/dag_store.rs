@@ -14,8 +14,7 @@ use diesel::sqlite::SqliteConnection;
 
 use vlinder_core::domain::session::Session;
 use vlinder_core::domain::{
-    Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, SessionId, SessionPlane,
-    SessionSummary,
+    Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, SessionId, SessionSummary,
 };
 
 /// SQLite-backed `DagStore`.
@@ -194,7 +193,7 @@ fn session_row_to_domain(r: crate::models::SessionRow) -> Session {
 }
 
 /// Convert a Diesel `DagNodeRow` to the domain `DagNode`.
-fn dag_node_row_to_domain(r: crate::models::DagNodeRow) -> Result<DagNode, String> {
+fn dag_node_row_to_domain(r: crate::models::DagNodeRow) -> DagNode {
     let msg_type = r
         .message_type
         .parse::<MessageType>()
@@ -210,22 +209,7 @@ fn dag_node_row_to_domain(r: crate::models::DagNodeRow) -> Result<DagNode, Strin
     let branch = vlinder_core::domain::BranchId::from(r.branch_id);
     let submission = vlinder_core::domain::SubmissionId::from(r.submission_id);
 
-    let blob = r.message_blob.unwrap_or_default();
-
-    // Empty blob = data-plane message (content in typed tables).
-    // Non-empty blob = session-plane message (fork/promote). Parse error = corrupt data.
-    let mut message: Option<SessionPlane> = if blob.is_empty() {
-        None
-    } else {
-        Some(serde_json::from_str(&blob).map_err(|e| format!("invalid message_blob JSON: {e}"))?)
-    };
-    if let Some(ref mut m) = message {
-        if !r.payload.is_empty() {
-            m.set_payload(r.payload);
-        }
-    }
-
-    Ok(DagNode {
+    DagNode {
         id: DagNodeId::from(r.hash),
         parent_id: DagNodeId::from(r.parent_hash),
         created_at,
@@ -235,8 +219,7 @@ fn dag_node_row_to_domain(r: crate::models::DagNodeRow) -> Result<DagNode, Strin
         submission,
         branch,
         protocol_version: r.protocol_version,
-        message,
-    })
+    }
 }
 
 /// Row type for the `list_sessions` aggregate query.
@@ -256,23 +239,10 @@ struct SessionSummaryRow {
 
 impl DagStore for SqliteDagStore {
     fn insert_node(&self, node: &DagNode) -> Result<(), String> {
-        use crate::models::{NewDagNode, NewForkNode, NewPromoteNode};
-        use crate::schema::{dag_nodes, fork_nodes, promote_nodes};
+        use crate::models::NewDagNode;
+        use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
-
-        let msg = node
-            .message
-            .as_ref()
-            .expect("insert_node: message must be present");
-        let (from, to) = msg.sender_receiver();
-        let message_blob = serde_json::to_string(msg)
-            .map_err(|e| format!("serialize message_blob failed: {e}"))?;
-        let diagnostics_json = msg.diagnostics_json();
-        let stderr = msg.stderr().to_vec();
-        let state = msg.state().map(str::to_string);
-        let checkpoint = msg.checkpoint().map(str::to_string);
-        let operation = msg.operation().map(str::to_string);
 
         let snapshot_json = serde_json::to_string(&node.state)
             .map_err(|e| format!("serialize snapshot failed: {e}"))?;
@@ -283,52 +253,24 @@ impl DagStore for SqliteDagStore {
                 hash: node.id.as_str(),
                 parent_hash: node.parent_id.as_str(),
                 message_type: node.message_type().as_str(),
-                sender: &from,
-                receiver: &to,
+                sender: "",
+                receiver: "",
                 session_id: node.session_id().as_str(),
                 submission_id: node.submission_id().as_str(),
                 payload: node.payload(),
-                diagnostics: &diagnostics_json,
-                stderr: &stderr,
+                diagnostics: &[],
+                stderr: &[],
                 created_at: &created_at_str,
-                state: state.as_deref(),
+                state: None,
                 protocol_version: node.protocol_version(),
-                checkpoint: checkpoint.as_deref(),
-                operation: operation.as_deref(),
-                message_blob: Some(&message_blob),
+                checkpoint: None,
+                operation: None,
+                message_blob: Some(""),
                 branch_id: node.branch_id().as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
-
-        // Write to typed table (ADR 122).
-        let hash = node.id.as_str();
-        match msg {
-            SessionPlane::Fork(m) => {
-                diesel::insert_or_ignore_into(fork_nodes::table)
-                    .values(&NewForkNode {
-                        dag_hash: hash,
-                        agent: m.agent_name.as_str(),
-                        branch_name: &m.branch_name,
-                        fork_point: m.fork_point.as_str(),
-                        message_id: m.id.as_str(),
-                    })
-                    .execute(&mut *conn)
-                    .map_err(|e| format!("insert fork_nodes failed: {e}"))?;
-            }
-            SessionPlane::Promote(m) => {
-                diesel::insert_or_ignore_into(promote_nodes::table)
-                    .values(&NewPromoteNode {
-                        dag_hash: hash,
-                        agent: m.agent_name.as_str(),
-                        message_id: m.id.as_str(),
-                        branch_id: None,
-                    })
-                    .execute(&mut *conn)
-                    .map_err(|e| format!("insert promote_nodes failed: {e}"))?;
-            }
-        }
 
         Ok(())
     }
@@ -618,7 +560,7 @@ impl DagStore for SqliteDagStore {
             .optional()
             .map_err(|e| format!("get_node query failed: {e}"))?;
 
-        row.map(dag_node_row_to_domain).transpose()
+        Ok(row.map(dag_node_row_to_domain))
     }
 
     fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
@@ -643,7 +585,7 @@ impl DagStore for SqliteDagStore {
                     .first(&mut *conn)
                     .map_err(|e| format!("get_node_by_prefix query failed: {e}"))?;
 
-                Ok(Some(dag_node_row_to_domain(row)?))
+                Ok(Some(dag_node_row_to_domain(row)))
             }
             n => Err(format!("ambiguous hash prefix '{prefix}': {n} matches")),
         }
@@ -660,7 +602,7 @@ impl DagStore for SqliteDagStore {
             .load(&mut *conn)
             .map_err(|e| format!("get_session_nodes query failed: {e}"))?;
 
-        rows.into_iter().map(dag_node_row_to_domain).collect()
+        Ok(rows.into_iter().map(dag_node_row_to_domain).collect())
     }
 
     fn get_children(&self, parent_hash: &DagNodeId) -> Result<Vec<DagNode>, String> {
@@ -673,7 +615,7 @@ impl DagStore for SqliteDagStore {
             .load(&mut *conn)
             .map_err(|e| format!("get_children query failed: {e}"))?;
 
-        rows.into_iter().map(dag_node_row_to_domain).collect()
+        Ok(rows.into_iter().map(dag_node_row_to_domain).collect())
     }
 
     // -------------------------------------------------------------------------
@@ -787,7 +729,7 @@ impl DagStore for SqliteDagStore {
             .load(&mut *conn)
             .map_err(|e| format!("get_nodes_by_submission query failed: {e}"))?;
 
-        rows.into_iter().map(dag_node_row_to_domain).collect()
+        Ok(rows.into_iter().map(dag_node_row_to_domain).collect())
     }
 
     fn get_invoke_node(
@@ -1005,7 +947,7 @@ impl DagStore for SqliteDagStore {
                 .map_err(|e| format!("latest_node_on_branch query failed: {e}"))?
         };
 
-        row.map(dag_node_row_to_domain).transpose()
+        Ok(row.map(dag_node_row_to_domain))
     }
 
     fn rename_branch(&self, id: BranchId, new_name: &str) -> Result<(), String> {
@@ -1235,10 +1177,7 @@ impl DagStore for SqliteDagStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vlinder_core::domain::workers::dag::build_dag_node;
-    use vlinder_core::domain::{
-        AgentName, BranchId, ForkMessage, MessageId, Snapshot, SubmissionId, PROTOCOL_VERSION,
-    };
+    use vlinder_core::domain::{hash_dag_node, BranchId, Snapshot, SubmissionId};
 
     fn test_store() -> (SqliteDagStore, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1265,24 +1204,20 @@ mod tests {
         SubmissionId::from("sub-1".to_string())
     }
 
-    /// Build a test `ObservableMessage` using `ForkMessage`.
-    fn make_observable(_payload: &[u8], session: SessionId) -> SessionPlane {
-        SessionPlane::Fork(ForkMessage {
-            id: MessageId::new(),
-            protocol_version: PROTOCOL_VERSION.to_string(),
-            branch: BranchId::from(1),
-            submission: sub(),
-            session,
-            agent_name: AgentName::new("agent-a"),
-            branch_name: "test-branch".to_string(),
-            fork_point: DagNodeId::root(),
-        })
-    }
-
-    /// Build a test `DagNode` with a valid message.
+    /// Build a test `DagNode`.
     fn test_node(payload: &[u8], parent: &DagNodeId) -> DagNode {
-        let msg = make_observable(payload, sess());
-        build_dag_node(&msg, parent, &Snapshot::empty())
+        let id = hash_dag_node(payload, parent, &MessageType::Fork, &[], &sess());
+        DagNode {
+            id,
+            parent_id: parent.clone(),
+            created_at: Utc::now(),
+            state: Snapshot::empty(),
+            msg_type: MessageType::Fork,
+            session: sess(),
+            submission: sub(),
+            branch: BranchId::from(1),
+            protocol_version: "v1".to_string(),
+        }
     }
 
     #[test]
@@ -1326,8 +1261,18 @@ mod tests {
 
         let parent = test_node(b"parent", &DagNodeId::root());
 
-        let child_msg = make_observable(b"child", sess());
-        let mut child = build_dag_node(&child_msg, &parent.id, &Snapshot::empty());
+        let child_id = hash_dag_node(b"child", &parent.id, &MessageType::Fork, &[], &sess());
+        let mut child = DagNode {
+            id: child_id,
+            parent_id: parent.id.clone(),
+            created_at: Utc::now(),
+            state: Snapshot::empty(),
+            msg_type: MessageType::Fork,
+            session: sess(),
+            submission: sub(),
+            branch: BranchId::from(1),
+            protocol_version: "v1".to_string(),
+        };
         child.created_at = chrono::TimeZone::with_ymd_and_hms(&Utc, 2025, 1, 1, 0, 1, 0).unwrap();
 
         store.insert_node(&parent).unwrap();
@@ -1363,11 +1308,31 @@ mod tests {
         store.create_session(&session2).unwrap();
         store.create_branch("main", &sess2, None).unwrap();
 
-        let msg_a = make_observable(b"a", sess1.clone());
-        let node_a = build_dag_node(&msg_a, &DagNodeId::root(), &Snapshot::empty());
+        let id_a = hash_dag_node(b"a", &DagNodeId::root(), &MessageType::Fork, &[], &sess1);
+        let node_a = DagNode {
+            id: id_a,
+            parent_id: DagNodeId::root(),
+            created_at: Utc::now(),
+            state: Snapshot::empty(),
+            msg_type: MessageType::Fork,
+            session: sess1.clone(),
+            submission: sub(),
+            branch: BranchId::from(1),
+            protocol_version: "v1".to_string(),
+        };
 
-        let msg_b = make_observable(b"b", sess2.clone());
-        let node_b = build_dag_node(&msg_b, &DagNodeId::root(), &Snapshot::empty());
+        let id_b = hash_dag_node(b"b", &DagNodeId::root(), &MessageType::Fork, &[], &sess2);
+        let node_b = DagNode {
+            id: id_b,
+            parent_id: DagNodeId::root(),
+            created_at: Utc::now(),
+            state: Snapshot::empty(),
+            msg_type: MessageType::Fork,
+            session: sess2.clone(),
+            submission: sub(),
+            branch: BranchId::from(1),
+            protocol_version: "v1".to_string(),
+        };
 
         store.insert_node(&node_a).unwrap();
         store.insert_node(&node_b).unwrap();
@@ -1450,8 +1415,18 @@ mod tests {
         let node1 = test_node(b"first", &DagNodeId::root());
         store.insert_node(&node1).unwrap();
 
-        let msg2 = make_observable(b"response", sess());
-        let node2 = build_dag_node(&msg2, &node1.id, &Snapshot::empty());
+        let id2 = hash_dag_node(b"response", &node1.id, &MessageType::Fork, &[], &sess());
+        let node2 = DagNode {
+            id: id2,
+            parent_id: node1.id.clone(),
+            created_at: Utc::now(),
+            state: Snapshot::empty(),
+            msg_type: MessageType::Fork,
+            session: sess(),
+            submission: sub(),
+            branch: BranchId::from(1),
+            protocol_version: "v1".to_string(),
+        };
         store.insert_node(&node2).unwrap();
 
         // No filter — returns the most recent
@@ -1538,26 +1513,22 @@ mod tests {
     }
 
     #[test]
-    fn invalid_message_blob_returns_error() {
+    fn dag_node_row_with_message_blob_ignores_it() {
+        // message_blob is no longer parsed — verify the node round-trips without error.
         use diesel::connection::SimpleConnection;
 
         let (store, _dir) = test_store();
         let mut conn = store.conn.lock().unwrap();
         conn.batch_execute(
             "INSERT INTO dag_nodes (hash, parent_hash, message_type, sender, receiver, session_id, submission_id, payload, diagnostics, stderr, created_at, state, protocol_version, checkpoint, message_blob, branch_id)
-             VALUES ('h1', '', 'bogus', 'cli', 'agent-a', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', x'', x'', x'', '2025-01-01T00:00:00Z', NULL, '', NULL, '{\"bad\": true}', 1)",
+             VALUES ('h1', '', 'fork', 'cli', 'agent-a', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', x'', x'', x'', '2025-01-01T00:00:00Z', NULL, '', NULL, '{\"bad\": true}', 1)",
         ).unwrap();
         drop(conn);
 
         let result = store.get_node(&DagNodeId::from("h1".to_string()));
-        assert!(
-            result.is_err(),
-            "invalid message_blob should error, not silently default"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("invalid message_blob JSON"),
-            "error should mention invalid JSON, got: {err}"
-        );
+        // message_blob is no longer deserialized, so this should succeed
+        assert!(result.is_ok());
+        let node = result.unwrap().unwrap();
+        assert_eq!(node.message_type(), MessageType::Fork);
     }
 }
