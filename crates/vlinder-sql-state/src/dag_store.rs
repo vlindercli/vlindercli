@@ -843,85 +843,67 @@ impl DagStore for SqliteDagStore {
         )>,
         String,
     > {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT i.harness, i.runtime, i.agent, i.message_id, i.state, i.diagnostics, i.payload,
-                        d.session_id, d.submission_id, d.branch_id, d.parent_hash
-                 FROM invoke_nodes i
-                 JOIN dag_nodes d ON d.hash = i.dag_hash
-                 WHERE i.dag_hash = ?1",
-            )
-            .map_err(|e| format!("get_invoke_node prepare failed: {e}"))?;
+        use crate::schema::{dag_nodes, invoke_nodes};
 
-        let result = stmt
-            .query_row(rusqlite::params![dag_hash.as_str()], |row| {
-                let harness_str: String = row.get(0)?;
-                let runtime_str: String = row.get(1)?;
-                let agent_str: String = row.get(2)?;
-                let message_id: String = row.get(3)?;
-                let state: Option<String> = row.get(4)?;
-                let diagnostics_blob: Vec<u8> = row.get(5)?;
-                let payload: Vec<u8> = row.get(6)?;
-                let session_id: String = row.get(7)?;
-                let submission_id: String = row.get(8)?;
-                let branch: i64 = row.get(9)?;
-                let parent_hash: String = row.get(10)?;
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
 
-                let harness: vlinder_core::domain::HarnessType =
-                    harness_str.parse().map_err(|e: String| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            e.into(),
-                        )
-                    })?;
-                let runtime: vlinder_core::domain::RuntimeType =
-                    runtime_str.parse().map_err(|e: String| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            1,
-                            rusqlite::types::Type::Text,
-                            e.into(),
-                        )
-                    })?;
+        let row: Option<(crate::models::InvokeNodeRow, String, String, i64, String)> =
+            invoke_nodes::table
+                .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(invoke_nodes::dag_hash)))
+                .filter(invoke_nodes::dag_hash.eq(dag_hash.as_str()))
+                .select((
+                    crate::models::InvokeNodeRow::as_select(),
+                    dag_nodes::session_id,
+                    dag_nodes::submission_id,
+                    dag_nodes::branch_id,
+                    dag_nodes::parent_hash,
+                ))
+                .first(&mut *conn)
+                .optional()
+                .map_err(|e| format!("get_invoke_node failed: {e}"))?;
 
-                let key = vlinder_core::domain::DataRoutingKey {
-                    session: SessionId::try_from(session_id).map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            7,
-                            rusqlite::types::Type::Text,
-                            e.into(),
-                        )
-                    })?,
-                    branch: BranchId::from(branch),
-                    submission: vlinder_core::domain::SubmissionId::from(submission_id),
-                    kind: vlinder_core::domain::DataMessageKind::Invoke {
-                        harness,
-                        runtime,
-                        agent: vlinder_core::domain::AgentName::new(agent_str),
-                    },
-                };
+        let result = row.map(|(inv, session_id, submission_id, branch, parent_hash)| {
+            let harness: vlinder_core::domain::HarnessType = inv
+                .harness
+                .parse()
+                .unwrap_or(vlinder_core::domain::HarnessType::Cli);
+            let runtime: vlinder_core::domain::RuntimeType = inv
+                .runtime
+                .parse()
+                .unwrap_or(vlinder_core::domain::RuntimeType::Container);
 
-                let diagnostics: vlinder_core::domain::InvokeDiagnostics =
-                    serde_json::from_slice(&diagnostics_blob).unwrap_or_else(|_| {
-                        vlinder_core::domain::InvokeDiagnostics {
-                            harness_version: String::new(),
-                        }
-                    });
+            let key = vlinder_core::domain::DataRoutingKey {
+                session: SessionId::try_from(session_id).unwrap_or_else(|_| SessionId::new()),
+                branch: BranchId::from(branch),
+                submission: vlinder_core::domain::SubmissionId::from(submission_id),
+                kind: vlinder_core::domain::DataMessageKind::Invoke {
+                    harness,
+                    runtime,
+                    agent: vlinder_core::domain::AgentName::new(inv.agent),
+                },
+            };
 
-                let msg = vlinder_core::domain::InvokeMessage {
-                    id: vlinder_core::domain::MessageId::from(message_id),
-                    dag_id: dag_hash.clone(),
-                    state,
-                    diagnostics,
-                    dag_parent: DagNodeId::from(parent_hash),
-                    payload,
-                };
+            let diagnostics: vlinder_core::domain::InvokeDiagnostics =
+                serde_json::from_slice(&inv.diagnostics).unwrap_or_else(|_| {
+                    vlinder_core::domain::InvokeDiagnostics {
+                        harness_version: String::new(),
+                    }
+                });
 
-                Ok((key, msg))
-            })
-            .optional()
-            .map_err(|e| format!("get_invoke_node query failed: {e}"))?;
+            let msg = vlinder_core::domain::InvokeMessage {
+                id: vlinder_core::domain::MessageId::from(inv.message_id),
+                dag_id: dag_hash.clone(),
+                state: inv.state,
+                diagnostics,
+                dag_parent: DagNodeId::from(parent_hash),
+                payload: inv.payload,
+            };
+
+            (key, msg)
+        });
 
         Ok(result)
     }
@@ -961,97 +943,79 @@ impl DagStore for SqliteDagStore {
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::RequestMessage>, String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT r.message_id, r.state, r.diagnostics, r.payload, r.checkpoint
-                 FROM request_nodes r
-                 WHERE r.dag_hash = ?1",
-            )
-            .map_err(|e| format!("get_request_node prepare failed: {e}"))?;
+        use crate::schema::request_nodes;
 
-        let result = stmt
-            .query_row(rusqlite::params![dag_hash.as_str()], |row| {
-                let message_id: String = row.get(0)?;
-                let state: Option<String> = row.get(1)?;
-                let diagnostics_blob: Vec<u8> = row.get(2)?;
-                let payload: Vec<u8> = row.get(3)?;
-                let checkpoint: Option<String> = row.get(4)?;
-
-                let diagnostics: vlinder_core::domain::RequestDiagnostics =
-                    serde_json::from_slice(&diagnostics_blob).unwrap_or_else(|_| {
-                        vlinder_core::domain::RequestDiagnostics {
-                            sequence: 0,
-                            endpoint: String::new(),
-                            request_bytes: 0,
-                            received_at_ms: 0,
-                        }
-                    });
-
-                Ok(vlinder_core::domain::RequestMessage {
-                    id: vlinder_core::domain::MessageId::from(message_id),
-                    dag_id: dag_hash.clone(),
-                    state,
-                    diagnostics,
-                    payload,
-                    checkpoint,
-                })
-            })
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let row: Option<crate::models::RequestNodeRow> = request_nodes::table
+            .find(dag_hash.as_str())
+            .select(crate::models::RequestNodeRow::as_select())
+            .first(&mut *conn)
             .optional()
-            .map_err(|e| format!("get_request_node query failed: {e}"))?;
+            .map_err(|e| format!("get_request_node failed: {e}"))?;
 
-        Ok(result)
+        Ok(row.map(|r| {
+            let diagnostics: vlinder_core::domain::RequestDiagnostics =
+                serde_json::from_slice(&r.diagnostics).unwrap_or_else(|_| {
+                    vlinder_core::domain::RequestDiagnostics {
+                        sequence: 0,
+                        endpoint: String::new(),
+                        request_bytes: 0,
+                        received_at_ms: 0,
+                    }
+                });
+            vlinder_core::domain::RequestMessage {
+                id: vlinder_core::domain::MessageId::from(r.message_id),
+                dag_id: dag_hash.clone(),
+                state: r.state,
+                diagnostics,
+                payload: r.payload,
+                checkpoint: r.checkpoint,
+            }
+        }))
     }
 
     fn get_response_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::ResponseMessage>, String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT r.message_id, r.correlation_id, r.state, r.diagnostics, r.payload, r.status_code, r.checkpoint
-                 FROM response_nodes r
-                 WHERE r.dag_hash = ?1",
-            )
-            .map_err(|e| format!("get_response_node prepare failed: {e}"))?;
+        use crate::schema::response_nodes;
 
-        let result = stmt
-            .query_row(rusqlite::params![dag_hash.as_str()], |row| {
-                let message_id: String = row.get(0)?;
-                let correlation_id: String = row.get(1)?;
-                let state: Option<String> = row.get(2)?;
-                let diagnostics_blob: Vec<u8> = row.get(3)?;
-                let payload: Vec<u8> = row.get(4)?;
-                let status_code: u16 = row.get(5)?;
-                let checkpoint: Option<String> = row.get(6)?;
-
-                let diagnostics: vlinder_core::domain::ServiceDiagnostics =
-                    serde_json::from_slice(&diagnostics_blob).unwrap_or_else(|_| {
-                        vlinder_core::domain::ServiceDiagnostics::storage(
-                            vlinder_core::domain::ServiceType::Kv,
-                            "unknown",
-                            vlinder_core::domain::Operation::Get,
-                            0,
-                            0,
-                        )
-                    });
-
-                Ok(vlinder_core::domain::ResponseMessage {
-                    id: vlinder_core::domain::MessageId::from(message_id),
-                    dag_id: dag_hash.clone(),
-                    correlation_id: vlinder_core::domain::MessageId::from(correlation_id),
-                    state,
-                    diagnostics,
-                    payload,
-                    status_code,
-                    checkpoint,
-                })
-            })
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let row: Option<crate::models::ResponseNodeRow> = response_nodes::table
+            .find(dag_hash.as_str())
+            .select(crate::models::ResponseNodeRow::as_select())
+            .first(&mut *conn)
             .optional()
-            .map_err(|e| format!("get_response_node query failed: {e}"))?;
+            .map_err(|e| format!("get_response_node failed: {e}"))?;
 
-        Ok(result)
+        Ok(row.map(|r| {
+            let diagnostics: vlinder_core::domain::ServiceDiagnostics =
+                serde_json::from_slice(&r.diagnostics).unwrap_or_else(|_| {
+                    vlinder_core::domain::ServiceDiagnostics::storage(
+                        vlinder_core::domain::ServiceType::Kv,
+                        "unknown",
+                        vlinder_core::domain::Operation::Get,
+                        0,
+                        0,
+                    )
+                });
+            vlinder_core::domain::ResponseMessage {
+                id: vlinder_core::domain::MessageId::from(r.message_id),
+                dag_id: dag_hash.clone(),
+                correlation_id: vlinder_core::domain::MessageId::from(r.correlation_id),
+                state: r.state,
+                diagnostics,
+                payload: r.payload,
+                status_code: u16::try_from(r.status_code).unwrap_or(200),
+                checkpoint: r.checkpoint,
+            }
+        }))
     }
 
     fn get_branches_for_session(&self, session_id: &SessionId) -> Result<Vec<Branch>, String> {
