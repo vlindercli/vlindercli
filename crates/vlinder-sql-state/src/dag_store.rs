@@ -7,6 +7,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
+use diesel::Connection as _;
 use rusqlite::Connection;
 
 use vlinder_core::domain::session::Session;
@@ -18,6 +21,7 @@ use vlinder_core::domain::{
 /// SQLite-backed `DagStore`.
 pub struct SqliteDagStore {
     conn: Arc<Mutex<Connection>>,
+    diesel_conn: Arc<Mutex<SqliteConnection>>,
 }
 
 impl SqliteDagStore {
@@ -140,8 +144,12 @@ impl SqliteDagStore {
         )
         .map_err(|e| format!("failed to initialize dag store: {e}"))?;
 
+        let diesel_conn = SqliteConnection::establish(path.to_str().ok_or("invalid path")?)
+            .map_err(|e| format!("failed to open diesel connection: {e}"))?;
+
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            diesel_conn: Arc::new(Mutex::new(diesel_conn)),
         })
     }
 }
@@ -922,41 +930,31 @@ impl DagStore for SqliteDagStore {
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::CompleteMessage>, String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT c.agent, c.harness, c.message_id, c.state, c.diagnostics, c.payload
-                 FROM complete_nodes c
-                 WHERE c.dag_hash = ?1",
-            )
-            .map_err(|e| format!("get_complete_node prepare failed: {e}"))?;
+        use crate::schema::complete_nodes;
 
-        let result = stmt
-            .query_row(rusqlite::params![dag_hash.as_str()], |row| {
-                let _agent_str: String = row.get(0)?;
-                let _harness_str: String = row.get(1)?;
-                let message_id: String = row.get(2)?;
-                let state: Option<String> = row.get(3)?;
-                let diagnostics_blob: Vec<u8> = row.get(4)?;
-                let payload: Vec<u8> = row.get(5)?;
-
-                let diagnostics: vlinder_core::domain::RuntimeDiagnostics =
-                    serde_json::from_slice(&diagnostics_blob).unwrap_or_else(|_| {
-                        vlinder_core::domain::RuntimeDiagnostics::placeholder(0)
-                    });
-
-                Ok(vlinder_core::domain::CompleteMessage {
-                    id: vlinder_core::domain::MessageId::from(message_id),
-                    dag_id: dag_hash.clone(),
-                    state,
-                    diagnostics,
-                    payload,
-                })
-            })
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let row: Option<crate::models::CompleteNodeRow> = complete_nodes::table
+            .find(dag_hash.as_str())
+            .select(crate::models::CompleteNodeRow::as_select())
+            .first(&mut *conn)
             .optional()
-            .map_err(|e| format!("get_complete_node query failed: {e}"))?;
+            .map_err(|e| format!("get_complete_node failed: {e}"))?;
 
-        Ok(result)
+        Ok(row.map(|r| {
+            let diagnostics: vlinder_core::domain::RuntimeDiagnostics =
+                serde_json::from_slice(&r.diagnostics)
+                    .unwrap_or_else(|_| vlinder_core::domain::RuntimeDiagnostics::placeholder(0));
+            vlinder_core::domain::CompleteMessage {
+                id: vlinder_core::domain::MessageId::from(r.message_id),
+                dag_id: dag_hash.clone(),
+                state: r.state,
+                diagnostics,
+                payload: r.payload,
+            }
+        }))
     }
 
     fn get_request_node(
