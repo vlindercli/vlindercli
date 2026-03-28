@@ -8,8 +8,8 @@
 use diesel::prelude::*;
 
 use crate::schema::{
-    complete_nodes, dag_nodes, fork_nodes, invoke_nodes, promote_nodes, request_nodes,
-    response_nodes,
+    branches, complete_nodes, dag_nodes, fork_nodes, invoke_nodes, promote_nodes, request_nodes,
+    response_nodes, sessions,
 };
 
 // ============================================================================
@@ -234,4 +234,53 @@ pub struct NewPromoteNode<'a> {
     pub dag_hash: &'a str,
     pub agent: &'a str,
     pub message_id: &'a str,
+}
+
+// ============================================================================
+// branches
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = branches)]
+pub struct BranchRow {
+    pub id: i64,
+    pub name: String,
+    pub session_id: String,
+    pub fork_point: Option<String>,
+    pub head: Option<String>,
+    pub created_at: String,
+    pub broken_at: Option<String>,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = branches)]
+pub struct NewBranch<'a> {
+    pub name: &'a str,
+    pub session_id: &'a str,
+    pub fork_point: Option<&'a str>,
+    pub created_at: &'a str,
+}
+
+// ============================================================================
+// sessions
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = sessions)]
+pub struct SessionRow {
+    pub id: String,
+    pub name: String,
+    pub agent_name: String,
+    pub default_branch: i64,
+    pub created_at: String,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = sessions)]
+pub struct NewSession<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub agent_name: &'a str,
+    pub default_branch: i64,
+    pub created_at: &'a str,
 }

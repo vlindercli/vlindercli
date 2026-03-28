@@ -109,15 +109,19 @@ diesel::table! {
         name -> Text,
         session_id -> Text,
         fork_point -> Nullable<Text>,
-        sealed_at -> Nullable<Text>,
+        head -> Nullable<Text>,
+        created_at -> Text,
+        broken_at -> Nullable<Text>,
     }
 }
 
 diesel::table! {
-    sessions (session_id) {
-        session_id -> Text,
-        default_branch_id -> BigInt,
+    sessions (id) {
+        id -> Text,
+        name -> Text,
         agent_name -> Text,
+        default_branch -> BigInt,
+        created_at -> Text,
     }
 }
 

@@ -154,55 +154,43 @@ impl SqliteDagStore {
     }
 }
 
-/// Construct a `Branch` from a `SQLite` row.
-///
-/// Expects columns in order: `id`, `name`, `session_id`, `fork_point`, `head`,
-/// `created_at`, `broken_at`.
-fn row_to_branch(row: &rusqlite::Row) -> Result<Branch, rusqlite::Error> {
-    let created_at_str: String = row.get(5)?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+/// Convert a Diesel `BranchRow` to the domain `Branch`.
+fn branch_row_to_domain(r: crate::models::BranchRow) -> Branch {
+    let created_at = DateTime::parse_from_rfc3339(&r.created_at)
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_default();
-    let broken_at_str: Option<String> = row.get(6)?;
-    let broken_at = broken_at_str.and_then(|s| {
+    let broken_at = r.broken_at.and_then(|s| {
         DateTime::parse_from_rfc3339(&s)
             .map(|dt| dt.with_timezone(&Utc))
             .ok()
     });
-    Ok(Branch {
-        id: BranchId::from(row.get::<_, i64>(0)?),
-        name: row.get(1)?,
-        session_id: SessionId::try_from(row.get::<_, String>(2)?).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, e.into())
-        })?,
-        fork_point: row.get::<_, Option<String>>(3)?.map(DagNodeId::from),
-        head: row.get::<_, Option<String>>(4)?.map(DagNodeId::from),
+    Branch {
+        id: BranchId::from(r.id),
+        name: r.name,
+        session_id: SessionId::try_from(r.session_id).unwrap_or_else(|_| {
+            SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string()).unwrap()
+        }),
+        fork_point: r.fork_point.map(DagNodeId::from),
+        head: r.head.map(DagNodeId::from),
         created_at,
         broken_at,
-    })
+    }
 }
 
-/// Construct a `Session` from a `SQLite` row.
-///
-/// Expects columns in order: `id`, `name`, `agent_name`, `default_branch`, `created_at`.
-fn row_to_session(row: &rusqlite::Row) -> Result<Session, rusqlite::Error> {
-    let id: String = row.get(0)?;
-    let name: String = row.get(1)?;
-    let agent: String = row.get(2)?;
-    let default_branch = BranchId::from(row.get::<_, i64>(3)?);
-    let created_at_str: String = row.get(4)?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+/// Convert a Diesel `SessionRow` to the domain `Session`.
+fn session_row_to_domain(r: crate::models::SessionRow) -> Session {
+    let created_at = DateTime::parse_from_rfc3339(&r.created_at)
         .map(|dt| dt.with_timezone(&Utc))
         .unwrap_or_default();
-    Ok(Session {
-        id: SessionId::try_from(id).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
-        })?,
-        name,
-        agent,
-        default_branch,
+    Session {
+        id: SessionId::try_from(r.id).unwrap_or_else(|_| {
+            SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string()).unwrap()
+        }),
+        name: r.name,
+        agent: r.agent_name,
+        default_branch: BranchId::from(r.default_branch),
         created_at,
-    })
+    }
 }
 
 /// Construct a `DagNode` from a `SQLite` row.
@@ -731,47 +719,66 @@ impl DagStore for SqliteDagStore {
         session_id: &SessionId,
         fork_point: Option<&DagNodeId>,
     ) -> Result<BranchId, String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        conn.execute(
-            "INSERT INTO branches (name, session_id, fork_point, created_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![
+        use crate::schema::branches;
+
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let created_at_str = Utc::now().to_rfc3339();
+
+        diesel::insert_into(branches::table)
+            .values(&crate::models::NewBranch {
                 name,
-                session_id.as_str(),
-                fork_point.map(vlinder_core::domain::DagNodeId::as_str),
-                Utc::now().to_rfc3339()
-            ],
-        )
-        .map_err(|e| format!("create_branch failed: {e}"))?;
-        Ok(BranchId::from(conn.last_insert_rowid()))
+                session_id: session_id.as_str(),
+                fork_point: fork_point.map(DagNodeId::as_str),
+                created_at: &created_at_str,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("create_branch failed: {e}"))?;
+
+        // Get the auto-incremented id
+        let id: i64 = diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+            "last_insert_rowid()",
+        ))
+        .get_result(&mut *conn)
+        .map_err(|e| format!("create_branch last_insert_rowid failed: {e}"))?;
+
+        Ok(BranchId::from(id))
     }
 
     fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, session_id, fork_point, head, created_at, broken_at
-                 FROM branches WHERE name = ?1",
-            )
-            .map_err(|e| format!("get_branch_by_name prepare failed: {e}"))?;
+        use crate::schema::branches;
 
-        stmt.query_row(rusqlite::params![name], row_to_branch)
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let row: Option<crate::models::BranchRow> = branches::table
+            .filter(branches::name.eq(name))
+            .select(crate::models::BranchRow::as_select())
+            .first(&mut *conn)
             .optional()
-            .map_err(|e| format!("get_branch_by_name query failed: {e}"))
+            .map_err(|e| format!("get_branch_by_name failed: {e}"))?;
+
+        Ok(row.map(branch_row_to_domain))
     }
 
     fn get_branch(&self, id: BranchId) -> Result<Option<Branch>, String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, session_id, fork_point, head, created_at, broken_at
-                 FROM branches WHERE id = ?1",
-            )
-            .map_err(|e| format!("get_branch prepare failed: {e}"))?;
+        use crate::schema::branches;
 
-        stmt.query_row(rusqlite::params![id.as_i64()], row_to_branch)
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let row: Option<crate::models::BranchRow> = branches::table
+            .find(id.as_i64())
+            .select(crate::models::BranchRow::as_select())
+            .first(&mut *conn)
             .optional()
-            .map_err(|e| format!("get_branch query failed: {e}"))
+            .map_err(|e| format!("get_branch failed: {e}"))?;
+
+        Ok(row.map(branch_row_to_domain))
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
@@ -1034,25 +1041,20 @@ impl DagStore for SqliteDagStore {
     }
 
     fn get_branches_for_session(&self, session_id: &SessionId) -> Result<Vec<Branch>, String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, session_id, fork_point, head, created_at, broken_at
-                 FROM branches
-                 WHERE session_id = ?1
-                 ORDER BY created_at",
-            )
-            .map_err(|e| format!("get_branches_for_session prepare failed: {e}"))?;
+        use crate::schema::branches;
 
-        let rows = stmt
-            .query_map(rusqlite::params![session_id.as_str()], row_to_branch)
-            .map_err(|e| format!("get_branches_for_session query failed: {e}"))?;
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let rows: Vec<crate::models::BranchRow> = branches::table
+            .filter(branches::session_id.eq(session_id.as_str()))
+            .order(branches::created_at.asc())
+            .select(crate::models::BranchRow::as_select())
+            .load(&mut *conn)
+            .map_err(|e| format!("get_branches_for_session failed: {e}"))?;
 
-        let mut branches = Vec::new();
-        for row in rows {
-            branches.push(row.map_err(|e| format!("get_branches_for_session row failed: {e}"))?);
-        }
-        Ok(branches)
+        Ok(rows.into_iter().map(branch_row_to_domain).collect())
     }
 
     fn latest_node_on_branch(
@@ -1090,12 +1092,15 @@ impl DagStore for SqliteDagStore {
     }
 
     fn rename_branch(&self, id: BranchId, new_name: &str) -> Result<(), String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let rows = conn
-            .execute(
-                "UPDATE branches SET name = ?1 WHERE id = ?2",
-                rusqlite::params![new_name, id.as_i64()],
-            )
+        use crate::schema::branches;
+
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let rows = diesel::update(branches::table.find(id.as_i64()))
+            .set(branches::name.eq(new_name))
+            .execute(&mut *conn)
             .map_err(|e| format!("rename_branch failed: {e}"))?;
         if rows == 0 {
             return Err(format!("branch {id} not found"));
@@ -1108,12 +1113,15 @@ impl DagStore for SqliteDagStore {
         id: BranchId,
         broken_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let rows = conn
-            .execute(
-                "UPDATE branches SET broken_at = ?1 WHERE id = ?2",
-                rusqlite::params![broken_at.to_rfc3339(), id.as_i64()],
-            )
+        use crate::schema::branches;
+
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let rows = diesel::update(branches::table.find(id.as_i64()))
+            .set(branches::broken_at.eq(Some(broken_at.to_rfc3339())))
+            .execute(&mut *conn)
             .map_err(|e| format!("seal_branch failed: {e}"))?;
         if rows == 0 {
             return Err(format!("branch {id} not found"));
@@ -1130,12 +1138,15 @@ impl DagStore for SqliteDagStore {
         session_id: &SessionId,
         branch_id: BranchId,
     ) -> Result<(), String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let rows = conn
-            .execute(
-                "UPDATE sessions SET default_branch = ?1 WHERE id = ?2",
-                rusqlite::params![branch_id.as_i64(), session_id.as_str()],
-            )
+        use crate::schema::sessions;
+
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let rows = diesel::update(sessions::table.find(session_id.as_str()))
+            .set(sessions::default_branch.eq(branch_id.as_i64()))
+            .execute(&mut *conn)
             .map_err(|e| format!("update_session_default_branch failed: {e}"))?;
         if rows == 0 {
             return Err(format!("session {session_id} not found"));
@@ -1144,48 +1155,57 @@ impl DagStore for SqliteDagStore {
     }
 
     fn create_session(&self, session: &Session) -> Result<(), String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        conn.execute(
-            "INSERT OR IGNORE INTO sessions (id, name, agent_name, default_branch, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![
-                session.id.as_str(),
-                session.name,
-                session.agent,
-                session.default_branch.as_i64(),
-                session.created_at.to_rfc3339(),
-            ],
-        )
-        .map_err(|e| format!("create_session failed: {e}"))?;
+        use crate::schema::sessions;
+
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        diesel::insert_or_ignore_into(sessions::table)
+            .values(&crate::models::NewSession {
+                id: session.id.as_str(),
+                name: &session.name,
+                agent_name: &session.agent,
+                default_branch: session.default_branch.as_i64(),
+                created_at: &session.created_at.to_rfc3339(),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("create_session failed: {e}"))?;
         Ok(())
     }
 
     fn get_session(&self, session_id: &SessionId) -> Result<Option<Session>, String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, agent_name, default_branch, created_at
-                 FROM sessions WHERE id = ?1",
-            )
-            .map_err(|e| format!("get_session prepare failed: {e}"))?;
+        use crate::schema::sessions;
 
-        stmt.query_row(rusqlite::params![session_id.as_str()], row_to_session)
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let row: Option<crate::models::SessionRow> = sessions::table
+            .find(session_id.as_str())
+            .select(crate::models::SessionRow::as_select())
+            .first(&mut *conn)
             .optional()
-            .map_err(|e| format!("get_session query failed: {e}"))
+            .map_err(|e| format!("get_session failed: {e}"))?;
+
+        Ok(row.map(session_row_to_domain))
     }
 
     fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {
-        let conn = self.conn.lock().expect("db connection lock poisoned");
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, agent_name, default_branch, created_at
-                 FROM sessions WHERE name = ?1",
-            )
-            .map_err(|e| format!("get_session_by_name prepare failed: {e}"))?;
+        use crate::schema::sessions;
 
-        stmt.query_row(rusqlite::params![name], row_to_session)
+        let mut conn = self
+            .diesel_conn
+            .lock()
+            .expect("diesel connection lock poisoned");
+        let row: Option<crate::models::SessionRow> = sessions::table
+            .filter(sessions::name.eq(name))
+            .select(crate::models::SessionRow::as_select())
+            .first(&mut *conn)
             .optional()
-            .map_err(|e| format!("get_session_by_name query failed: {e}"))
+            .map_err(|e| format!("get_session_by_name failed: {e}"))?;
+
+        Ok(row.map(session_row_to_domain))
     }
 }
 
@@ -1212,9 +1232,11 @@ mod tests {
         AgentName, BranchId, ForkMessage, MessageId, Snapshot, SubmissionId, PROTOCOL_VERSION,
     };
 
-    fn test_store() -> SqliteDagStore {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        SqliteDagStore::open(tmp.path()).unwrap()
+    fn test_store() -> (SqliteDagStore, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.db");
+        let store = SqliteDagStore::open(&path).unwrap();
+        (store, dir)
     }
 
     fn sess() -> SessionId {
@@ -1247,7 +1269,7 @@ mod tests {
 
     #[test]
     fn round_trip_insert_get() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         let node = test_node(b"hello", &DagNodeId::root());
 
         store.insert_node(&node).unwrap();
@@ -1259,7 +1281,7 @@ mod tests {
 
     #[test]
     fn get_node_returns_none_for_unknown() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         assert_eq!(
             store
                 .get_node(&DagNodeId::from("nonexistent".to_string()))
@@ -1270,7 +1292,7 @@ mod tests {
 
     #[test]
     fn idempotent_insert() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         let node = test_node(b"data", &DagNodeId::root());
 
         store.insert_node(&node).unwrap();
@@ -1282,7 +1304,7 @@ mod tests {
 
     #[test]
     fn get_children() {
-        let store = test_store();
+        let (store, _dir) = test_store();
 
         let parent = test_node(b"parent", &DagNodeId::root());
 
@@ -1305,7 +1327,7 @@ mod tests {
 
     #[test]
     fn different_sessions_are_isolated() {
-        let store = test_store();
+        let (store, _dir) = test_store();
 
         let sess1 =
             SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
@@ -1336,7 +1358,7 @@ mod tests {
 
     #[test]
     fn create_timeline_returns_auto_id() {
-        let store = test_store();
+        let (store, _dir) = test_store();
 
         let session_id = sess();
         let fork = DagNodeId::from("abc123".to_string());
@@ -1354,7 +1376,7 @@ mod tests {
 
     #[test]
     fn create_timeline_with_parent() {
-        let store = test_store();
+        let (store, _dir) = test_store();
 
         let session_id = sess();
         let _parent_id = store.create_branch("main", &session_id, None).unwrap();
@@ -1369,7 +1391,7 @@ mod tests {
 
     #[test]
     fn get_timeline_by_branch() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         let session_id = sess();
         store.create_branch("main", &session_id, None).unwrap();
 
@@ -1385,7 +1407,7 @@ mod tests {
 
     #[test]
     fn latest_node_on_branch_returns_none_for_empty() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         let result = store
             .latest_node_on_branch(BranchId::from(1), None)
             .unwrap();
@@ -1394,7 +1416,7 @@ mod tests {
 
     #[test]
     fn latest_node_on_branch_returns_most_recent() {
-        let store = test_store();
+        let (store, _dir) = test_store();
 
         let node1 = test_node(b"first", &DagNodeId::root());
         store.insert_node(&node1).unwrap();
@@ -1417,7 +1439,7 @@ mod tests {
 
     #[test]
     fn create_and_get_session() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
             "pensieve",
@@ -1438,7 +1460,7 @@ mod tests {
 
     #[test]
     fn get_session_by_name() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
             "pensieve",
@@ -1458,20 +1480,20 @@ mod tests {
 
     #[test]
     fn get_session_returns_none_for_unknown() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         let sid = SessionId::try_from("00000000-0000-0000-0000-000000000000".to_string()).unwrap();
         assert!(store.get_session(&sid).unwrap().is_none());
     }
 
     #[test]
     fn get_session_by_name_returns_none_for_unknown() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         assert!(store.get_session_by_name("nonexistent").unwrap().is_none());
     }
 
     #[test]
     fn create_session_is_idempotent() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
             "pensieve",
@@ -1488,7 +1510,7 @@ mod tests {
 
     #[test]
     fn invalid_message_blob_returns_error() {
-        let store = test_store();
+        let (store, _dir) = test_store();
         let conn = store.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO dag_nodes (hash, parent_hash, message_type, sender, receiver, session_id, submission_id, payload, diagnostics, stderr, created_at, state, protocol_version, checkpoint, message_blob)
