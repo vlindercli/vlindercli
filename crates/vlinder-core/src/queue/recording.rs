@@ -504,22 +504,30 @@ impl MessageQueue for RecordingQueue {
         &self,
         msg: crate::domain::SessionStartMessage,
     ) -> Result<crate::domain::BranchId, QueueError> {
-        // Create the default "main" branch, then the session pointing to it.
-        let default_branch = self
-            .store
-            .create_branch("main", &msg.session, None)
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Failed to create default branch");
-                crate::domain::BranchId::from(1) // fallback
-            });
+        // Create session first (branches FK to sessions), then default branch.
+        let placeholder_branch = crate::domain::BranchId::from(1);
         let session =
-            crate::domain::Session::new(msg.session.clone(), &msg.agent_name, default_branch);
+            crate::domain::Session::new(msg.session.clone(), &msg.agent_name, placeholder_branch);
         if let Err(e) = self.store.create_session(&session) {
             tracing::warn!(
                 error = %e,
                 session = %msg.session.as_str(),
                 "Failed to persist session"
             );
+        }
+        let default_branch = self
+            .store
+            .create_branch("main", &msg.session, None)
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to create default branch");
+                placeholder_branch
+            });
+        // Update session with the real branch ID
+        if let Err(e) = self
+            .store
+            .update_session_default_branch(&msg.session, default_branch)
+        {
+            tracing::warn!(error = %e, "Failed to update session default branch");
         }
         let _ = self.inner.send_session_start(msg);
         Ok(default_branch)
