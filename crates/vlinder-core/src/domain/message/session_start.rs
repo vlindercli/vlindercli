@@ -33,3 +33,23 @@ impl SessionStartMessage {
         }
     }
 }
+
+/// Session start payload (v2) — routing lives on `SessionRoutingKey`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SessionStartMessageV2 {
+    pub id: MessageId,
+}
+
+impl Default for SessionStartMessageV2 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionStartMessageV2 {
+    pub fn new() -> Self {
+        Self {
+            id: MessageId::new(),
+        }
+    }
+}

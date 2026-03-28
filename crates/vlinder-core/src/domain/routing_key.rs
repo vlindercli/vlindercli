@@ -279,6 +279,7 @@ pub struct SessionRoutingKey {
 /// Session plane message kinds.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SessionMessageKind {
+    Start { agent_name: AgentName },
     Fork { agent_name: AgentName },
     Promote { agent_name: AgentName },
 }

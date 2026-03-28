@@ -45,7 +45,7 @@ pub use promote::{PromoteMessage, PromoteMessageV2};
 pub use request::RequestMessage;
 pub use response::ResponseMessage;
 pub use session_plane::{MessageDetails, ObservableMessageHeaders, SessionPlane};
-pub use session_start::SessionStartMessage;
+pub use session_start::{SessionStartMessage, SessionStartMessageV2};
 
 /// Protocol version stamped on every message at construction time.
 pub const PROTOCOL_VERSION: &str = env!("CARGO_PKG_VERSION");
