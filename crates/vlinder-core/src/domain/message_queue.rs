@@ -10,10 +10,9 @@
 //! `AckFn` acknowledges successful processing.
 
 use super::{
-    AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, ForkMessage, ForkMessageV2,
-    HarnessType, InvokeMessage, Operation, PromoteMessage, PromoteMessageV2, RequestMessage,
-    ResourceId, ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey,
-    SessionStartMessageV2, SubmissionId,
+    AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, ForkMessageV2, HarnessType,
+    InvokeMessage, Operation, PromoteMessageV2, RequestMessage, ResourceId, ResponseMessage,
+    Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessageV2, SubmissionId,
 };
 use std::fmt;
 
@@ -105,62 +104,24 @@ pub trait MessageQueue {
     }
 
     // -------------------------------------------------------------------------
-    // Fork methods
+    // Session plane
     // -------------------------------------------------------------------------
 
-    /// Send a `ForkMessage` (CLI → Platform).
-    ///
-    /// Creates a new timeline branch in the DAG. Both SQL and git projections
-    /// react to this message.
-    fn send_fork(&self, msg: ForkMessage) -> Result<(), QueueError>;
+    /// Send a fork on the session plane.
+    fn send_fork_v2(&self, key: SessionRoutingKey, msg: ForkMessageV2) -> Result<(), QueueError>;
 
-    /// Send a `PromoteMessage` (CLI → Platform).
-    ///
-    /// Promotes a branch to main. Both SQL and git projections react to
-    /// this message.
-    fn send_promote(&self, msg: PromoteMessage) -> Result<(), QueueError>;
-
-    // -------------------------------------------------------------------------
-    // Session plane v2 (routing separated from payload)
-    // -------------------------------------------------------------------------
-
-    /// Send a fork on the session plane (v2).
-    fn send_fork_v2(&self, _key: SessionRoutingKey, _msg: ForkMessageV2) -> Result<(), QueueError> {
-        Err(QueueError::SendFailed(
-            "send_fork_v2 not implemented".into(),
-        ))
-    }
-
-    /// Send a promote on the session plane (v2).
+    /// Send a promote on the session plane.
     fn send_promote_v2(
         &self,
-        _key: SessionRoutingKey,
-        _msg: PromoteMessageV2,
-    ) -> Result<(), QueueError> {
-        Err(QueueError::SendFailed(
-            "send_promote_v2 not implemented".into(),
-        ))
-    }
+        key: SessionRoutingKey,
+        msg: PromoteMessageV2,
+    ) -> Result<(), QueueError>;
 
-    /// Start a session on the session plane (v2).
+    /// Start a session on the session plane.
     fn send_session_start_v2(
         &self,
-        _key: SessionRoutingKey,
-        _msg: SessionStartMessageV2,
-    ) -> Result<super::BranchId, QueueError> {
-        Err(QueueError::SendFailed(
-            "send_session_start_v2 not implemented".into(),
-        ))
-    }
-
-    /// Send a `SessionStartMessage` (CLI → Platform).
-    ///
-    /// Creates a new conversation session and its default "main" branch.
-    /// Returns the `BranchId` of the default branch so callers can use it
-    /// as the `BranchId` for subsequent messages.
-    fn send_session_start(
-        &self,
-        msg: super::SessionStartMessage,
+        key: SessionRoutingKey,
+        msg: SessionStartMessageV2,
     ) -> Result<super::BranchId, QueueError>;
 
     // -------------------------------------------------------------------------

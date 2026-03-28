@@ -3,9 +3,10 @@
 #[cfg(test)]
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
-    Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, ForkMessage,
-    HarnessType, InvokeMessage, MessageQueue, Operation, QueueError, RequestMessage,
-    ResponseMessage, Sequence, ServiceBackend, SubmissionId,
+    Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
+    ForkMessageV2, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessageV2,
+    QueueError, RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey,
+    SessionStartMessageV2, SubmissionId,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -194,25 +195,28 @@ impl MessageQueue for InMemoryQueue {
         Err(QueueError::Timeout)
     }
 
-    fn send_fork(&self, _msg: ForkMessage) -> Result<(), QueueError> {
-        // Fork is fire-and-forget — no consumer subscribes.
-        // RecordingQueue intercepts and records the DagNode before this is called.
+    fn send_fork_v2(&self, _key: SessionRoutingKey, _msg: ForkMessageV2) -> Result<(), QueueError> {
+        // Fire-and-forget — no consumer subscribes.
         Ok(())
     }
 
-    fn send_promote(&self, _msg: crate::domain::PromoteMessage) -> Result<(), QueueError> {
-        // Promote is fire-and-forget — no consumer subscribes.
-        // RecordingQueue intercepts and records the DagNode before this is called.
-        Ok(())
-    }
-
-    fn send_session_start(
+    fn send_promote_v2(
         &self,
-        _msg: crate::domain::SessionStartMessage,
-    ) -> Result<crate::domain::BranchId, QueueError> {
+        _key: SessionRoutingKey,
+        _msg: PromoteMessageV2,
+    ) -> Result<(), QueueError> {
+        // Fire-and-forget — no consumer subscribes.
+        Ok(())
+    }
+
+    fn send_session_start_v2(
+        &self,
+        _key: SessionRoutingKey,
+        _msg: SessionStartMessageV2,
+    ) -> Result<BranchId, QueueError> {
         // InMemoryQueue doesn't have a store — return a placeholder.
         // RecordingQueue wraps this and returns the real branch ID.
-        Ok(crate::domain::BranchId::from(1))
+        Ok(BranchId::from(1))
     }
 }
 

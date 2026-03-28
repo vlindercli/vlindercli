@@ -442,64 +442,6 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn send_fork(&self, msg: vlinder_core::domain::ForkMessage) -> Result<(), QueueError> {
-        let subject = routing_key_to_subject(&RoutingKey {
-            session: msg.session.clone(),
-            branch: msg.branch,
-            submission: msg.submission.clone(),
-            kind: RoutingKind::Fork {
-                agent_name: msg.agent_name.clone(),
-            },
-        });
-
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("msg-id", msg.id.as_str());
-            headers.insert("protocol-version", msg.protocol_version.as_str());
-            headers.insert("session-id", msg.session.as_str());
-            headers.insert("branch-name", msg.branch_name.as_str());
-            headers.insert("fork-point", msg.fork_point.as_str());
-
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, "".into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-
-            Ok(())
-        })
-    }
-
-    fn send_promote(&self, msg: vlinder_core::domain::PromoteMessage) -> Result<(), QueueError> {
-        let subject = routing_key_to_subject(&RoutingKey {
-            session: msg.session.clone(),
-            branch: msg.branch,
-            submission: msg.submission.clone(),
-            kind: RoutingKind::Promote {
-                agent_name: msg.agent_name.clone(),
-            },
-        });
-
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("msg-id", msg.id.as_str());
-            headers.insert("protocol-version", msg.protocol_version.as_str());
-            headers.insert("session-id", msg.session.as_str());
-
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, "".into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-
-            Ok(())
-        })
-    }
-
     fn send_fork_v2(&self, key: SessionRoutingKey, msg: ForkMessageV2) -> Result<(), QueueError> {
         let SessionMessageKind::Fork { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Fork kind".into()));
@@ -572,15 +514,6 @@ impl MessageQueue for NatsQueue {
         // Session start is fire-and-forget — no NATS message needed.
         // RecordingQueue handles persistence before this is called.
         Ok(BranchId::from(1))
-    }
-
-    fn send_session_start(
-        &self,
-        _msg: vlinder_core::domain::SessionStartMessage,
-    ) -> Result<vlinder_core::domain::BranchId, QueueError> {
-        // NatsQueue doesn't create branches — RecordingQueue wraps this
-        // and returns the real branch ID.
-        Ok(vlinder_core::domain::BranchId::from(1))
     }
 }
 

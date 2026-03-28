@@ -11,12 +11,11 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use crate::domain::workers::dag::build_dag_node;
 use crate::domain::{
     hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataRoutingKey,
-    ForkMessage, ForkMessageV2, Instance, InvokeMessage, MessageQueue, MessageType, PromoteMessage,
-    PromoteMessageV2, QueueError, SessionMessageKind, SessionPlane, SessionRoutingKey,
-    SessionStartMessageV2, Snapshot, StateHash, SubmissionId,
+    ForkMessageV2, Instance, InvokeMessage, MessageQueue, MessageType, PromoteMessageV2,
+    QueueError, SessionMessageKind, SessionRoutingKey, SessionStartMessageV2, Snapshot, StateHash,
+    SubmissionId,
 };
 
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
@@ -38,50 +37,6 @@ pub struct RecordingQueue {
 impl RecordingQueue {
     pub fn new(inner: Arc<dyn MessageQueue + Send + Sync>, store: Arc<dyn DagStore>) -> Self {
         Self { inner, store }
-    }
-
-    /// Record a DAG node for the given observable message.
-    fn record(&self, observable: &SessionPlane) {
-        let branch_id = *observable.branch();
-
-        // Explicit dag_parent on Fork overrides the latest node on the timeline.
-        let dag_parent_override: Option<DagNodeId> = match observable {
-            SessionPlane::Fork(m) => Some(m.fork_point.clone()),
-            SessionPlane::Promote(_) => None,
-        };
-
-        // Look up parent node: dag_parent override → latest node on branch
-        let parent_node = dag_parent_override
-            .and_then(|id| {
-                self.store.get_node(&id).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "Failed to look up dag_parent node");
-                    None
-                })
-            })
-            .or_else(|| {
-                self.store
-                    .latest_node_on_branch(branch_id, None)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, branch = branch_id.as_i64(), "Failed to query latest node on branch");
-                        None
-                    })
-            });
-
-        let parent_id = parent_node
-            .as_ref()
-            .map_or_else(DagNodeId::root, |n| n.id.clone());
-        let parent_state = parent_node
-            .as_ref()
-            .map(|n| &n.state)
-            .cloned()
-            .unwrap_or_else(Snapshot::empty);
-
-        let node = build_dag_node(observable, &parent_id, &parent_state);
-        let node_id = node.id.clone();
-
-        if let Err(e) = self.store.insert_node(&node) {
-            tracing::warn!(error = %node_id, "Failed to record DAG node (outbox): {e}");
-        }
     }
 
     /// Record a DAG node for an invoke message. Returns the computed `DagNodeId`.
@@ -423,119 +378,7 @@ impl MessageQueue for RecordingQueue {
     }
 
     // -------------------------------------------------------------------------
-    // Fork methods — record + forward on send
-    // -------------------------------------------------------------------------
-
-    fn send_fork(&self, msg: ForkMessage) -> Result<(), QueueError> {
-        self.record(&msg.clone().into());
-
-        // Create the branch row so `--branch` and `session fork` can find it.
-        match self
-            .store
-            .create_branch(&msg.branch_name, &msg.session, Some(&msg.fork_point))
-        {
-            Ok(id) => {
-                tracing::info!(
-                    branch_id = id.as_i64(),
-                    branch = %msg.branch_name,
-                    "Created branch on fork"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    branch = %msg.branch_name,
-                    "Failed to create branch on fork"
-                );
-            }
-        }
-
-        self.inner.send_fork(msg)
-    }
-
-    fn send_promote(&self, msg: PromoteMessage) -> Result<(), QueueError> {
-        self.record(&msg.clone().into());
-
-        // Promote the branch: seal old main, rename promoted branch to "main".
-        let branch_to_promote = self.store.get_branch(msg.branch).ok().flatten();
-
-        let old_main = self
-            .store
-            .get_branch_by_name("main")
-            .ok()
-            .flatten()
-            .filter(|b| b.session_id == msg.session);
-
-        if let Some(old) = old_main {
-            let sealed_name = format!("broken-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
-            if let Err(e) = self.store.seal_branch(old.id, chrono::Utc::now()) {
-                tracing::warn!(error = %e, branch = old.id.as_i64(), "Failed to seal old main");
-            }
-            if let Err(e) = self.store.rename_branch(old.id, &sealed_name) {
-                tracing::warn!(error = %e, branch = old.id.as_i64(), "Failed to rename old main");
-            }
-            tracing::info!(
-                old_main_id = old.id.as_i64(),
-                sealed_name = %sealed_name,
-                "Sealed old main branch"
-            );
-        }
-
-        if let Some(promoted) = branch_to_promote {
-            if let Err(e) = self.store.rename_branch(promoted.id, "main") {
-                tracing::warn!(error = %e, branch = promoted.id.as_i64(), "Failed to rename promoted branch to main");
-            }
-            if let Err(e) = self
-                .store
-                .update_session_default_branch(&msg.session, promoted.id)
-            {
-                tracing::warn!(error = %e, "Failed to update session default branch");
-            }
-            tracing::info!(
-                branch_id = promoted.id.as_i64(),
-                old_name = %promoted.name,
-                "Promoted branch to main"
-            );
-        }
-
-        self.inner.send_promote(msg)
-    }
-
-    fn send_session_start(
-        &self,
-        msg: crate::domain::SessionStartMessage,
-    ) -> Result<crate::domain::BranchId, QueueError> {
-        // Create session first (branches FK to sessions), then default branch.
-        let placeholder_branch = crate::domain::BranchId::from(1);
-        let session =
-            crate::domain::Session::new(msg.session.clone(), &msg.agent_name, placeholder_branch);
-        if let Err(e) = self.store.create_session(&session) {
-            tracing::warn!(
-                error = %e,
-                session = %msg.session.as_str(),
-                "Failed to persist session"
-            );
-        }
-        let default_branch = self
-            .store
-            .create_branch("main", &msg.session, None)
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Failed to create default branch");
-                placeholder_branch
-            });
-        // Update session with the real branch ID
-        if let Err(e) = self
-            .store
-            .update_session_default_branch(&msg.session, default_branch)
-        {
-            tracing::warn!(error = %e, "Failed to update session default branch");
-        }
-        let _ = self.inner.send_session_start(msg);
-        Ok(default_branch)
-    }
-
-    // -------------------------------------------------------------------------
-    // Session plane v2
+    // Session plane
     // -------------------------------------------------------------------------
 
     fn send_fork_v2(&self, key: SessionRoutingKey, msg: ForkMessageV2) -> Result<(), QueueError> {
