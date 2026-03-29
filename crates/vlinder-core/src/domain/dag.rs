@@ -244,7 +244,7 @@ pub trait DagWorker: Send {
     fn on_fork(
         &mut self,
         _key: &super::SessionRoutingKey,
-        _msg: &super::ForkMessageV2,
+        _msg: &super::ForkMessage,
         _created_at: DateTime<Utc>,
     ) {
     }
@@ -253,7 +253,7 @@ pub trait DagWorker: Send {
     fn on_promote(
         &mut self,
         _key: &super::SessionRoutingKey,
-        _msg: &super::PromoteMessageV2,
+        _msg: &super::PromoteMessage,
         _created_at: DateTime<Utc>,
     ) {
     }
@@ -355,7 +355,7 @@ pub trait DagStore: Send + Sync {
         created_at: DateTime<Utc>,
         state: &Snapshot,
         key: &super::SessionRoutingKey,
-        msg: &super::ForkMessageV2,
+        msg: &super::ForkMessage,
     ) -> Result<(), String> {
         let _ = (dag_id, parent_id, created_at, state, key, msg);
         Err("insert_fork_node not implemented".to_string())
@@ -369,7 +369,7 @@ pub trait DagStore: Send + Sync {
         created_at: DateTime<Utc>,
         state: &Snapshot,
         key: &super::SessionRoutingKey,
-        msg: &super::PromoteMessageV2,
+        msg: &super::PromoteMessage,
     ) -> Result<(), String> {
         let _ = (dag_id, parent_id, created_at, state, key, msg);
         Err("insert_promote_node not implemented".to_string())

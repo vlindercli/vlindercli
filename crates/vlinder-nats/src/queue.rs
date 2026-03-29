@@ -19,10 +19,9 @@ use std::str::FromStr;
 
 use vlinder_core::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
-    ForkMessageV2, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessageV2,
-    QueueError, RequestMessage, ResponseMessage, RuntimeType, Sequence, ServiceBackend,
-    ServiceType, SessionId, SessionMessageKind, SessionRoutingKey, SessionStartMessageV2,
-    SubmissionId,
+    ForkMessage, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
+    RequestMessage, ResponseMessage, RuntimeType, Sequence, ServiceBackend, ServiceType, SessionId,
+    SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
 
 /// NATS queue with `JetStream` durability.
@@ -441,7 +440,7 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn send_fork_v2(&self, key: SessionRoutingKey, msg: ForkMessageV2) -> Result<(), QueueError> {
+    fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
         let SessionMessageKind::Fork { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Fork kind".into()));
         };
@@ -464,11 +463,7 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn send_promote_v2(
-        &self,
-        key: SessionRoutingKey,
-        msg: PromoteMessageV2,
-    ) -> Result<(), QueueError> {
+    fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {
         let SessionMessageKind::Promote { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Promote kind".into()));
         };
@@ -491,10 +486,10 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn send_session_start_v2(
+    fn send_session_start(
         &self,
         _key: SessionRoutingKey,
-        _msg: SessionStartMessageV2,
+        _msg: SessionStartMessage,
     ) -> Result<BranchId, QueueError> {
         // Session start is fire-and-forget — no NATS message needed.
         // RecordingQueue handles persistence before this is called.

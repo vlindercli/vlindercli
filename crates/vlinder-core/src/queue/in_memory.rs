@@ -4,9 +4,9 @@
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
-    ForkMessageV2, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessageV2,
-    QueueError, RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey,
-    SessionStartMessageV2, SubmissionId,
+    ForkMessage, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
+    RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey,
+    SessionStartMessage, SubmissionId,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -195,24 +195,24 @@ impl MessageQueue for InMemoryQueue {
         Err(QueueError::Timeout)
     }
 
-    fn send_fork_v2(&self, _key: SessionRoutingKey, _msg: ForkMessageV2) -> Result<(), QueueError> {
+    fn send_fork(&self, _key: SessionRoutingKey, _msg: ForkMessage) -> Result<(), QueueError> {
         // Fire-and-forget — no consumer subscribes.
         Ok(())
     }
 
-    fn send_promote_v2(
+    fn send_promote(
         &self,
         _key: SessionRoutingKey,
-        _msg: PromoteMessageV2,
+        _msg: PromoteMessage,
     ) -> Result<(), QueueError> {
         // Fire-and-forget — no consumer subscribes.
         Ok(())
     }
 
-    fn send_session_start_v2(
+    fn send_session_start(
         &self,
         _key: SessionRoutingKey,
-        _msg: SessionStartMessageV2,
+        _msg: SessionStartMessage,
     ) -> Result<BranchId, QueueError> {
         // InMemoryQueue doesn't have a store — return a placeholder.
         // RecordingQueue wraps this and returns the real branch ID.

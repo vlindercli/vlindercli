@@ -1,4 +1,4 @@
-//! `PromoteMessageV2`: CLI → Platform (promote a branch to main).
+//! `PromoteMessage`: CLI → Platform (promote a branch to main).
 //!
 //! A control plane message that makes a branch the canonical "main"
 //! branch for its session. Both projections (SQL `DagStore` and git repo) react:
@@ -8,14 +8,14 @@
 
 use super::identity::{BranchId, MessageId};
 
-/// Promote payload (v2) — routing lives on `SessionRoutingKey`.
+/// Promote payload — routing lives on `SessionRoutingKey`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PromoteMessageV2 {
+pub struct PromoteMessage {
     pub id: MessageId,
     pub branch_id: BranchId,
 }
 
-impl PromoteMessageV2 {
+impl PromoteMessage {
     pub fn new(branch_id: BranchId) -> Self {
         Self {
             id: MessageId::new(),

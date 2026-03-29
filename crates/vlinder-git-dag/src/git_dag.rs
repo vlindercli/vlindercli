@@ -48,8 +48,8 @@ use chrono::{DateTime, Utc};
 use git2::{FileMode, Oid, Repository, RepositoryInitOptions, Signature, TreeBuilder};
 
 use vlinder_core::domain::{
-    hash_dag_node, DagNodeId, DagWorker, DataMessageKind, DataRoutingKey, ForkMessageV2,
-    InvokeMessage, MessageType, PromoteMessageV2, Registry, SessionMessageKind, SessionRoutingKey,
+    hash_dag_node, DagNodeId, DagWorker, DataMessageKind, DataRoutingKey, ForkMessage,
+    InvokeMessage, MessageType, PromoteMessage, Registry, SessionMessageKind, SessionRoutingKey,
 };
 
 /// DAG worker that writes commits to a git repository.
@@ -499,7 +499,7 @@ impl GitDagWorker {
 }
 
 impl DagWorker for GitDagWorker {
-    fn on_fork(&mut self, key: &SessionRoutingKey, msg: &ForkMessageV2, created_at: DateTime<Utc>) {
+    fn on_fork(&mut self, key: &SessionRoutingKey, msg: &ForkMessage, created_at: DateTime<Utc>) {
         let SessionMessageKind::Fork { agent_name } = &key.kind else {
             return;
         };
@@ -579,7 +579,7 @@ impl DagWorker for GitDagWorker {
     fn on_promote(
         &mut self,
         key: &SessionRoutingKey,
-        _msg: &PromoteMessageV2,
+        _msg: &PromoteMessage,
         created_at: DateTime<Utc>,
     ) {
         let SessionMessageKind::Promote { agent_name } = &key.kind else {
@@ -1085,7 +1085,7 @@ mod tests {
     use std::process::Command;
     use vlinder_core::domain::{
         Agent, AgentName, BranchId, CompleteMessage, ContainerId, DagNodeId, DataMessageKind,
-        DataRoutingKey, ForkMessageV2, HarnessType, InMemoryRegistry, InMemorySecretStore,
+        DataRoutingKey, ForkMessage, HarnessType, InMemoryRegistry, InMemorySecretStore,
         InvokeDiagnostics, InvokeMessage, MessageId, RuntimeDiagnostics, RuntimeInfo, RuntimeType,
         SecretStore, SessionId, SessionRoutingKey, SubmissionId,
     };
@@ -1602,15 +1602,15 @@ mod tests {
     // --- Checkpoint tests (ADR 111) ---
 
     // ========================================================================
-    // Fork message tests (v2 path)
+    // Fork message tests
     // ========================================================================
 
-    fn test_fork_v2(
+    fn test_fork(
         agent_name: &str,
         branch_name: &str,
         fork_point: &str,
         epoch_secs: i64,
-    ) -> (SessionRoutingKey, ForkMessageV2, DateTime<Utc>) {
+    ) -> (SessionRoutingKey, ForkMessage, DateTime<Utc>) {
         use vlinder_core::domain::SessionMessageKind;
         let key = SessionRoutingKey {
             session: SessionId::try_from(SESSION.to_string()).unwrap(),
@@ -1619,7 +1619,7 @@ mod tests {
                 agent_name: AgentName::new(agent_name),
             },
         };
-        let msg = ForkMessageV2::new(
+        let msg = ForkMessage::new(
             branch_name.to_string(),
             DagNodeId::from(fork_point.to_string()),
         );
@@ -1634,8 +1634,8 @@ mod tests {
         // Send a complete so there's a commit on main
         send_complete(&mut worker, b"hello", 1000);
 
-        // Send a fork message via v2 path
-        let (key, msg, ft) = test_fork_v2("support-agent", "repair-branch", "fake-hash", 1001);
+        // Send a fork message
+        let (key, msg, ft) = test_fork("support-agent", "repair-branch", "fake-hash", 1001);
         worker.on_fork(&key, &msg, ft);
 
         // Verify the branch exists
@@ -1652,7 +1652,7 @@ mod tests {
 
         send_complete(&mut worker, b"hello", 1000);
 
-        let (key, msg, ft) = test_fork_v2("support-agent", "my-fork", "fake-hash", 1001);
+        let (key, msg, ft) = test_fork("support-agent", "my-fork", "fake-hash", 1001);
         worker.on_fork(&key, &msg, ft);
 
         // The fork branch should point to the same commit as main HEAD
@@ -1668,7 +1668,7 @@ mod tests {
 
         send_complete(&mut worker, b"hello", 1000);
 
-        let (key, msg, ft) = test_fork_v2("support-agent", "repair-branch", "fake-hash", 1001);
+        let (key, msg, ft) = test_fork("support-agent", "repair-branch", "fake-hash", 1001);
         worker.on_fork(&key, &msg, ft);
 
         // The timelines/ dir should have both 'main' and 'repair-branch' index files

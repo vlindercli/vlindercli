@@ -613,24 +613,24 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
                     }
                 } else if let Some(key) = fork_parse_subject(&subject) {
                     if let Ok(fork_msg) =
-                        serde_json::from_slice::<vlinder_core::domain::ForkMessageV2>(&payload)
+                        serde_json::from_slice::<vlinder_core::domain::ForkMessage>(&payload)
                     {
                         git_worker.on_fork(&key, &fork_msg, created_at);
                     } else {
                         tracing::warn!(
                             subject = subject.as_str(),
-                            "DAG git: failed to deserialize ForkMessageV2"
+                            "DAG git: failed to deserialize ForkMessage"
                         );
                     }
                 } else if let Some(key) = promote_parse_subject(&subject) {
                     if let Ok(promote_msg) =
-                        serde_json::from_slice::<vlinder_core::domain::PromoteMessageV2>(&payload)
+                        serde_json::from_slice::<vlinder_core::domain::PromoteMessage>(&payload)
                     {
                         git_worker.on_promote(&key, &promote_msg, created_at);
                     } else {
                         tracing::warn!(
                             subject = subject.as_str(),
-                            "DAG git: failed to deserialize PromoteMessageV2"
+                            "DAG git: failed to deserialize PromoteMessage"
                         );
                     }
                 } else {

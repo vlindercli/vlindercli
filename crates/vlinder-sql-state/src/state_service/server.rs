@@ -699,7 +699,7 @@ impl StateService for StateServiceServer {
             },
         };
 
-        let msg = vlinder_core::domain::ForkMessageV2 {
+        let msg = vlinder_core::domain::ForkMessage {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             branch_name: req.branch_name,
             fork_point: vlinder_core::domain::DagNodeId::from(req.fork_point),
@@ -744,7 +744,7 @@ impl StateService for StateServiceServer {
             },
         };
 
-        let msg = vlinder_core::domain::PromoteMessageV2 {
+        let msg = vlinder_core::domain::PromoteMessage {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             branch_id: vlinder_core::domain::BranchId::from(req.branch_id),
         };

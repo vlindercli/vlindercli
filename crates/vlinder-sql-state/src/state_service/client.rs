@@ -538,7 +538,7 @@ impl DagStore for GrpcStateClient {
         created_at: chrono::DateTime<chrono::Utc>,
         state: &vlinder_core::domain::Snapshot,
         key: &vlinder_core::domain::SessionRoutingKey,
-        msg: &vlinder_core::domain::ForkMessageV2,
+        msg: &vlinder_core::domain::ForkMessage,
     ) -> Result<(), String> {
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot: {e}"))?;
@@ -582,7 +582,7 @@ impl DagStore for GrpcStateClient {
         created_at: chrono::DateTime<chrono::Utc>,
         state: &vlinder_core::domain::Snapshot,
         key: &vlinder_core::domain::SessionRoutingKey,
-        msg: &vlinder_core::domain::PromoteMessageV2,
+        msg: &vlinder_core::domain::PromoteMessage,
     ) -> Result<(), String> {
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot: {e}"))?;

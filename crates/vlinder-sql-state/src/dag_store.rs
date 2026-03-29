@@ -1042,7 +1042,7 @@ impl DagStore for SqliteDagStore {
         created_at: chrono::DateTime<chrono::Utc>,
         state: &vlinder_core::domain::Snapshot,
         key: &vlinder_core::domain::SessionRoutingKey,
-        msg: &vlinder_core::domain::ForkMessageV2,
+        msg: &vlinder_core::domain::ForkMessage,
     ) -> Result<(), String> {
         use crate::models::{NewDagNode, NewForkNode};
         use crate::schema::{dag_nodes, fork_nodes};
@@ -1107,7 +1107,7 @@ impl DagStore for SqliteDagStore {
         created_at: chrono::DateTime<chrono::Utc>,
         state: &vlinder_core::domain::Snapshot,
         key: &vlinder_core::domain::SessionRoutingKey,
-        msg: &vlinder_core::domain::PromoteMessageV2,
+        msg: &vlinder_core::domain::PromoteMessage,
     ) -> Result<(), String> {
         use crate::models::{NewDagNode, NewPromoteNode};
         use crate::schema::{dag_nodes, promote_nodes};

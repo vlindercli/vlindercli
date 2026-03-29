@@ -10,10 +10,10 @@
 use std::sync::Arc;
 
 use crate::domain::{
-    AgentName, BranchId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, ForkMessageV2,
+    AgentName, BranchId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, ForkMessage,
     HarnessType, InvokeDiagnostics, InvokeMessage, JobId, JobStatus, MessageId, MessageQueue,
-    MessageType, PromoteMessageV2, Registry, ResourceId, SessionId, SessionMessageKind,
-    SessionRoutingKey, SessionStartMessageV2, SubmissionId,
+    MessageType, PromoteMessage, Registry, ResourceId, SessionId, SessionMessageKind,
+    SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
 
 /// Common harness operations shared across all harness types.
@@ -244,14 +244,11 @@ impl Harness for CoreHarness {
                 agent_name: AgentName::new(agent_name),
             },
         };
-        let msg = SessionStartMessageV2::new();
-        let branch_id = self
-            .queue
-            .send_session_start_v2(key, msg)
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Failed to send session start message");
-                BranchId::from(1)
-            });
+        let msg = SessionStartMessage::new();
+        let branch_id = self.queue.send_session_start(key, msg).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to send session start message");
+            BranchId::from(1)
+        });
 
         (session_id, branch_id)
     }
@@ -314,10 +311,10 @@ impl Harness for CoreHarness {
                 agent_name: params.agent_name,
             },
         };
-        let msg = ForkMessageV2::new(params.branch_name, params.fork_point);
+        let msg = ForkMessage::new(params.branch_name, params.fork_point);
 
         self.queue
-            .send_fork_v2(key, msg)
+            .send_fork(key, msg)
             .map_err(|e| format!("queue error: {e}"))
     }
 
@@ -334,10 +331,10 @@ impl Harness for CoreHarness {
                 agent_name: params.agent_name,
             },
         };
-        let msg = PromoteMessageV2::new(timeline);
+        let msg = PromoteMessage::new(timeline);
 
         self.queue
-            .send_promote_v2(key, msg)
+            .send_promote(key, msg)
             .map_err(|e| format!("queue error: {e}"))
     }
 }

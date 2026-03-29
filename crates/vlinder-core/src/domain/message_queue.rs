@@ -10,9 +10,9 @@
 //! `AckFn` acknowledges successful processing.
 
 use super::{
-    AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, ForkMessageV2, HarnessType,
-    InvokeMessage, Operation, PromoteMessageV2, RequestMessage, ResourceId, ResponseMessage,
-    Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessageV2, SubmissionId,
+    AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, ForkMessage, HarnessType,
+    InvokeMessage, Operation, PromoteMessage, RequestMessage, ResourceId, ResponseMessage,
+    Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
 use std::fmt;
 
@@ -108,20 +108,16 @@ pub trait MessageQueue {
     // -------------------------------------------------------------------------
 
     /// Send a fork on the session plane.
-    fn send_fork_v2(&self, key: SessionRoutingKey, msg: ForkMessageV2) -> Result<(), QueueError>;
+    fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError>;
 
     /// Send a promote on the session plane.
-    fn send_promote_v2(
-        &self,
-        key: SessionRoutingKey,
-        msg: PromoteMessageV2,
-    ) -> Result<(), QueueError>;
+    fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError>;
 
     /// Start a session on the session plane.
-    fn send_session_start_v2(
+    fn send_session_start(
         &self,
         key: SessionRoutingKey,
-        msg: SessionStartMessageV2,
+        msg: SessionStartMessage,
     ) -> Result<super::BranchId, QueueError>;
 
     // -------------------------------------------------------------------------
