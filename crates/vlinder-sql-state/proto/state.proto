@@ -11,7 +11,6 @@ service StateService {
   rpc Ping(PingRequest) returns (SemVer);
 
   // DagStore trait methods
-  rpc InsertNode(InsertNodeRequest) returns (InsertNodeResponse);
   rpc GetNode(GetNodeRequest) returns (GetNodeResponse);
   rpc GetSessionNodes(GetSessionNodesRequest) returns (GetSessionNodesResponse);
   rpc GetChildren(GetChildrenRequest) returns (GetChildrenResponse);
@@ -94,12 +93,6 @@ message DagNode {
 // =============================================================================
 // RPC Messages
 // =============================================================================
-
-message InsertNodeRequest { DagNode node = 1; }
-message InsertNodeResponse {
-  bool success = 1;
-  optional string error = 2;
-}
 
 message GetNodeRequest { string hash = 1; }
 message GetNodeResponse { optional DagNode node = 1; }

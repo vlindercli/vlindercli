@@ -14,13 +14,13 @@ use super::proto::{
     GetSessionByNameRequest, GetSessionNodesRequest, GetSessionNodesResponse, GetSessionRequest,
     GetSessionResponse, InsertCompleteNodeRequest, InsertCompleteNodeResponse,
     InsertForkNodeRequest, InsertForkNodeResponse, InsertInvokeNodeRequest,
-    InsertInvokeNodeResponse, InsertNodeRequest, InsertNodeResponse, InsertPromoteNodeRequest,
-    InsertPromoteNodeResponse, InsertRequestNodeRequest, InsertRequestNodeResponse,
-    InsertResponseNodeRequest, InsertResponseNodeResponse, InvokeNodeProto,
-    LatestNodeOnBranchRequest, LatestNodeOnBranchResponse, ListSessionsRequest,
-    ListSessionsResponse, PingRequest, RenameBranchRequest, RenameBranchResponse, RequestNodeProto,
-    ResponseNodeProto, SealBranchRequest, SealBranchResponse, SemVer,
-    UpdateSessionDefaultBranchRequest, UpdateSessionDefaultBranchResponse,
+    InsertInvokeNodeResponse, InsertPromoteNodeRequest, InsertPromoteNodeResponse,
+    InsertRequestNodeRequest, InsertRequestNodeResponse, InsertResponseNodeRequest,
+    InsertResponseNodeResponse, InvokeNodeProto, LatestNodeOnBranchRequest,
+    LatestNodeOnBranchResponse, ListSessionsRequest, ListSessionsResponse, PingRequest,
+    RenameBranchRequest, RenameBranchResponse, RequestNodeProto, ResponseNodeProto,
+    SealBranchRequest, SealBranchResponse, SemVer, UpdateSessionDefaultBranchRequest,
+    UpdateSessionDefaultBranchResponse,
 };
 use vlinder_core::domain::{DagNodeId, DagStore, MessageType, SessionId};
 
@@ -48,31 +48,6 @@ impl StateService for StateServiceServer {
             minor: 0,
             patch: 1,
         }))
-    }
-
-    async fn insert_node(
-        &self,
-        request: Request<InsertNodeRequest>,
-    ) -> Result<Response<InsertNodeResponse>, Status> {
-        let req = request.into_inner();
-        let proto_node = req
-            .node
-            .ok_or_else(|| Status::invalid_argument("missing node"))?;
-
-        let node = proto_node
-            .try_into()
-            .map_err(|e: String| Status::invalid_argument(e))?;
-
-        match self.store.insert_node(&node) {
-            Ok(()) => Ok(Response::new(InsertNodeResponse {
-                success: true,
-                error: None,
-            })),
-            Err(e) => Ok(Response::new(InsertNodeResponse {
-                success: false,
-                error: Some(e),
-            })),
-        }
     }
 
     async fn get_node(

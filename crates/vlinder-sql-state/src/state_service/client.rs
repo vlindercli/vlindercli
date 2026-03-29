@@ -43,26 +43,6 @@ pub fn ping_state_service(addr: &str) -> Option<(u32, u32, u32)> {
 }
 
 impl DagStore for GrpcStateClient {
-    fn insert_node(&self, node: &DagNode) -> Result<(), String> {
-        let proto_node: proto::DagNode = node.into();
-        let request = proto::InsertNodeRequest {
-            node: Some(proto_node),
-        };
-
-        let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_node(request).await })
-            .map_err(|e| e.to_string())?;
-
-        let resp = response.into_inner();
-        if resp.success {
-            Ok(())
-        } else {
-            Err(resp.error.unwrap_or_else(|| "unknown error".to_string()))
-        }
-    }
-
     fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
         let request = proto::GetNodeRequest {
             hash: hash.to_string(),

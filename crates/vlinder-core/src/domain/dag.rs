@@ -257,9 +257,6 @@ pub trait DagWorker: Send {
 
 /// Persistence layer for DAG nodes.
 pub trait DagStore: Send + Sync {
-    /// Insert a node. Idempotent (content-addressed, INSERT OR IGNORE).
-    fn insert_node(&self, node: &DagNode) -> Result<(), String>;
-
     /// Insert a typed invoke node. Writes to `dag_nodes` + `invoke_nodes`.
     fn insert_invoke_node(
         &self,
@@ -516,16 +513,16 @@ impl Default for InMemoryDagStore {
     }
 }
 
-impl DagStore for InMemoryDagStore {
-    fn insert_node(&self, node: &DagNode) -> Result<(), String> {
+impl InMemoryDagStore {
+    fn insert_node(&self, node: &DagNode) {
         let mut nodes = self.nodes.lock().unwrap();
-        // Idempotent: skip if ID already exists
         if !nodes.iter().any(|n| n.id == node.id) {
             nodes.push(node.clone());
         }
-        Ok(())
     }
+}
 
+impl DagStore for InMemoryDagStore {
     fn insert_invoke_node(
         &self,
         dag_id: &super::DagNodeId,
@@ -546,7 +543,8 @@ impl DagStore for InMemoryDagStore {
             branch: key.branch,
             protocol_version: "v1".to_string(),
         };
-        self.insert_node(&node)
+        self.insert_node(&node);
+        Ok(())
     }
 
     fn insert_complete_node(
@@ -573,7 +571,8 @@ impl DagStore for InMemoryDagStore {
             branch,
             protocol_version: "v1".to_string(),
         };
-        self.insert_node(&node)
+        self.insert_node(&node);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -603,7 +602,8 @@ impl DagStore for InMemoryDagStore {
             branch,
             protocol_version: "v1".to_string(),
         };
-        self.insert_node(&node)
+        self.insert_node(&node);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -633,7 +633,8 @@ impl DagStore for InMemoryDagStore {
             branch,
             protocol_version: "v1".to_string(),
         };
-        self.insert_node(&node)
+        self.insert_node(&node);
+        Ok(())
     }
 
     fn get_complete_node(

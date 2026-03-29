@@ -714,9 +714,6 @@ mod tests {
         // Use a store that always fails on insert
         struct FailStore;
         impl DagStore for FailStore {
-            fn insert_node(&self, _: &DagNode) -> Result<(), String> {
-                Err("simulated failure".to_string())
-            }
             fn get_node(&self, _: &crate::domain::DagNodeId) -> Result<Option<DagNode>, String> {
                 Ok(None)
             }

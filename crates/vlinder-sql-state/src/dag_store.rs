@@ -229,34 +229,6 @@ struct SessionSummaryRow {
 }
 
 impl DagStore for SqliteDagStore {
-    fn insert_node(&self, node: &DagNode) -> Result<(), String> {
-        use crate::models::NewDagNode;
-        use crate::schema::dag_nodes;
-
-        let mut conn = self.conn.lock().expect("db connection lock poisoned");
-
-        let snapshot_json = serde_json::to_string(&node.state)
-            .map_err(|e| format!("serialize snapshot failed: {e}"))?;
-        let created_at_str = node.created_at.to_rfc3339();
-
-        diesel::insert_or_ignore_into(dag_nodes::table)
-            .values(&NewDagNode {
-                hash: node.id.as_str(),
-                parent_hash: node.parent_id.as_str(),
-                message_type: node.message_type().as_str(),
-                session_id: node.session_id().as_str(),
-                submission_id: node.submission_id().as_str(),
-                created_at: &created_at_str,
-                protocol_version: node.protocol_version(),
-                branch_id: node.branch_id().as_i64(),
-                snapshot: &snapshot_json,
-            })
-            .execute(&mut *conn)
-            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
-
-        Ok(())
-    }
-
     fn insert_invoke_node(
         &self,
         dag_id: &DagNodeId,
@@ -1094,6 +1066,38 @@ impl DagStore for SqliteDagStore {
             .map_err(|e| format!("get_session_by_name failed: {e}"))?;
 
         Ok(row.map(session_row_to_domain))
+    }
+}
+
+#[cfg(test)]
+impl SqliteDagStore {
+    /// Test-only helper: insert a raw `DagNode` into the chain index.
+    fn insert_node(&self, node: &DagNode) -> Result<(), String> {
+        use crate::models::NewDagNode;
+        use crate::schema::dag_nodes;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let snapshot_json = serde_json::to_string(&node.state)
+            .map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let created_at_str = node.created_at.to_rfc3339();
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: node.id.as_str(),
+                parent_hash: node.parent_id.as_str(),
+                message_type: node.message_type().as_str(),
+                session_id: node.session_id().as_str(),
+                submission_id: node.submission_id().as_str(),
+                created_at: &created_at_str,
+                protocol_version: node.protocol_version(),
+                branch_id: node.branch_id().as_i64(),
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        Ok(())
     }
 }
 
