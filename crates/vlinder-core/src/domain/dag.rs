@@ -6,7 +6,7 @@
 //! Each `DagNode` captures one message:
 //! - `hash`: SHA-256(payload || `parent_hash` || `message_type` || diagnostics) — Merkle chain
 //! - `parent_hash`: previous node in the same session (empty string for root)
-//! - `message_type`: Invoke, Request, Response, Complete, or Delegate
+//! - `message_type`: Invoke, Request, Response, Complete, Fork, Promote
 //! - `from` / `to`: sender and receiver (parsed from NATS subject)
 //! - `session_id`: groups nodes into a linear chain per session
 //! - `submission_id`: groups all messages for one user request
@@ -61,7 +61,6 @@ pub enum MessageType {
     Request,
     Response,
     Complete,
-    Delegate,
     Fork,
     Promote,
 }
@@ -73,7 +72,6 @@ impl MessageType {
             MessageType::Request => "request",
             MessageType::Response => "response",
             MessageType::Complete => "complete",
-            MessageType::Delegate => "delegate",
             MessageType::Fork => "fork",
             MessageType::Promote => "promote",
         }
@@ -84,8 +82,7 @@ impl MessageType {
             MessageType::Invoke
             | MessageType::Request
             | MessageType::Response
-            | MessageType::Complete
-            | MessageType::Delegate => Plane::Data,
+            | MessageType::Complete => Plane::Data,
             MessageType::Fork | MessageType::Promote => Plane::Session,
         }
     }
@@ -102,7 +99,6 @@ impl std::str::FromStr for MessageType {
             "req" | "request" => Ok(MessageType::Request),
             "res" | "response" => Ok(MessageType::Response),
             "complete" => Ok(MessageType::Complete),
-            "delegate" => Ok(MessageType::Delegate),
             "fork" => Ok(MessageType::Fork),
             "promote" => Ok(MessageType::Promote),
             _ => Err(format!("unknown message type: {s}")),
@@ -867,7 +863,6 @@ mod tests {
             MessageType::Request,
             MessageType::Response,
             MessageType::Complete,
-            MessageType::Delegate,
             MessageType::Fork,
             MessageType::Promote,
         ] {
