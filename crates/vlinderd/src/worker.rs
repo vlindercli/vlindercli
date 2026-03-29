@@ -57,6 +57,7 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
         WorkerRole::State => run_state_worker(&config, shutdown),
         #[cfg(any(feature = "ollama", feature = "openrouter"))]
         WorkerRole::Catalog => run_catalog_worker(&config, shutdown),
+        WorkerRole::Infra => run_infra_worker(&config, shutdown),
         WorkerRole::DagGit => run_dag_git_worker(&config, shutdown),
         WorkerRole::SessionViewer => run_session_viewer_worker(&config, shutdown),
     }
@@ -160,6 +161,194 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
             tracing::error!(?e, "Registry server error");
         }
     });
+}
+
+fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
+    use crate::config::dag_db_path;
+    use vlinder_core::domain::{
+        AgentName, AgentState, AgentStatus, DeleteAgentMessage, DeployAgentMessage,
+        RegistryRepository,
+    };
+    use vlinder_nats::{delete_agent_parse_subject, deploy_agent_parse_subject, NatsQueue};
+    use vlinder_sql_state::SqliteDagStore;
+
+    let nats = NatsQueue::connect(&config.queue.nats_config())
+        .expect("Failed to connect to NATS for infra worker");
+
+    // Open the shared DAG database for agent state management
+    let db_path = dag_db_path();
+    let store = Arc::new(
+        SqliteDagStore::open(&db_path)
+            .unwrap_or_else(|e| panic!("Failed to open state database: {e}")),
+    );
+    let repo: Arc<dyn RegistryRepository> = Arc::clone(&store) as _;
+
+    // Connect to registry for agent registration
+    let registry_addr = grpc_registry_addr(config);
+    let registry: Arc<dyn vlinder_core::domain::Registry> = Arc::new(
+        vlinder_sql_registry::registry_service::GrpcRegistryClient::connect(&registry_addr)
+            .expect("Failed to connect to registry"),
+    );
+
+    tracing::info!("Infra plane worker ready");
+
+    let js = nats.jetstream().clone();
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
+    let consumer = rt.block_on(async {
+        let stream = js
+            .get_stream("VLINDER")
+            .await
+            .expect("Failed to get VLINDER stream");
+
+        stream
+            .create_consumer(async_nats::jetstream::consumer::pull::Config {
+                name: Some("infra".to_string()),
+                filter_subject: "vlinder.infra.v1.>".to_string(),
+                ack_wait: std::time::Duration::from_secs(300),
+                inactive_threshold: std::time::Duration::from_secs(300),
+                ..Default::default()
+            })
+            .await
+            .expect("Failed to create infra consumer")
+    });
+
+    while !shutdown.load(Ordering::Relaxed) {
+        let msg_result = rt.block_on(async {
+            use futures::StreamExt;
+            let mut messages = consumer
+                .fetch()
+                .max_messages(1)
+                .expires(std::time::Duration::from_millis(100))
+                .messages()
+                .await
+                .map_err(|e| format!("fetch failed: {e}"))?;
+
+            match messages.next().await {
+                Some(Ok(msg)) => Ok(Some(msg)),
+                Some(Err(e)) => Err(format!("message error: {e}")),
+                None => Ok(None),
+            }
+        });
+
+        match msg_result {
+            Ok(Some(msg)) => {
+                let subject = msg.subject.to_string();
+                let payload = msg.payload.to_vec();
+
+                if let Some(_key) = deploy_agent_parse_subject(&subject) {
+                    match serde_json::from_slice::<DeployAgentMessage>(&payload) {
+                        Ok(deploy_msg) => {
+                            let agent_name = deploy_msg.manifest.name.clone();
+                            tracing::info!(agent = %agent_name, "Processing deploy-agent");
+
+                            // 1. Register agent via registry (validates manifest)
+                            let registry_clone = Arc::clone(&registry);
+                            let manifest = deploy_msg.manifest.clone();
+                            let reg_result = std::thread::spawn(move || {
+                                registry_clone.register_manifest(manifest)
+                            })
+                            .join()
+                            .unwrap_or_else(|_| {
+                                Err(vlinder_core::domain::RegistrationError::Persistence(
+                                    "registry thread panicked".to_string(),
+                                ))
+                            });
+
+                            match reg_result {
+                                Ok(_agent) => {
+                                    // 2. Create initial state: Registered → Live
+                                    let name = AgentName::new(&agent_name);
+                                    let state = AgentState::registered(name.clone());
+                                    if let Err(e) = repo.upsert_agent_state(&state) {
+                                        tracing::warn!(error = %e, "Failed to set Registered state");
+                                    }
+
+                                    let live = state.transition(AgentStatus::Live, None);
+                                    if let Err(e) = repo.upsert_agent_state(&live) {
+                                        tracing::warn!(error = %e, "Failed to set Live state");
+                                    }
+
+                                    tracing::info!(agent = %agent_name, "Agent deployed: Live");
+                                }
+                                Err(e) => {
+                                    // Registration failed — set Failed state
+                                    let name = AgentName::new(&agent_name);
+                                    let state = AgentState::registered(name);
+                                    let failed =
+                                        state.transition(AgentStatus::Failed, Some(e.to_string()));
+                                    if let Err(e2) = repo.upsert_agent_state(&failed) {
+                                        tracing::warn!(error = %e2, "Failed to set Failed state");
+                                    }
+                                    tracing::warn!(
+                                        agent = %agent_name,
+                                        error = %e,
+                                        "Agent deploy failed"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                subject = subject.as_str(),
+                                error = %e,
+                                "Failed to deserialize DeployAgentMessage"
+                            );
+                        }
+                    }
+                } else if let Some(_key) = delete_agent_parse_subject(&subject) {
+                    match serde_json::from_slice::<DeleteAgentMessage>(&payload) {
+                        Ok(delete_msg) => {
+                            let agent_name = delete_msg.agent.as_str().to_string();
+                            tracing::info!(agent = %agent_name, "Processing delete-agent");
+
+                            let name = AgentName::new(&agent_name);
+                            let state = AgentState::registered(name);
+                            let deleting = state.transition(AgentStatus::Deleting, None);
+                            let _ = repo.upsert_agent_state(&deleting);
+
+                            match registry.delete_agent(&agent_name) {
+                                Ok(true) => {
+                                    tracing::info!(agent = %agent_name, "Agent deleted");
+                                }
+                                Ok(false) => {
+                                    tracing::warn!(agent = %agent_name, "Agent not found for deletion");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        agent = %agent_name,
+                                        error = %e,
+                                        "Agent delete failed"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                subject = subject.as_str(),
+                                error = %e,
+                                "Failed to deserialize DeleteAgentMessage"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        subject = subject.as_str(),
+                        "Infra worker: unrecognized subject"
+                    );
+                }
+
+                let _ = rt.block_on(async { msg.ack().await });
+            }
+            Ok(None) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Infra worker fetch error");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
 }
 
 fn run_secret_worker(config: &Config, shutdown: &AtomicBool) {
@@ -510,8 +699,9 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
     use vlinder_core::domain::DagWorker;
     use vlinder_git_dag::GitDagWorker;
     use vlinder_nats::{
-        complete_parse_subject, fork_parse_subject, invoke_parse_subject, promote_parse_subject,
-        request_parse_subject, response_parse_subject, NatsQueue,
+        complete_parse_subject, delete_agent_parse_subject, deploy_agent_parse_subject,
+        fork_parse_subject, invoke_parse_subject, promote_parse_subject, request_parse_subject,
+        response_parse_subject, NatsQueue,
     };
 
     let nats = NatsQueue::connect(&config.queue.nats_config()).expect("Failed to connect to NATS");
@@ -644,6 +834,11 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
                             "DAG git: failed to deserialize PromoteMessage"
                         );
                     }
+                } else if deploy_agent_parse_subject(&subject).is_some()
+                    || delete_agent_parse_subject(&subject).is_some()
+                {
+                    // Infra plane — acknowledged, no git subtree yet
+                    tracing::debug!(subject = subject.as_str(), "DAG git: infra plane event");
                 } else {
                     tracing::warn!(
                         subject = subject.as_str(),

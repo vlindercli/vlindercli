@@ -213,6 +213,8 @@ pub struct WorkerCounts {
     pub inference: InferenceWorkerCounts,
     /// Storage service workers
     pub storage: StorageWorkerCounts,
+    /// Infra plane worker — processes deploy/delete agent messages
+    pub infra: u32,
     /// DAG git worker (singleton recommended — see ADR 078)
     pub dag_git: u32,
     /// Session viewer worker
@@ -358,6 +360,7 @@ impl Default for WorkerCounts {
             agent: AgentWorkerCounts::default(),
             inference: InferenceWorkerCounts::default(),
             storage: StorageWorkerCounts::default(),
+            infra: 1,
             dag_git: 1,
             session_viewer: 1,
         }
@@ -551,6 +554,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("VLINDER_WORKERS_STORAGE_VECTOR_SQLITE") {
             self.distributed.workers.storage.vector.sqlite = v.parse().unwrap_or(1);
+        }
+        if let Ok(v) = std::env::var("VLINDER_WORKERS_INFRA") {
+            self.distributed.workers.infra = v.parse().unwrap_or(1);
         }
         if let Ok(v) = std::env::var("VLINDER_WORKERS_DAG_GIT") {
             self.distributed.workers.dag_git = v.parse().unwrap_or(1);

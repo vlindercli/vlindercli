@@ -194,6 +194,9 @@ impl Supervisor {
             counts.storage.vector.sqlite,
         );
 
+        // Infra plane worker
+        spawn_n(&mut workers, WorkerRole::Infra, counts.infra);
+
         // DAG git worker
         spawn_n(&mut workers, WorkerRole::DagGit, counts.dag_git);
 
