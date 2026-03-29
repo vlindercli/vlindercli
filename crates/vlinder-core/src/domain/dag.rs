@@ -52,6 +52,8 @@ pub enum Plane {
     Data,
     /// Compensating transactions: fork, promote.
     Session,
+    /// Provisioning: deploy, delete.
+    Infra,
 }
 
 /// The message types in the Vlinder protocol (ADR 044).
@@ -63,6 +65,8 @@ pub enum MessageType {
     Complete,
     Fork,
     Promote,
+    DeployAgent,
+    DeleteAgent,
 }
 
 impl MessageType {
@@ -74,6 +78,8 @@ impl MessageType {
             MessageType::Complete => "complete",
             MessageType::Fork => "fork",
             MessageType::Promote => "promote",
+            MessageType::DeployAgent => "deploy-agent",
+            MessageType::DeleteAgent => "delete-agent",
         }
     }
 
@@ -84,6 +90,7 @@ impl MessageType {
             | MessageType::Response
             | MessageType::Complete => Plane::Data,
             MessageType::Fork | MessageType::Promote => Plane::Session,
+            MessageType::DeployAgent | MessageType::DeleteAgent => Plane::Infra,
         }
     }
 }
@@ -101,6 +108,8 @@ impl std::str::FromStr for MessageType {
             "complete" => Ok(MessageType::Complete),
             "fork" => Ok(MessageType::Fork),
             "promote" => Ok(MessageType::Promote),
+            "deploy-agent" => Ok(MessageType::DeployAgent),
+            "delete-agent" => Ok(MessageType::DeleteAgent),
             _ => Err(format!("unknown message type: {s}")),
         }
     }
@@ -253,6 +262,24 @@ pub trait DagWorker: Send {
         _created_at: DateTime<Utc>,
     ) {
     }
+
+    /// Persist a deploy-agent message (infra-plane path).
+    fn on_deploy_agent(
+        &mut self,
+        _key: &super::InfraRoutingKey,
+        _msg: &super::DeployAgentMessage,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
+
+    /// Persist a delete-agent message (infra-plane path).
+    fn on_delete_agent(
+        &mut self,
+        _key: &super::InfraRoutingKey,
+        _msg: &super::DeleteAgentMessage,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
 }
 
 /// Persistence layer for DAG nodes.
@@ -366,6 +393,34 @@ pub trait DagStore: Send + Sync {
     ) -> Result<(), String> {
         let _ = (dag_id, parent_id, created_at, state, key, msg);
         Err("insert_promote_node not implemented".to_string())
+    }
+
+    /// Insert a typed deploy-agent node. Writes to `dag_nodes` + `deploy_agent_nodes`.
+    fn insert_deploy_agent_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        key: &super::InfraRoutingKey,
+        msg: &super::DeployAgentMessage,
+    ) -> Result<(), String> {
+        let _ = (dag_id, parent_id, created_at, state, key, msg);
+        Err("insert_deploy_agent_node not implemented".to_string())
+    }
+
+    /// Insert a typed delete-agent node. Writes to `dag_nodes` + `delete_agent_nodes`.
+    fn insert_delete_agent_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        key: &super::InfraRoutingKey,
+        msg: &super::DeleteAgentMessage,
+    ) -> Result<(), String> {
+        let _ = (dag_id, parent_id, created_at, state, key, msg);
+        Err("insert_delete_agent_node not implemented".to_string())
     }
 
     /// Retrieve a node by its content-addressed ID.

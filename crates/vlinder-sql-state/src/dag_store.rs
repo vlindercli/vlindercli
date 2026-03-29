@@ -61,11 +61,11 @@ impl SqliteDagStore {
                  hash TEXT PRIMARY KEY,
                  parent_hash TEXT NOT NULL,
                  message_type TEXT NOT NULL,
-                 session_id TEXT NOT NULL REFERENCES sessions(id),
-                 submission_id TEXT NOT NULL,
+                 session_id TEXT REFERENCES sessions(id),
+                 submission_id TEXT,
+                 branch_id INTEGER REFERENCES branches(id),
                  created_at TEXT NOT NULL,
                  protocol_version TEXT NOT NULL DEFAULT '',
-                 branch_id INTEGER NOT NULL REFERENCES branches(id),
                  snapshot TEXT NOT NULL DEFAULT '{}'
              );
              CREATE INDEX IF NOT EXISTS idx_dag_nodes_session
@@ -156,6 +156,17 @@ impl SqliteDagStore {
                  model_path TEXT NOT NULL,
                  digest TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS deploy_agent_nodes (
+                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
+                 agent_name TEXT NOT NULL,
+                 manifest_json TEXT NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE
+             );
+             CREATE TABLE IF NOT EXISTS delete_agent_nodes (
+                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
+                 agent_name TEXT NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE
+             );
              CREATE TABLE IF NOT EXISTS agent_states (
                  agent_name TEXT PRIMARY KEY REFERENCES agents(name),
                  state TEXT NOT NULL DEFAULT 'registered',
@@ -222,11 +233,14 @@ fn dag_node_row_to_domain(r: crate::models::DagNodeRow) -> DagNode {
         .unwrap_or_default();
     let state: vlinder_core::domain::Snapshot = serde_json::from_str(&r.snapshot)
         .unwrap_or_else(|_| vlinder_core::domain::Snapshot::empty());
-    let session = SessionId::try_from(r.session_id).unwrap_or_else(|_| {
-        SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string()).unwrap()
-    });
-    let branch = vlinder_core::domain::BranchId::from(r.branch_id);
-    let submission = vlinder_core::domain::SubmissionId::from(r.submission_id);
+    let session = r
+        .session_id
+        .and_then(|s| SessionId::try_from(s).ok())
+        .unwrap_or_else(|| {
+            SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string()).unwrap()
+        });
+    let branch = vlinder_core::domain::BranchId::from(r.branch_id.unwrap_or(0));
+    let submission = vlinder_core::domain::SubmissionId::from(r.submission_id.unwrap_or_default());
 
     DagNode {
         id: DagNodeId::from(r.hash),
@@ -289,11 +303,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "invoke",
-                session_id: key.session.as_str(),
-                submission_id: key.submission.as_str(),
+                session_id: Some(key.session.as_str()),
+                submission_id: Some(key.submission.as_str()),
+                branch_id: Some(key.branch.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: key.branch.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -343,11 +357,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "complete",
-                session_id: session.as_str(),
-                submission_id: submission.as_str(),
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: branch.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -400,11 +414,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "request",
-                session_id: session.as_str(),
-                submission_id: submission.as_str(),
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: branch.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -460,11 +474,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "response",
-                session_id: session.as_str(),
-                submission_id: submission.as_str(),
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: branch.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -689,20 +703,26 @@ impl DagStore for SqliteDagStore {
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
 
-        let row: Option<(crate::models::InvokeNodeRow, String, String, i64, String)> =
-            invoke_nodes::table
-                .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(invoke_nodes::dag_hash)))
-                .filter(invoke_nodes::dag_hash.eq(dag_hash.as_str()))
-                .select((
-                    crate::models::InvokeNodeRow::as_select(),
-                    dag_nodes::session_id,
-                    dag_nodes::submission_id,
-                    dag_nodes::branch_id,
-                    dag_nodes::parent_hash,
-                ))
-                .first(&mut *conn)
-                .optional()
-                .map_err(|e| format!("get_invoke_node failed: {e}"))?;
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            crate::models::InvokeNodeRow,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            String,
+        )> = invoke_nodes::table
+            .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(invoke_nodes::dag_hash)))
+            .filter(invoke_nodes::dag_hash.eq(dag_hash.as_str()))
+            .select((
+                crate::models::InvokeNodeRow::as_select(),
+                dag_nodes::session_id,
+                dag_nodes::submission_id,
+                dag_nodes::branch_id,
+                dag_nodes::parent_hash,
+            ))
+            .first(&mut *conn)
+            .optional()
+            .map_err(|e| format!("get_invoke_node failed: {e}"))?;
 
         let result = row.map(|(inv, session_id, submission_id, branch, parent_hash)| {
             let harness: vlinder_core::domain::HarnessType = inv
@@ -715,9 +735,13 @@ impl DagStore for SqliteDagStore {
                 .unwrap_or(vlinder_core::domain::RuntimeType::Container);
 
             let key = vlinder_core::domain::DataRoutingKey {
-                session: SessionId::try_from(session_id).unwrap_or_else(|_| SessionId::new()),
-                branch: BranchId::from(branch),
-                submission: vlinder_core::domain::SubmissionId::from(submission_id),
+                session: session_id
+                    .and_then(|s| SessionId::try_from(s).ok())
+                    .unwrap_or_else(SessionId::new),
+                branch: BranchId::from(branch.unwrap_or(0)),
+                submission: vlinder_core::domain::SubmissionId::from(
+                    submission_id.unwrap_or_default(),
+                ),
                 kind: vlinder_core::domain::DataMessageKind::Invoke {
                     harness,
                     runtime,
@@ -1009,11 +1033,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "fork",
-                session_id: key.session.as_str(),
-                submission_id: key.submission.as_str(),
+                session_id: Some(key.session.as_str()),
+                submission_id: Some(key.submission.as_str()),
+                branch_id: Some(branch_id.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: branch_id.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -1059,11 +1083,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "promote",
-                session_id: key.session.as_str(),
-                submission_id: key.submission.as_str(),
+                session_id: Some(key.session.as_str()),
+                submission_id: Some(key.submission.as_str()),
+                branch_id: Some(msg.branch_id.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: msg.branch_id.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -1115,11 +1139,11 @@ impl SqliteDagStore {
                 hash: node.id.as_str(),
                 parent_hash: node.parent_id.as_str(),
                 message_type: node.message_type().as_str(),
-                session_id: node.session_id().as_str(),
-                submission_id: node.submission_id().as_str(),
+                session_id: Some(node.session_id().as_str()),
+                submission_id: Some(node.submission_id().as_str()),
+                branch_id: Some(node.branch_id().as_i64()),
                 created_at: &created_at_str,
                 protocol_version: node.protocol_version(),
-                branch_id: node.branch_id().as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)

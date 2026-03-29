@@ -8,8 +8,9 @@
 use diesel::prelude::*;
 
 use crate::schema::{
-    agent_states, agents, branches, complete_nodes, dag_nodes, fork_nodes, invoke_nodes, models,
-    promote_nodes, request_nodes, response_nodes, sessions,
+    agent_states, agents, branches, complete_nodes, dag_nodes, delete_agent_nodes,
+    deploy_agent_nodes, fork_nodes, invoke_nodes, models, promote_nodes, request_nodes,
+    response_nodes, sessions,
 };
 
 // ============================================================================
@@ -22,11 +23,11 @@ pub struct DagNodeRow {
     pub hash: String,
     pub parent_hash: String,
     pub message_type: String,
-    pub session_id: String,
-    pub submission_id: String,
+    pub session_id: Option<String>,
+    pub submission_id: Option<String>,
+    pub branch_id: Option<i64>,
     pub created_at: String,
     pub protocol_version: String,
-    pub branch_id: i64,
     pub snapshot: String,
 }
 
@@ -36,11 +37,11 @@ pub struct NewDagNode<'a> {
     pub hash: &'a str,
     pub parent_hash: &'a str,
     pub message_type: &'a str,
-    pub session_id: &'a str,
-    pub submission_id: &'a str,
+    pub session_id: Option<&'a str>,
+    pub submission_id: Option<&'a str>,
+    pub branch_id: Option<i64>,
     pub created_at: &'a str,
     pub protocol_version: &'a str,
-    pub branch_id: i64,
     pub snapshot: &'a str,
 }
 
@@ -349,4 +350,46 @@ pub struct NewAgentState<'a> {
     pub state: &'a str,
     pub updated_at: &'a str,
     pub error: Option<&'a str>,
+}
+
+// ============================================================================
+// deploy_agent_nodes (infra plane)
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = deploy_agent_nodes)]
+pub struct DeployAgentNodeRow {
+    pub dag_hash: String,
+    pub agent_name: String,
+    pub manifest_json: String,
+    pub message_id: String,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = deploy_agent_nodes)]
+pub struct NewDeployAgentNode<'a> {
+    pub dag_hash: &'a str,
+    pub agent_name: &'a str,
+    pub manifest_json: &'a str,
+    pub message_id: &'a str,
+}
+
+// ============================================================================
+// delete_agent_nodes (infra plane)
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = delete_agent_nodes)]
+pub struct DeleteAgentNodeRow {
+    pub dag_hash: String,
+    pub agent_name: String,
+    pub message_id: String,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = delete_agent_nodes)]
+pub struct NewDeleteAgentNode<'a> {
+    pub dag_hash: &'a str,
+    pub agent_name: &'a str,
+    pub message_id: &'a str,
 }

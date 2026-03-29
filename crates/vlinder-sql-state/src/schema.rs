@@ -10,11 +10,11 @@ diesel::table! {
         hash -> Text,
         parent_hash -> Text,
         message_type -> Text,
-        session_id -> Text,
-        submission_id -> Text,
+        session_id -> Nullable<Text>,
+        submission_id -> Nullable<Text>,
+        branch_id -> Nullable<BigInt>,
         created_at -> Text,
         protocol_version -> Text,
-        branch_id -> BigInt,
         snapshot -> Text,
     }
 }
@@ -134,6 +134,23 @@ diesel::table! {
 }
 
 diesel::table! {
+    deploy_agent_nodes (dag_hash) {
+        dag_hash -> Text,
+        agent_name -> Text,
+        manifest_json -> Text,
+        message_id -> Text,
+    }
+}
+
+diesel::table! {
+    delete_agent_nodes (dag_hash) {
+        dag_hash -> Text,
+        agent_name -> Text,
+        message_id -> Text,
+    }
+}
+
+diesel::table! {
     agent_states (agent_name) {
         agent_name -> Text,
         state -> Text,
@@ -159,6 +176,8 @@ diesel::joinable!(request_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(response_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(fork_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(promote_nodes -> dag_nodes (dag_hash));
+diesel::joinable!(deploy_agent_nodes -> dag_nodes (dag_hash));
+diesel::joinable!(delete_agent_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(agent_states -> agents (agent_name));
 
 diesel::allow_tables_to_appear_in_same_query!(
@@ -173,5 +192,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     sessions,
     agents,
     agent_states,
+    deploy_agent_nodes,
+    delete_agent_nodes,
     models,
 );
