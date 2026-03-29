@@ -20,9 +20,9 @@ use std::str::FromStr;
 use vlinder_core::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
     ForkMessageV2, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessageV2,
-    QueueError, RequestMessage, ResponseMessage, RoutingKey, RoutingKind, RuntimeType, Sequence,
-    ServiceBackend, ServiceType, SessionId, SessionMessageKind, SessionRoutingKey,
-    SessionStartMessageV2, SubmissionId,
+    QueueError, RequestMessage, ResponseMessage, RuntimeType, Sequence, ServiceBackend,
+    ServiceType, SessionId, SessionMessageKind, SessionRoutingKey, SessionStartMessageV2,
+    SubmissionId,
 };
 
 /// NATS queue with `JetStream` durability.
@@ -445,25 +445,17 @@ impl MessageQueue for NatsQueue {
         let SessionMessageKind::Fork { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Fork kind".into()));
         };
-        let subject = routing_key_to_subject(&RoutingKey {
-            session: key.session.clone(),
-            branch: BranchId::from(1), // fork is session-scoped, branch is placeholder
-            submission: key.submission.clone(),
-            kind: RoutingKind::Fork {
-                agent_name: agent_name.clone(),
-            },
-        });
+        let subject = fork_subject(&key, agent_name);
+        let body = serde_json::to_vec(&msg)
+            .map_err(|e| QueueError::SendFailed(format!("serialize fork: {e}")))?;
 
         self.inner.runtime.block_on(async {
             let mut headers = async_nats::HeaderMap::new();
             headers.insert("msg-id", msg.id.as_str());
-            headers.insert("session-id", key.session.as_str());
-            headers.insert("branch-name", msg.branch_name.as_str());
-            headers.insert("fork-point", msg.fork_point.as_str());
 
             self.inner
                 .jetstream
-                .publish_with_headers(subject, headers, "".into())
+                .publish_with_headers(subject, headers, body.into())
                 .await
                 .map_err(|e| QueueError::SendFailed(e.to_string()))?
                 .await
@@ -480,23 +472,17 @@ impl MessageQueue for NatsQueue {
         let SessionMessageKind::Promote { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Promote kind".into()));
         };
-        let subject = routing_key_to_subject(&RoutingKey {
-            session: key.session.clone(),
-            branch: msg.branch_id,
-            submission: key.submission.clone(),
-            kind: RoutingKind::Promote {
-                agent_name: agent_name.clone(),
-            },
-        });
+        let subject = promote_subject(&key, agent_name, msg.branch_id);
+        let body = serde_json::to_vec(&msg)
+            .map_err(|e| QueueError::SendFailed(format!("serialize promote: {e}")))?;
 
         self.inner.runtime.block_on(async {
             let mut headers = async_nats::HeaderMap::new();
             headers.insert("msg-id", msg.id.as_str());
-            headers.insert("session-id", key.session.as_str());
 
             self.inner
                 .jetstream
-                .publish_with_headers(subject, headers, "".into())
+                .publish_with_headers(subject, headers, body.into())
                 .await
                 .map_err(|e| QueueError::SendFailed(e.to_string()))?
                 .await
@@ -773,53 +759,51 @@ fn response_filter(
     )
 }
 
-/// Serialize a routing key to a NATS subject string (ADR 096 §8).
-///
-/// This is the single point of truth for `RoutingKey` → NATS subject
-/// serialization. Injectivity: distinct routing keys produce distinct
-/// subjects (verified by tests in `routing_key.rs`).
-fn routing_key_to_subject(key: &RoutingKey) -> String {
-    let prefix = format!("vlinder.{}.{}.{}", key.session, key.branch, key.submission);
-    let suffix = match &key.kind {
-        RoutingKind::Fork { agent_name } => {
-            format!("fork.{agent_name}")
-        }
-        RoutingKind::Promote { agent_name } => {
-            format!("promote.{agent_name}")
-        }
-    };
-    format!("{prefix}.{suffix}")
+/// Build a NATS subject for a fork message.
+fn fork_subject(key: &SessionRoutingKey, agent_name: &AgentName) -> String {
+    format!(
+        "vlinder.{}.1.{}.fork.{}",
+        key.session, key.submission, agent_name
+    )
 }
 
-/// Parse a NATS subject back into a `RoutingKey`.
-///
-/// Inverse of `routing_key_to_subject`. Returns `None` for subjects
-/// that don't match the `vlinder.{session}.{branch}.{submission}.{type}...` format.
-pub fn subject_to_routing_key(subject: &str) -> Option<RoutingKey> {
+/// Build a NATS subject for a promote message.
+fn promote_subject(key: &SessionRoutingKey, agent_name: &AgentName, branch_id: BranchId) -> String {
+    format!(
+        "vlinder.{}.{}.{}.promote.{}",
+        key.session, branch_id, key.submission, agent_name
+    )
+}
+
+/// Parse a fork NATS subject. Returns `SessionRoutingKey` if the subject matches.
+pub fn fork_parse_subject(subject: &str) -> Option<SessionRoutingKey> {
     let s: Vec<&str> = subject.split('.').collect();
-    if s.len() < 5 || s[0] != "vlinder" {
+    // vlinder.{session}.{branch}.{submission}.fork.{agent}
+    if s.len() != 6 || s[0] != "vlinder" || s[4] != "fork" {
         return None;
     }
-
-    let session = SessionId::try_from(s[1].to_string()).ok()?;
-    let branch = BranchId::from(s[2].parse::<i64>().unwrap_or(0));
-    let submission = SubmissionId::from(s[3].to_string());
-
-    let kind = match s[4] {
-        "fork" if s.len() == 6 => Some(RoutingKind::Fork {
+    Some(SessionRoutingKey {
+        session: SessionId::try_from(s[1].to_string()).ok()?,
+        submission: SubmissionId::from(s[3].to_string()),
+        kind: SessionMessageKind::Fork {
             agent_name: AgentName::new(s[5]),
-        }),
-        "promote" if s.len() == 6 => Some(RoutingKind::Promote {
-            agent_name: AgentName::new(s[5]),
-        }),
-        _ => None,
-    };
+        },
+    })
+}
 
-    kind.map(|kind| RoutingKey {
-        session,
-        branch,
-        submission,
-        kind,
+/// Parse a promote NATS subject. Returns `SessionRoutingKey` if the subject matches.
+pub fn promote_parse_subject(subject: &str) -> Option<SessionRoutingKey> {
+    let s: Vec<&str> = subject.split('.').collect();
+    // vlinder.{session}.{branch}.{submission}.promote.{agent}
+    if s.len() != 6 || s[0] != "vlinder" || s[4] != "promote" {
+        return None;
+    }
+    Some(SessionRoutingKey {
+        session: SessionId::try_from(s[1].to_string()).ok()?,
+        submission: SubmissionId::from(s[3].to_string()),
+        kind: SessionMessageKind::Promote {
+            agent_name: AgentName::new(s[5]),
+        },
     })
 }
 
@@ -832,7 +816,7 @@ fn filter_to_consumer_name(filter: &str) -> String {
 }
 
 // ============================================================================
-// Tests — subject serialization injectivity (ADR 096 §9)
+// Tests — data-plane subject serialization (ADR 121)
 // ============================================================================
 
 #[cfg(test)]
@@ -850,183 +834,6 @@ mod tests {
     }
     fn agent() -> AgentName {
         AgentName::new("echo")
-    }
-    fn agent_alt() -> AgentName {
-        AgentName::new("pensieve")
-    }
-
-    // ========================================================================
-    // Format sanity — subjects have the expected shape
-    // ========================================================================
-
-    #[test]
-    fn fork_subject_format() {
-        let key = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Fork {
-                agent_name: agent(),
-            },
-        };
-        assert_eq!(
-            routing_key_to_subject(&key),
-            format!(
-                "vlinder.{}.{}.{}.fork.echo",
-                session(),
-                timeline(),
-                submission()
-            ),
-        );
-    }
-
-    #[test]
-    fn promote_subject_format() {
-        let key = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Promote {
-                agent_name: agent(),
-            },
-        };
-        assert_eq!(
-            routing_key_to_subject(&key),
-            format!(
-                "vlinder.{}.{}.{}.promote.echo",
-                session(),
-                timeline(),
-                submission()
-            ),
-        );
-    }
-
-    // ========================================================================
-    // Injectivity — distinct routing keys produce distinct subjects
-    // ========================================================================
-
-    /// Helper: assert two different routing keys serialize to different subjects.
-    fn assert_injective(a: &RoutingKey, b: &RoutingKey) {
-        assert_ne!(a, b, "precondition: keys must differ");
-        assert_ne!(
-            routing_key_to_subject(a),
-            routing_key_to_subject(b),
-            "injectivity violated: {a:?} and {b:?} mapped to same subject",
-        );
-    }
-
-    #[test]
-    fn fork_injective_by_agent() {
-        let a = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Fork {
-                agent_name: agent(),
-            },
-        };
-        let b = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Fork {
-                agent_name: agent_alt(),
-            },
-        };
-        assert_injective(&a, &b);
-    }
-
-    #[test]
-    fn promote_injective_by_agent() {
-        let a = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Promote {
-                agent_name: agent(),
-            },
-        };
-        let b = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Promote {
-                agent_name: agent_alt(),
-            },
-        };
-        assert_injective(&a, &b);
-    }
-
-    // ========================================================================
-    // Cross-variant injectivity — different message types never collide
-    // ========================================================================
-
-    #[test]
-    fn fork_and_promote_subjects_differ() {
-        let fork = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Fork {
-                agent_name: agent(),
-            },
-        };
-        let promote = RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Promote {
-                agent_name: agent(),
-            },
-        };
-        assert_injective(&fork, &promote);
-    }
-
-    // ========================================================================
-    // Round-trip: routing_key_to_subject → subject_to_routing_key
-    // ========================================================================
-
-    fn assert_round_trips(key: &RoutingKey) {
-        let subject = routing_key_to_subject(key);
-        let recovered = subject_to_routing_key(&subject)
-            .unwrap_or_else(|| panic!("failed to parse subject: {subject}"));
-        assert_eq!(&recovered, key, "round-trip failed for subject: {subject}");
-    }
-
-    #[test]
-    fn fork_round_trips() {
-        assert_round_trips(&RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Fork {
-                agent_name: agent(),
-            },
-        });
-    }
-
-    #[test]
-    fn promote_round_trips() {
-        assert_round_trips(&RoutingKey {
-            session: session(),
-            branch: timeline(),
-            submission: submission(),
-            kind: RoutingKind::Promote {
-                agent_name: agent(),
-            },
-        });
-    }
-
-    #[test]
-    fn subject_to_routing_key_rejects_garbage() {
-        assert!(subject_to_routing_key("not-a-subject").is_none());
-        assert!(subject_to_routing_key("").is_none());
-        assert!(subject_to_routing_key("vlinder.1.sub.unknown.stuff").is_none());
-    }
-
-    #[test]
-    fn subject_to_routing_key_rejects_too_few_segments() {
-        assert!(subject_to_routing_key("vlinder.1.sub").is_none());
     }
 
     // ========================================================================

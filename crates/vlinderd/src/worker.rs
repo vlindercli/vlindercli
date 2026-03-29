@@ -499,8 +499,8 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
     use vlinder_core::domain::DagWorker;
     use vlinder_git_dag::GitDagWorker;
     use vlinder_nats::{
-        complete_parse_subject, invoke_parse_subject, request_parse_subject,
-        response_parse_subject, NatsQueue,
+        complete_parse_subject, fork_parse_subject, invoke_parse_subject, promote_parse_subject,
+        request_parse_subject, response_parse_subject, NatsQueue,
     };
 
     let nats = NatsQueue::connect(&config.queue.nats_config()).expect("Failed to connect to NATS");
@@ -609,6 +609,28 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
                         tracing::warn!(
                             subject = subject.as_str(),
                             "DAG git: failed to deserialize InvokeMessage"
+                        );
+                    }
+                } else if let Some(key) = fork_parse_subject(&subject) {
+                    if let Ok(fork_msg) =
+                        serde_json::from_slice::<vlinder_core::domain::ForkMessageV2>(&payload)
+                    {
+                        git_worker.on_fork(&key, &fork_msg, created_at);
+                    } else {
+                        tracing::warn!(
+                            subject = subject.as_str(),
+                            "DAG git: failed to deserialize ForkMessageV2"
+                        );
+                    }
+                } else if let Some(key) = promote_parse_subject(&subject) {
+                    if let Ok(promote_msg) =
+                        serde_json::from_slice::<vlinder_core::domain::PromoteMessageV2>(&payload)
+                    {
+                        git_worker.on_promote(&key, &promote_msg, created_at);
+                    } else {
+                        tracing::warn!(
+                            subject = subject.as_str(),
+                            "DAG git: failed to deserialize PromoteMessageV2"
                         );
                     }
                 } else {
