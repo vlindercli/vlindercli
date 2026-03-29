@@ -223,3 +223,23 @@ pub enum SessionMessageKind {
     Fork { agent_name: AgentName },
     Promote { agent_name: AgentName },
 }
+
+// ============================================================================
+// Infra-plane routing (ADR 121)
+// ============================================================================
+
+/// Infra plane routing key — provisioning operations.
+///
+/// Cluster-scoped, not session-scoped. No branch, no session.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InfraRoutingKey {
+    pub submission: SubmissionId,
+    pub kind: InfraMessageKind,
+}
+
+/// Infra plane message kinds.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum InfraMessageKind {
+    DeployAgent,
+    DeleteAgent,
+}

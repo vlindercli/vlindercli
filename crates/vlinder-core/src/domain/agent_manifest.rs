@@ -14,7 +14,7 @@ use super::service_type::ServiceType;
 ///
 /// Relative paths (executable, storage URIs) are resolved against
 /// the manifest's directory during loading.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentManifest {
     pub name: String,
     pub description: String,
@@ -175,7 +175,7 @@ pub struct MountConfig {
 }
 
 /// Requirements as declared in agent.toml
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RequirementsConfig {
     /// Model alias → registry name (ADR 094).
     ///
@@ -232,7 +232,7 @@ pub enum Protocol {
 }
 
 /// Prompt overrides as declared in agent.toml
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PromptsConfig {
     pub intent_recognition: Option<String>,
     pub query_expansion: Option<String>,
