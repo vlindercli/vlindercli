@@ -164,36 +164,6 @@ impl std::fmt::Display for ServiceBackend {
     }
 }
 
-/// A value used exactly once to ensure uniqueness.
-///
-/// Prevents routing key collisions when the same caller delegates to the
-/// same target multiple times within a submission.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub struct Nonce(String);
-
-impl Nonce {
-    /// Generate a unique nonce.
-    pub fn generate() -> Self {
-        Self(uuid::Uuid::new_v4().to_string())
-    }
-
-    /// Create a nonce from a known value (for testing or deserialization).
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for Nonce {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 // ============================================================================
 // Data-plane routing (ADR 121)
 // ============================================================================
