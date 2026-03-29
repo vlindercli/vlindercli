@@ -61,19 +61,10 @@ impl SqliteDagStore {
                  hash TEXT PRIMARY KEY,
                  parent_hash TEXT NOT NULL,
                  message_type TEXT NOT NULL,
-                 sender TEXT NOT NULL,
-                 receiver TEXT NOT NULL,
                  session_id TEXT NOT NULL REFERENCES sessions(id),
                  submission_id TEXT NOT NULL,
-                 payload BLOB NOT NULL,
-                 diagnostics BLOB NOT NULL DEFAULT x'',
-                 stderr BLOB NOT NULL DEFAULT x'',
                  created_at TEXT NOT NULL,
-                 state TEXT,
                  protocol_version TEXT NOT NULL DEFAULT '',
-                 checkpoint TEXT,
-                 operation TEXT,
-                 message_blob TEXT,
                  branch_id INTEGER NOT NULL REFERENCES branches(id),
                  snapshot TEXT NOT NULL DEFAULT '{}'
              );
@@ -253,19 +244,10 @@ impl DagStore for SqliteDagStore {
                 hash: node.id.as_str(),
                 parent_hash: node.parent_id.as_str(),
                 message_type: node.message_type().as_str(),
-                sender: "",
-                receiver: "",
                 session_id: node.session_id().as_str(),
                 submission_id: node.submission_id().as_str(),
-                payload: node.payload(),
-                diagnostics: &[],
-                stderr: &[],
                 created_at: &created_at_str,
-                state: None,
                 protocol_version: node.protocol_version(),
-                checkpoint: None,
-                operation: None,
-                message_blob: Some(""),
                 branch_id: node.branch_id().as_i64(),
                 snapshot: &snapshot_json,
             })
@@ -301,26 +283,16 @@ impl DagStore for SqliteDagStore {
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
         let created_at_str = created_at.to_rfc3339();
-        let agent_str = agent.to_string();
 
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "invoke",
-                sender: harness.as_str(),
-                receiver: &agent_str,
                 session_id: key.session.as_str(),
                 submission_id: key.submission.as_str(),
-                payload: &msg.payload,
-                diagnostics: &diagnostics_json,
-                stderr: &[],
                 created_at: &created_at_str,
-                state: msg.state.as_deref(),
                 protocol_version: "v1",
-                checkpoint: None,
-                operation: None,
-                message_blob: Some(""),
                 branch_id: key.branch.as_i64(),
                 snapshot: &snapshot_json,
             })
@@ -365,26 +337,16 @@ impl DagStore for SqliteDagStore {
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
         let created_at_str = created_at.to_rfc3339();
-        let agent_str = agent.to_string();
 
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "complete",
-                sender: &agent_str,
-                receiver: harness.as_str(),
                 session_id: session.as_str(),
                 submission_id: submission.as_str(),
-                payload: &msg.payload,
-                diagnostics: &diagnostics_json,
-                stderr: &[],
                 created_at: &created_at_str,
-                state: msg.state.as_deref(),
                 protocol_version: "v1",
-                checkpoint: None,
-                operation: None,
-                message_blob: Some(""),
                 branch_id: branch.as_i64(),
                 snapshot: &snapshot_json,
             })
@@ -431,7 +393,6 @@ impl DagStore for SqliteDagStore {
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
         let created_at_str = created_at.to_rfc3339();
-        let agent_str = agent.to_string();
         let service_str = service.to_string();
 
         diesel::insert_or_ignore_into(dag_nodes::table)
@@ -439,19 +400,10 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "request",
-                sender: &agent_str,
-                receiver: &service_str,
                 session_id: session.as_str(),
                 submission_id: submission.as_str(),
-                payload: &msg.payload,
-                diagnostics: &diagnostics_json,
-                stderr: &[],
                 created_at: &created_at_str,
-                state: msg.state.as_deref(),
                 protocol_version: "v1",
-                checkpoint: msg.checkpoint.as_deref(),
-                operation: Some(operation.as_str()),
-                message_blob: Some(""),
                 branch_id: branch.as_i64(),
                 snapshot: &snapshot_json,
             })
@@ -501,7 +453,6 @@ impl DagStore for SqliteDagStore {
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
         let created_at_str = created_at.to_rfc3339();
-        let agent_str = agent.to_string();
         let service_str = service.to_string();
 
         diesel::insert_or_ignore_into(dag_nodes::table)
@@ -509,19 +460,10 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "response",
-                sender: &service_str,
-                receiver: &agent_str,
                 session_id: session.as_str(),
                 submission_id: submission.as_str(),
-                payload: &msg.payload,
-                diagnostics: &diagnostics_json,
-                stderr: &[],
                 created_at: &created_at_str,
-                state: msg.state.as_deref(),
                 protocol_version: "v1",
-                checkpoint: msg.checkpoint.as_deref(),
-                operation: Some(operation.as_str()),
-                message_blob: Some(""),
                 branch_id: branch.as_i64(),
                 snapshot: &snapshot_json,
             })
@@ -685,15 +627,16 @@ impl DagStore for SqliteDagStore {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
         let rows: Vec<SessionSummaryRow> = diesel::sql_query(
             "SELECT
-                session_id,
-                MIN(CASE WHEN message_type = 'invoke' THEN receiver END) AS agent_name,
-                MIN(created_at) AS started_at,
-                COUNT(CASE WHEN message_type IN ('invoke', 'complete') THEN 1 END) AS msg_count,
+                d.session_id,
+                s.agent_name AS agent_name,
+                MIN(d.created_at) AS started_at,
+                COUNT(CASE WHEN d.message_type IN ('invoke', 'complete') THEN 1 END) AS msg_count,
                 (SELECT message_type FROM dag_nodes d2
-                 WHERE d2.session_id = dag_nodes.session_id
+                 WHERE d2.session_id = d.session_id
                  ORDER BY created_at DESC LIMIT 1) AS last_type
-            FROM dag_nodes
-            GROUP BY session_id
+            FROM dag_nodes d
+            JOIN sessions s ON s.id = d.session_id
+            GROUP BY d.session_id
             ORDER BY started_at DESC",
         )
         .load(&mut *conn)
@@ -1060,26 +1003,16 @@ impl DagStore for SqliteDagStore {
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let created_at_str = created_at.to_rfc3339();
-        let agent_str = agent_name.to_string();
 
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "fork",
-                sender: "platform",
-                receiver: &agent_str,
                 session_id: key.session.as_str(),
                 submission_id: key.submission.as_str(),
-                payload: &[],
-                diagnostics: &[],
-                stderr: &[],
                 created_at: &created_at_str,
-                state: None,
                 protocol_version: "v1",
-                checkpoint: None,
-                operation: None,
-                message_blob: Some(""),
                 branch_id: branch_id.as_i64(),
                 snapshot: &snapshot_json,
             })
@@ -1120,26 +1053,16 @@ impl DagStore for SqliteDagStore {
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let created_at_str = created_at.to_rfc3339();
-        let agent_str = agent_name.to_string();
 
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "promote",
-                sender: "platform",
-                receiver: &agent_str,
                 session_id: key.session.as_str(),
                 submission_id: key.submission.as_str(),
-                payload: &[],
-                diagnostics: &[],
-                stderr: &[],
                 created_at: &created_at_str,
-                state: None,
                 protocol_version: "v1",
-                checkpoint: None,
-                operation: None,
-                message_blob: Some(""),
                 branch_id: msg.branch_id.as_i64(),
                 snapshot: &snapshot_json,
             })
@@ -1514,19 +1437,19 @@ mod tests {
 
     #[test]
     fn dag_node_row_with_message_blob_ignores_it() {
-        // message_blob is no longer parsed — verify the node round-trips without error.
+        // The old message_blob column has been removed from dag_nodes.
+        // Verify a raw insert with only the slimmed columns round-trips.
         use diesel::connection::SimpleConnection;
 
         let (store, _dir) = test_store();
         let mut conn = store.conn.lock().unwrap();
         conn.batch_execute(
-            "INSERT INTO dag_nodes (hash, parent_hash, message_type, sender, receiver, session_id, submission_id, payload, diagnostics, stderr, created_at, state, protocol_version, checkpoint, message_blob, branch_id)
-             VALUES ('h1', '', 'fork', 'cli', 'agent-a', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', x'', x'', x'', '2025-01-01T00:00:00Z', NULL, '', NULL, '{\"bad\": true}', 1)",
+            "INSERT INTO dag_nodes (hash, parent_hash, message_type, session_id, submission_id, created_at, protocol_version, branch_id, snapshot)
+             VALUES ('h1', '', 'fork', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', '2025-01-01T00:00:00Z', '', 1, '{}')",
         ).unwrap();
         drop(conn);
 
         let result = store.get_node(&DagNodeId::from("h1".to_string()));
-        // message_blob is no longer deserialized, so this should succeed
         assert!(result.is_ok());
         let node = result.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::Fork);
