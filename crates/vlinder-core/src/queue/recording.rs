@@ -13,8 +13,9 @@ use chrono::Utc;
 
 use crate::domain::{
     hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataRoutingKey,
-    ForkMessage, Instance, InvokeMessage, MessageQueue, MessageType, PromoteMessage, QueueError,
-    SessionMessageKind, SessionRoutingKey, SessionStartMessage, Snapshot, StateHash, SubmissionId,
+    DeleteAgentMessage, DeployAgentMessage, ForkMessage, InfraRoutingKey, Instance, InvokeMessage,
+    MessageQueue, MessageType, PromoteMessage, QueueError, SessionMessageKind, SessionRoutingKey,
+    SessionStartMessage, Snapshot, StateHash, SubmissionId,
 };
 
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
@@ -483,6 +484,22 @@ impl MessageQueue for RecordingQueue {
 
         let _ = self.inner.send_session_start(key, msg);
         Ok(default_branch)
+    }
+
+    fn send_deploy_agent(
+        &self,
+        key: InfraRoutingKey,
+        msg: DeployAgentMessage,
+    ) -> Result<(), QueueError> {
+        self.inner.send_deploy_agent(key, msg)
+    }
+
+    fn send_delete_agent(
+        &self,
+        key: InfraRoutingKey,
+        msg: DeleteAgentMessage,
+    ) -> Result<(), QueueError> {
+        self.inner.send_delete_agent(key, msg)
     }
 }
 

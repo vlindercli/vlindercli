@@ -10,9 +10,10 @@
 //! `AckFn` acknowledges successful processing.
 
 use super::{
-    AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, ForkMessage, HarnessType,
-    InvokeMessage, Operation, PromoteMessage, RequestMessage, ResourceId, ResponseMessage,
-    Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessage, SubmissionId,
+    AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, DeleteAgentMessage,
+    DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey, InvokeMessage, Operation,
+    PromoteMessage, RequestMessage, ResourceId, ResponseMessage, Sequence, ServiceBackend,
+    SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
 use std::fmt;
 
@@ -119,6 +120,32 @@ pub trait MessageQueue {
         key: SessionRoutingKey,
         msg: SessionStartMessage,
     ) -> Result<super::BranchId, QueueError>;
+
+    // -------------------------------------------------------------------------
+    // Infra plane (ADR 121)
+    // -------------------------------------------------------------------------
+
+    /// Enqueue an agent deploy on the infra plane.
+    fn send_deploy_agent(
+        &self,
+        _key: InfraRoutingKey,
+        _msg: DeployAgentMessage,
+    ) -> Result<(), QueueError> {
+        Err(QueueError::SendFailed(
+            "send_deploy_agent not implemented".into(),
+        ))
+    }
+
+    /// Enqueue an agent delete on the infra plane.
+    fn send_delete_agent(
+        &self,
+        _key: InfraRoutingKey,
+        _msg: DeleteAgentMessage,
+    ) -> Result<(), QueueError> {
+        Err(QueueError::SendFailed(
+            "send_delete_agent not implemented".into(),
+        ))
+    }
 
     // -------------------------------------------------------------------------
     // Request-reply facades (ADR 092)

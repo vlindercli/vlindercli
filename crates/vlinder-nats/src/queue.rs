@@ -19,7 +19,8 @@ use std::str::FromStr;
 
 use vlinder_core::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
-    ForkMessage, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
+    DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType, InfraMessageKind,
+    InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
     RequestMessage, ResponseMessage, RuntimeType, Sequence, ServiceBackend, ServiceType, SessionId,
     SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
@@ -495,6 +496,54 @@ impl MessageQueue for NatsQueue {
         // RecordingQueue handles persistence before this is called.
         Ok(BranchId::from(1))
     }
+
+    fn send_deploy_agent(
+        &self,
+        key: InfraRoutingKey,
+        msg: DeployAgentMessage,
+    ) -> Result<(), QueueError> {
+        let subject = deploy_agent_subject(&key);
+        let body = serde_json::to_vec(&msg)
+            .map_err(|e| QueueError::SendFailed(format!("serialize deploy_agent: {e}")))?;
+
+        self.inner.runtime.block_on(async {
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert("msg-id", msg.id.as_str());
+
+            self.inner
+                .jetstream
+                .publish_with_headers(subject, headers, body.into())
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn send_delete_agent(
+        &self,
+        key: InfraRoutingKey,
+        msg: DeleteAgentMessage,
+    ) -> Result<(), QueueError> {
+        let subject = delete_agent_subject(&key);
+        let body = serde_json::to_vec(&msg)
+            .map_err(|e| QueueError::SendFailed(format!("serialize delete_agent: {e}")))?;
+
+        self.inner.runtime.block_on(async {
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert("msg-id", msg.id.as_str());
+
+            self.inner
+                .jetstream
+                .publish_with_headers(subject, headers, body.into())
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+            Ok(())
+        })
+    }
 }
 
 // ============================================================================
@@ -799,6 +848,59 @@ pub fn promote_parse_subject(subject: &str) -> Option<SessionRoutingKey> {
         kind: SessionMessageKind::Promote {
             agent_name: AgentName::new(s[5]),
         },
+    })
+}
+
+// ============================================================================
+// Infra-plane subjects (ADR 121)
+//
+// Format: vlinder.infra.v1.{submission}.deploy-agent
+// Positions: 0      1     2  3            4
+// ============================================================================
+
+/// Build a NATS subject for a deploy-agent message.
+fn deploy_agent_subject(key: &InfraRoutingKey) -> String {
+    format!("vlinder.infra.v1.{}.deploy-agent", key.submission)
+}
+
+/// Build a NATS subject for a delete-agent message.
+fn delete_agent_subject(key: &InfraRoutingKey) -> String {
+    format!("vlinder.infra.v1.{}.delete-agent", key.submission)
+}
+
+/// Parse a deploy-agent NATS subject. Returns `InfraRoutingKey` if the subject matches.
+pub fn deploy_agent_parse_subject(subject: &str) -> Option<InfraRoutingKey> {
+    let s: Vec<&str> = subject.split('.').collect();
+    // vlinder.infra.v1.{submission}.deploy-agent
+    if s.len() != 5
+        || s[0] != "vlinder"
+        || s[1] != "infra"
+        || s[2] != "v1"
+        || s[4] != "deploy-agent"
+    {
+        return None;
+    }
+    Some(InfraRoutingKey {
+        submission: SubmissionId::from(s[3].to_string()),
+        kind: InfraMessageKind::DeployAgent,
+    })
+}
+
+/// Parse a delete-agent NATS subject. Returns `InfraRoutingKey` if the subject matches.
+pub fn delete_agent_parse_subject(subject: &str) -> Option<InfraRoutingKey> {
+    let s: Vec<&str> = subject.split('.').collect();
+    // vlinder.infra.v1.{submission}.delete-agent
+    if s.len() != 5
+        || s[0] != "vlinder"
+        || s[1] != "infra"
+        || s[2] != "v1"
+        || s[4] != "delete-agent"
+    {
+        return None;
+    }
+    Some(InfraRoutingKey {
+        submission: SubmissionId::from(s[3].to_string()),
+        kind: InfraMessageKind::DeleteAgent,
     })
 }
 
