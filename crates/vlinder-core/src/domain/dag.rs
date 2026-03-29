@@ -850,6 +850,33 @@ impl DagStore for InMemoryDagStore {
     }
 }
 
+impl super::RegistryRepository for InMemoryDagStore {
+    fn save_model(&self, _: &super::Model) -> Result<(), super::RepositoryError> {
+        Ok(())
+    }
+    fn load_models(&self) -> Result<Vec<super::Model>, super::RepositoryError> {
+        Ok(vec![])
+    }
+    fn delete_model(&self, _: &str) -> Result<bool, super::RepositoryError> {
+        Ok(false)
+    }
+    fn model_exists(&self, _: &str) -> Result<bool, super::RepositoryError> {
+        Ok(false)
+    }
+    fn save_agent(&self, _: &super::Agent) -> Result<(), super::RepositoryError> {
+        Ok(())
+    }
+    fn load_agents(&self) -> Result<Vec<super::Agent>, super::RepositoryError> {
+        Ok(vec![])
+    }
+    fn delete_agent(&self, _: &str) -> Result<bool, super::RepositoryError> {
+        Ok(false)
+    }
+    fn agent_exists(&self, _: &str) -> Result<bool, super::RepositoryError> {
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -128,24 +128,16 @@ pub trait MessageQueue {
     /// Enqueue an agent deploy on the infra plane.
     fn send_deploy_agent(
         &self,
-        _key: InfraRoutingKey,
-        _msg: DeployAgentMessage,
-    ) -> Result<(), QueueError> {
-        Err(QueueError::SendFailed(
-            "send_deploy_agent not implemented".into(),
-        ))
-    }
+        key: InfraRoutingKey,
+        msg: DeployAgentMessage,
+    ) -> Result<(), QueueError>;
 
     /// Enqueue an agent delete on the infra plane.
     fn send_delete_agent(
         &self,
-        _key: InfraRoutingKey,
-        _msg: DeleteAgentMessage,
-    ) -> Result<(), QueueError> {
-        Err(QueueError::SendFailed(
-            "send_delete_agent not implemented".into(),
-        ))
-    }
+        key: InfraRoutingKey,
+        msg: DeleteAgentMessage,
+    ) -> Result<(), QueueError>;
 
     // -------------------------------------------------------------------------
     // Request-reply facades (ADR 092)

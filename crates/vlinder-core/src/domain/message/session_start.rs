@@ -9,7 +9,7 @@
 use super::identity::MessageId;
 
 /// Session start payload — routing lives on `SessionRoutingKey`.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SessionStartMessage {
     pub id: MessageId,
 }

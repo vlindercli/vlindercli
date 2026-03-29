@@ -77,7 +77,7 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
     use tonic::transport::Server;
     use vlinder_core::domain::{ObjectStorageType, RuntimeType, VectorStorageType};
     use vlinder_nats::secret_service::GrpcSecretClient;
-    use vlinder_sql_registry::registry_service::RegistryServiceServer;
+    use vlinder_sql_registry::registry_service::RegistryServer;
     use vlinder_sql_registry::PersistentRegistry;
     use vlinder_sql_state::SqliteDagStore;
 
@@ -93,9 +93,15 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
 
     // Registry now shares the DAG database (single SQLite, FK integrity across planes)
     let db_path = dag_db_path();
-    let store = SqliteDagStore::open(&db_path)
-        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
-    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
+    let store = Arc::new(
+        SqliteDagStore::open(&db_path)
+            .unwrap_or_else(|e| panic!("Failed to open state database: {e}")),
+    );
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::clone(&store) as _;
+
+    // Queue for infra plane (deploy/delete agent)
+    let queue: Arc<dyn vlinder_core::domain::MessageQueue + Send + Sync> =
+        crate::queue_factory::from_config(config).expect("Failed to create queue for registry");
 
     // Build registry config from cluster topology
     let mut inference_engines = Vec::new();
@@ -138,7 +144,7 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
     // Run the gRPC server until shutdown
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let service = RegistryServiceServer::new(registry).into_service();
+        let service = RegistryServer::new(registry, queue, Arc::clone(&store) as _).into_service();
 
         // Start server with graceful shutdown
         let server = Server::builder()

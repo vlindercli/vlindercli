@@ -13,7 +13,7 @@ mod server;
 #[cfg(feature = "client")]
 pub use client::{ping_registry, GrpcRegistryClient};
 #[cfg(feature = "server")]
-pub use server::RegistryServiceServer;
+pub use server::RegistryServer;
 
 /// Generated protobuf types — tonic does not emit `#[automatically_derived]` yet,
 /// so we suppress pedantic lints manually until it does.

@@ -451,7 +451,7 @@ impl MessageQueue for NatsQueue {
 
         self.inner.runtime.block_on(async {
             let mut headers = async_nats::HeaderMap::new();
-            headers.insert("msg-id", msg.id.as_str());
+            headers.insert("Nats-Msg-Id", msg.id.as_str());
 
             self.inner
                 .jetstream
@@ -474,7 +474,7 @@ impl MessageQueue for NatsQueue {
 
         self.inner.runtime.block_on(async {
             let mut headers = async_nats::HeaderMap::new();
-            headers.insert("msg-id", msg.id.as_str());
+            headers.insert("Nats-Msg-Id", msg.id.as_str());
 
             self.inner
                 .jetstream
@@ -508,7 +508,7 @@ impl MessageQueue for NatsQueue {
 
         self.inner.runtime.block_on(async {
             let mut headers = async_nats::HeaderMap::new();
-            headers.insert("msg-id", msg.id.as_str());
+            headers.insert("Nats-Msg-Id", msg.id.as_str());
 
             self.inner
                 .jetstream
@@ -532,7 +532,7 @@ impl MessageQueue for NatsQueue {
 
         self.inner.runtime.block_on(async {
             let mut headers = async_nats::HeaderMap::new();
-            headers.insert("msg-id", msg.id.as_str());
+            headers.insert("Nats-Msg-Id", msg.id.as_str());
 
             self.inner
                 .jetstream

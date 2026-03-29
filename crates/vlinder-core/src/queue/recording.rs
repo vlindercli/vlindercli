@@ -486,6 +486,9 @@ impl MessageQueue for RecordingQueue {
         Ok(default_branch)
     }
 
+    // Infra plane: forward-only for now. DAG recording will be added when
+    // deploy_agent_nodes / delete_agent_nodes tables are wired into DagStore.
+
     fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
