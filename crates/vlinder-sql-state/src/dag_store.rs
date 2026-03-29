@@ -156,6 +156,12 @@ impl SqliteDagStore {
                  model_path TEXT NOT NULL,
                  digest TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS agent_states (
+                 agent_name TEXT PRIMARY KEY REFERENCES agents(name),
+                 state TEXT NOT NULL DEFAULT 'registered',
+                 updated_at TEXT NOT NULL,
+                 error TEXT
+             );
              ",
         )
         .map_err(|e| format!("failed to initialize dag store: {e}"))?;

@@ -134,6 +134,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    agent_states (agent_name) {
+        agent_name -> Text,
+        state -> Text,
+        updated_at -> Text,
+        error -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
     models (name) {
         name -> Text,
         model_type -> Text,
@@ -150,6 +159,7 @@ diesel::joinable!(request_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(response_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(fork_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(promote_nodes -> dag_nodes (dag_hash));
+diesel::joinable!(agent_states -> agents (agent_name));
 
 diesel::allow_tables_to_appear_in_same_query!(
     dag_nodes,
@@ -162,5 +172,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     branches,
     sessions,
     agents,
+    agent_states,
     models,
 );

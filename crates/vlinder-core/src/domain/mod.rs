@@ -9,6 +9,7 @@
 
 mod agent;
 mod agent_manifest;
+mod agent_state;
 mod catalog;
 mod container_id;
 mod dag;
@@ -45,6 +46,7 @@ pub mod workers;
 // ============================================================================
 
 pub use agent::{Agent, LoadError as AgentLoadError, Prompts, Requirements};
+pub use agent_state::{AgentState, AgentStatus};
 pub use container_id::ContainerId;
 pub use image_digest::ImageDigest;
 pub use image_ref::ImageRef;
