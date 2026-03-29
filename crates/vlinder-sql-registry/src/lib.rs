@@ -1,13 +1,9 @@
 #[cfg(feature = "server")]
 pub mod persistent;
 pub mod registry_service;
-#[cfg(feature = "server")]
-pub mod storage;
 
 #[cfg(feature = "server")]
 pub use persistent::PersistentRegistry;
-#[cfg(feature = "server")]
-pub use storage::SqliteRegistryRepository;
 
 #[cfg(feature = "server")]
 use vlinder_core::domain::Provider;

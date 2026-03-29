@@ -8,8 +8,8 @@
 use diesel::prelude::*;
 
 use crate::schema::{
-    branches, complete_nodes, dag_nodes, fork_nodes, invoke_nodes, promote_nodes, request_nodes,
-    response_nodes, sessions,
+    agents, branches, complete_nodes, dag_nodes, fork_nodes, invoke_nodes, models, promote_nodes,
+    request_nodes, response_nodes, sessions,
 };
 
 // ============================================================================
@@ -267,4 +267,64 @@ pub struct NewSession<'a> {
     pub agent_name: &'a str,
     pub default_branch: i64,
     pub created_at: &'a str,
+}
+
+// ============================================================================
+// agents (infra read model)
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = agents)]
+pub struct AgentRow {
+    pub name: String,
+    pub description: String,
+    pub source: Option<String>,
+    pub runtime: String,
+    pub executable: String,
+    pub image_digest: Option<String>,
+    pub object_storage: Option<String>,
+    pub vector_storage: Option<String>,
+    pub requirements_json: String,
+    pub prompts_json: Option<String>,
+    pub public_key: Option<String>,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = agents)]
+pub struct NewAgent<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    pub source: Option<&'a str>,
+    pub runtime: &'a str,
+    pub executable: &'a str,
+    pub image_digest: Option<&'a str>,
+    pub object_storage: Option<&'a str>,
+    pub vector_storage: Option<&'a str>,
+    pub requirements_json: &'a str,
+    pub prompts_json: Option<&'a str>,
+    pub public_key: Option<&'a str>,
+}
+
+// ============================================================================
+// models (infra read model)
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = models)]
+pub struct ModelRow {
+    pub name: String,
+    pub model_type: String,
+    pub provider: String,
+    pub model_path: String,
+    pub digest: String,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = models)]
+pub struct NewModel<'a> {
+    pub name: &'a str,
+    pub model_type: &'a str,
+    pub provider: &'a str,
+    pub model_path: &'a str,
+    pub digest: &'a str,
 }

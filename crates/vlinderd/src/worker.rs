@@ -73,12 +73,13 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
 // ============================================================================
 
 fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
-    use crate::config::registry_db_path;
+    use crate::config::dag_db_path;
     use tonic::transport::Server;
     use vlinder_core::domain::{ObjectStorageType, RuntimeType, VectorStorageType};
     use vlinder_nats::secret_service::GrpcSecretClient;
     use vlinder_sql_registry::registry_service::RegistryServiceServer;
     use vlinder_sql_registry::PersistentRegistry;
+    use vlinder_sql_state::SqliteDagStore;
 
     let secret_addr = if config.distributed.secret_addr.starts_with("http://") {
         config.distributed.secret_addr.clone()
@@ -90,7 +91,11 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
             .unwrap_or_else(|e| panic!("Failed to connect to secret service: {e}")),
     );
 
-    let db_path = registry_db_path();
+    // Registry now shares the DAG database (single SQLite, FK integrity across planes)
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
 
     // Build registry config from cluster topology
     let mut inference_engines = Vec::new();
@@ -107,7 +112,7 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
         embedding_engines,
     };
 
-    let registry = PersistentRegistry::open(&db_path, &registry_config, secret_store)
+    let registry = PersistentRegistry::new(repo, &registry_config, secret_store)
         .unwrap_or_else(|e| panic!("Failed to initialize registry: {e}"));
 
     // Register non-engine capabilities (engines are registered by open())

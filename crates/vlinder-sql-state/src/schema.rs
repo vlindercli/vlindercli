@@ -117,6 +117,32 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    agents (name) {
+        name -> Text,
+        description -> Text,
+        source -> Nullable<Text>,
+        runtime -> Text,
+        executable -> Text,
+        image_digest -> Nullable<Text>,
+        object_storage -> Nullable<Text>,
+        vector_storage -> Nullable<Text>,
+        requirements_json -> Text,
+        prompts_json -> Nullable<Text>,
+        public_key -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    models (name) {
+        name -> Text,
+        model_type -> Text,
+        provider -> Text,
+        model_path -> Text,
+        digest -> Text,
+    }
+}
+
 // Foreign key relationships — lets Diesel verify joins at compile time.
 diesel::joinable!(invoke_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(complete_nodes -> dag_nodes (dag_hash));
@@ -135,4 +161,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     promote_nodes,
     branches,
     sessions,
+    agents,
+    models,
 );

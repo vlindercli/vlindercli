@@ -19,7 +19,7 @@ use vlinder_core::domain::{
 
 /// SQLite-backed `DagStore`.
 pub struct SqliteDagStore {
-    conn: Arc<Mutex<SqliteConnection>>,
+    pub(crate) conn: Arc<Mutex<SqliteConnection>>,
 }
 
 impl SqliteDagStore {
@@ -133,6 +133,28 @@ impl SqliteDagStore {
                  agent TEXT NOT NULL,
                  message_id TEXT NOT NULL UNIQUE,
                  branch_id INTEGER REFERENCES branches(id)
+             );
+
+             -- Infra read model (ADR 121)
+             CREATE TABLE IF NOT EXISTS agents (
+                 name TEXT PRIMARY KEY,
+                 description TEXT NOT NULL,
+                 source TEXT,
+                 runtime TEXT NOT NULL,
+                 executable TEXT NOT NULL,
+                 image_digest TEXT,
+                 object_storage TEXT,
+                 vector_storage TEXT,
+                 requirements_json TEXT NOT NULL,
+                 prompts_json TEXT,
+                 public_key TEXT
+             );
+             CREATE TABLE IF NOT EXISTS models (
+                 name TEXT PRIMARY KEY,
+                 model_type TEXT NOT NULL,
+                 provider TEXT NOT NULL,
+                 model_path TEXT NOT NULL,
+                 digest TEXT NOT NULL
              );
              ",
         )
