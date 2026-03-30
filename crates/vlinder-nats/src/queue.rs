@@ -544,6 +544,46 @@ impl MessageQueue for NatsQueue {
             Ok(())
         })
     }
+
+    fn receive_deploy_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
+        let filter = "vlinder.infra.v1.*.deploy-agent";
+
+        self.inner.runtime.block_on(async {
+            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+
+            let subject = js_msg.subject.as_str();
+            let key = deploy_agent_parse_subject(subject).ok_or_else(|| {
+                QueueError::ReceiveFailed(format!("invalid deploy-agent subject: {subject}"))
+            })?;
+
+            let msg: DeployAgentMessage = serde_json::from_slice(&js_msg.payload)
+                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize deploy-agent: {e}")))?;
+
+            Ok((key, msg, ack_fn))
+        })
+    }
+
+    fn receive_delete_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
+        let filter = "vlinder.infra.v1.*.delete-agent";
+
+        self.inner.runtime.block_on(async {
+            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+
+            let subject = js_msg.subject.as_str();
+            let key = delete_agent_parse_subject(subject).ok_or_else(|| {
+                QueueError::ReceiveFailed(format!("invalid delete-agent subject: {subject}"))
+            })?;
+
+            let msg: DeleteAgentMessage = serde_json::from_slice(&js_msg.payload)
+                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize delete-agent: {e}")))?;
+
+            Ok((key, msg, ack_fn))
+        })
+    }
 }
 
 // ============================================================================

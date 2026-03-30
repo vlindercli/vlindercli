@@ -505,6 +505,18 @@ impl MessageQueue for RecordingQueue {
         let _ = self.inner.send_delete_agent(key, msg);
         Ok(())
     }
+
+    fn receive_deploy_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
+        self.inner.receive_deploy_agent()
+    }
+
+    fn receive_delete_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
+        self.inner.receive_delete_agent()
+    }
 }
 
 impl RecordingQueue {

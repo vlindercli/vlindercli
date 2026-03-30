@@ -111,8 +111,22 @@ pub trait MessageQueue {
     /// Send a fork on the session plane.
     fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError>;
 
+    /// Receive a fork from the session plane.
+    fn receive_fork(
+        &self,
+    ) -> Result<(SessionRoutingKey, ForkMessage, Acknowledgement), QueueError> {
+        Err(QueueError::Timeout)
+    }
+
     /// Send a promote on the session plane.
     fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError>;
+
+    /// Receive a promote from the session plane.
+    fn receive_promote(
+        &self,
+    ) -> Result<(SessionRoutingKey, PromoteMessage, Acknowledgement), QueueError> {
+        Err(QueueError::Timeout)
+    }
 
     /// Start a session on the session plane.
     fn send_session_start(
@@ -132,12 +146,26 @@ pub trait MessageQueue {
         msg: DeployAgentMessage,
     ) -> Result<(), QueueError>;
 
+    /// Receive an agent deploy from the infra plane.
+    fn receive_deploy_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
+        Err(QueueError::Timeout)
+    }
+
     /// Enqueue an agent delete on the infra plane.
     fn send_delete_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
     ) -> Result<(), QueueError>;
+
+    /// Receive an agent delete from the infra plane.
+    fn receive_delete_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
+        Err(QueueError::Timeout)
+    }
 
     // -------------------------------------------------------------------------
     // Request-reply facades (ADR 092)
