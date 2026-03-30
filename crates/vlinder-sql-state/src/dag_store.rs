@@ -59,7 +59,7 @@ impl SqliteDagStore {
                  ON branches (session_id);
              CREATE TABLE IF NOT EXISTS dag_nodes (
                  hash TEXT PRIMARY KEY,
-                 parent_hash TEXT NOT NULL,
+                 parent_hash TEXT REFERENCES dag_nodes(hash),
                  message_type TEXT NOT NULL,
                  session_id TEXT REFERENCES sessions(id),
                  submission_id TEXT,
@@ -225,6 +225,17 @@ fn session_row_to_domain(r: crate::models::SessionRow) -> Session {
     }
 }
 
+/// Convert a `DagNodeId` to an `Option<&str>` for SQL storage.
+/// Root nodes (empty string) become `None` for FK integrity.
+fn parent_hash_for_sql(id: &DagNodeId) -> Option<&str> {
+    let s = id.as_str();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 /// Convert a Diesel `DagNodeRow` to the domain `DagNode`.
 fn dag_node_row_to_domain(r: crate::models::DagNodeRow) -> DagNode {
     let msg_type = r
@@ -247,7 +258,7 @@ fn dag_node_row_to_domain(r: crate::models::DagNodeRow) -> DagNode {
 
     DagNode {
         id: DagNodeId::from(r.hash),
-        parent_id: DagNodeId::from(r.parent_hash),
+        parent_id: r.parent_hash.map_or_else(DagNodeId::root, DagNodeId::from),
         created_at,
         state,
         msg_type,
@@ -304,7 +315,7 @@ impl DagStore for SqliteDagStore {
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
-                parent_hash: parent_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
                 message_type: "invoke",
                 session_id: Some(key.session.as_str()),
                 submission_id: Some(key.submission.as_str()),
@@ -358,7 +369,7 @@ impl DagStore for SqliteDagStore {
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
-                parent_hash: parent_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
                 message_type: "complete",
                 session_id: Some(session.as_str()),
                 submission_id: Some(submission.as_str()),
@@ -415,7 +426,7 @@ impl DagStore for SqliteDagStore {
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
-                parent_hash: parent_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
                 message_type: "request",
                 session_id: Some(session.as_str()),
                 submission_id: Some(submission.as_str()),
@@ -475,7 +486,7 @@ impl DagStore for SqliteDagStore {
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
-                parent_hash: parent_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
                 message_type: "response",
                 session_id: Some(session.as_str()),
                 submission_id: Some(submission.as_str()),
@@ -568,11 +579,20 @@ impl DagStore for SqliteDagStore {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        let rows: Vec<crate::models::DagNodeRow> = dag_nodes::table
-            .filter(dag_nodes::parent_hash.eq(parent_hash.as_str()))
-            .select(crate::models::DagNodeRow::as_select())
-            .load(&mut *conn)
-            .map_err(|e| format!("get_children query failed: {e}"))?;
+        let parent = parent_hash_for_sql(parent_hash);
+
+        let rows: Vec<crate::models::DagNodeRow> = match parent {
+            Some(h) => dag_nodes::table
+                .filter(dag_nodes::parent_hash.eq(h))
+                .select(crate::models::DagNodeRow::as_select())
+                .load(&mut *conn)
+                .map_err(|e| format!("get_children query failed: {e}"))?,
+            None => dag_nodes::table
+                .filter(dag_nodes::parent_hash.is_null())
+                .select(crate::models::DagNodeRow::as_select())
+                .load(&mut *conn)
+                .map_err(|e| format!("get_children query failed: {e}"))?,
+        };
 
         Ok(rows.into_iter().map(dag_node_row_to_domain).collect())
     }
@@ -712,7 +732,7 @@ impl DagStore for SqliteDagStore {
             Option<String>,
             Option<String>,
             Option<i64>,
-            String,
+            Option<String>,
         )> = invoke_nodes::table
             .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(invoke_nodes::dag_hash)))
             .filter(invoke_nodes::dag_hash.eq(dag_hash.as_str()))
@@ -764,7 +784,7 @@ impl DagStore for SqliteDagStore {
                 dag_id: dag_hash.clone(),
                 state: inv.state,
                 diagnostics,
-                dag_parent: DagNodeId::from(parent_hash),
+                dag_parent: parent_hash.map_or_else(DagNodeId::root, DagNodeId::from),
                 payload: inv.payload,
             };
 
@@ -1034,7 +1054,7 @@ impl DagStore for SqliteDagStore {
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
-                parent_hash: parent_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
                 message_type: "fork",
                 session_id: Some(key.session.as_str()),
                 submission_id: Some(key.submission.as_str()),
@@ -1084,7 +1104,7 @@ impl DagStore for SqliteDagStore {
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
-                parent_hash: parent_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
                 message_type: "promote",
                 session_id: Some(key.session.as_str()),
                 submission_id: Some(key.submission.as_str()),
@@ -1132,7 +1152,7 @@ impl DagStore for SqliteDagStore {
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
-                parent_hash: parent_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
                 message_type: "deploy-agent",
                 session_id: None,
                 submission_id: Some(key.submission.as_str()),
@@ -1178,7 +1198,7 @@ impl DagStore for SqliteDagStore {
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: dag_id.as_str(),
-                parent_hash: parent_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
                 message_type: "delete-agent",
                 session_id: None,
                 submission_id: Some(key.submission.as_str()),
@@ -1233,7 +1253,7 @@ impl SqliteDagStore {
         diesel::insert_or_ignore_into(dag_nodes::table)
             .values(&NewDagNode {
                 hash: node.id.as_str(),
-                parent_hash: node.parent_id.as_str(),
+                parent_hash: parent_hash_for_sql(&node.parent_id),
                 message_type: node.message_type().as_str(),
                 session_id: Some(node.session_id().as_str()),
                 submission_id: Some(node.submission_id().as_str()),
@@ -1597,7 +1617,7 @@ mod tests {
         let mut conn = store.conn.lock().unwrap();
         conn.batch_execute(
             "INSERT INTO dag_nodes (hash, parent_hash, message_type, session_id, submission_id, created_at, protocol_version, branch_id, snapshot)
-             VALUES ('h1', '', 'fork', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', '2025-01-01T00:00:00Z', '', 1, '{}')",
+             VALUES ('h1', NULL, 'fork', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', '2025-01-01T00:00:00Z', '', 1, '{}')",
         ).unwrap();
         drop(conn);
 
