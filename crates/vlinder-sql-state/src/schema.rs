@@ -8,7 +8,7 @@
 diesel::table! {
     dag_nodes (hash) {
         hash -> Text,
-        parent_hash -> Text,
+        parent_hash -> Nullable<Text>,
         message_type -> Text,
         session_id -> Nullable<Text>,
         submission_id -> Nullable<Text>,

@@ -21,7 +21,7 @@ use crate::schema::{
 #[diesel(table_name = dag_nodes)]
 pub struct DagNodeRow {
     pub hash: String,
-    pub parent_hash: String,
+    pub parent_hash: Option<String>,
     pub message_type: String,
     pub session_id: Option<String>,
     pub submission_id: Option<String>,
@@ -35,7 +35,7 @@ pub struct DagNodeRow {
 #[diesel(table_name = dag_nodes)]
 pub struct NewDagNode<'a> {
     pub hash: &'a str,
-    pub parent_hash: &'a str,
+    pub parent_hash: Option<&'a str>,
     pub message_type: &'a str,
     pub session_id: Option<&'a str>,
     pub submission_id: Option<&'a str>,
