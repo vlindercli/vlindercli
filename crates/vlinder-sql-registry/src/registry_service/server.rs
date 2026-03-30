@@ -13,12 +13,13 @@ use super::proto::{
     ListModelsRequest, ListModelsResponse, ListPendingJobsRequest, ListPendingJobsResponse,
     PingRequest, RegisterAgentRequest, RegisterAgentResponse, RegisterFleetRequest,
     RegisterFleetResponse, RegisterModelRequest, RegisterModelResponse, SemVer,
-    UpdateJobStatusRequest, UpdateJobStatusResponse,
+    SubmitDeleteAgentRequest, SubmitDeleteAgentResponse, UpdateJobStatusRequest,
+    UpdateJobStatusResponse,
 };
 use vlinder_core::domain::{
-    AgentManifest, DeployAgentMessage, InfraMessageKind, InfraRoutingKey,
-    JobStatus as DomainJobStatus, MessageQueue, Registry, RegistryRepository, ResourceId,
-    SubmissionId,
+    AgentManifest, AgentName, DeleteAgentMessage, DeployAgentMessage, InfraMessageKind,
+    InfraRoutingKey, JobStatus as DomainJobStatus, MessageQueue, Registry, RegistryRepository,
+    ResourceId, SubmissionId,
 };
 
 /// gRPC server that wraps a Registry implementation.
@@ -374,6 +375,30 @@ impl RegistryService for RegistryServer {
             .map_err(|e| Status::internal(format!("queue error: {e}")))?;
 
         Ok(Response::new(DeployAgentResponse {
+            submission_id: submission.as_str().to_string(),
+        }))
+    }
+
+    async fn submit_delete_agent(
+        &self,
+        request: Request<SubmitDeleteAgentRequest>,
+    ) -> Result<Response<SubmitDeleteAgentResponse>, Status> {
+        let req = request.into_inner();
+
+        let submission = SubmissionId::new();
+        let key = InfraRoutingKey {
+            submission: submission.clone(),
+            kind: InfraMessageKind::DeleteAgent,
+        };
+        let msg = DeleteAgentMessage::new(AgentName::new(req.name));
+
+        let queue = Arc::clone(&self.queue);
+        tokio::task::spawn_blocking(move || queue.send_delete_agent(key, msg))
+            .await
+            .map_err(|e| Status::internal(format!("task join error: {e}")))?
+            .map_err(|e| Status::internal(format!("queue error: {e}")))?;
+
+        Ok(Response::new(SubmitDeleteAgentResponse {
             submission_id: submission.as_str().to_string(),
         }))
     }

@@ -36,6 +36,7 @@ service Registry {
 
   // Infra plane (ADR 121)
   rpc DeployAgent(DeployAgentRequest) returns (DeployAgentResponse);
+  rpc SubmitDeleteAgent(SubmitDeleteAgentRequest) returns (SubmitDeleteAgentResponse);
   rpc GetAgentState(GetAgentStateRequest) returns (GetAgentStateResponse);
 }
 
@@ -321,6 +322,14 @@ message DeployAgentRequest {
 }
 
 message DeployAgentResponse {
+  string submission_id = 1;
+}
+
+message SubmitDeleteAgentRequest {
+  string name = 1;
+}
+
+message SubmitDeleteAgentResponse {
   string submission_id = 1;
 }
 

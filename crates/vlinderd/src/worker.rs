@@ -303,18 +303,25 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                             tracing::info!(agent = %agent_name, "Processing delete-agent");
 
                             let name = AgentName::new(&agent_name);
-                            let state = AgentState::registered(name);
-                            let deleting = state.transition(AgentStatus::Deleting, None);
+                            let deleting = AgentState::registered(name.clone())
+                                .transition(AgentStatus::Deleting, None);
                             let _ = repo.upsert_agent_state(&deleting);
 
                             match registry.delete_agent(&agent_name) {
                                 Ok(true) => {
+                                    let deleted = deleting.transition(AgentStatus::Deleted, None);
+                                    let _ = repo.upsert_agent_state(&deleted);
                                     tracing::info!(agent = %agent_name, "Agent deleted");
                                 }
                                 Ok(false) => {
+                                    let deleted = deleting.transition(AgentStatus::Deleted, None);
+                                    let _ = repo.upsert_agent_state(&deleted);
                                     tracing::warn!(agent = %agent_name, "Agent not found for deletion");
                                 }
                                 Err(e) => {
+                                    let failed = deleting
+                                        .transition(AgentStatus::Failed, Some(e.to_string()));
+                                    let _ = repo.upsert_agent_state(&failed);
                                     tracing::warn!(
                                         agent = %agent_name,
                                         error = %e,

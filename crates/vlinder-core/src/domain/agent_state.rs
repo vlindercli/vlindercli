@@ -60,6 +60,8 @@ pub enum AgentStatus {
     Failed,
     /// Teardown in progress.
     Deleting,
+    /// Fully removed from infrastructure.
+    Deleted,
 }
 
 impl AgentStatus {
@@ -71,6 +73,7 @@ impl AgentStatus {
             AgentStatus::Live => "live",
             AgentStatus::Failed => "failed",
             AgentStatus::Deleting => "deleting",
+            AgentStatus::Deleted => "deleted",
         }
     }
 }
@@ -91,6 +94,7 @@ impl FromStr for AgentStatus {
             "live" => Ok(AgentStatus::Live),
             "failed" => Ok(AgentStatus::Failed),
             "deleting" => Ok(AgentStatus::Deleting),
+            "deleted" => Ok(AgentStatus::Deleted),
             _ => Err(format!("unknown agent status: {s}")),
         }
     }
@@ -138,6 +142,7 @@ mod tests {
             AgentStatus::Live,
             AgentStatus::Failed,
             AgentStatus::Deleting,
+            AgentStatus::Deleted,
         ] {
             let s = status.as_str();
             let parsed = AgentStatus::from_str(s).unwrap();

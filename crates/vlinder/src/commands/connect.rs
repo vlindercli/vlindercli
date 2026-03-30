@@ -66,7 +66,7 @@ pub fn open_dag_store(config: &CliConfig) -> Option<Box<dyn DagStore>> {
 }
 
 /// Ensure an address has an http:// or https:// scheme.
-fn normalize_addr(addr: &str) -> String {
+pub(super) fn normalize_addr(addr: &str) -> String {
     if addr.starts_with("http://") || addr.starts_with("https://") {
         addr.to_string()
     } else {
