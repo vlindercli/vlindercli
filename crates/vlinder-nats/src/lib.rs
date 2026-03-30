@@ -23,8 +23,9 @@ pub use connect::NatsConfig;
 pub use queue::NatsQueue;
 #[cfg(feature = "queue")]
 pub use queue::{
-    complete_parse_subject, fork_parse_subject, invoke_parse_subject, promote_parse_subject,
-    request_parse_subject, response_parse_subject,
+    complete_parse_subject, delete_agent_parse_subject, deploy_agent_parse_subject,
+    fork_parse_subject, invoke_parse_subject, promote_parse_subject, request_parse_subject,
+    response_parse_subject,
 };
 #[cfg(feature = "secret-store")]
 pub use secret_store::NatsSecretStore;

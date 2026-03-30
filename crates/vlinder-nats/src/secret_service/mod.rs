@@ -12,7 +12,7 @@ mod server;
 #[cfg(feature = "secret-client")]
 pub use client::{ping_secret_service, GrpcSecretClient};
 #[cfg(feature = "secret-store")]
-pub use server::SecretServiceServer;
+pub use server::SecretServer;
 
 /// Generated protobuf types — tonic does not emit `#[automatically_derived]` yet,
 /// so we suppress pedantic lints manually until it does.

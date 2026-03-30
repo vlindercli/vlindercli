@@ -52,6 +52,8 @@ pub enum Plane {
     Data,
     /// Compensating transactions: fork, promote.
     Session,
+    /// Provisioning: deploy, delete.
+    Infra,
 }
 
 /// The message types in the Vlinder protocol (ADR 044).
@@ -63,6 +65,8 @@ pub enum MessageType {
     Complete,
     Fork,
     Promote,
+    DeployAgent,
+    DeleteAgent,
 }
 
 impl MessageType {
@@ -74,6 +78,8 @@ impl MessageType {
             MessageType::Complete => "complete",
             MessageType::Fork => "fork",
             MessageType::Promote => "promote",
+            MessageType::DeployAgent => "deploy-agent",
+            MessageType::DeleteAgent => "delete-agent",
         }
     }
 
@@ -84,6 +90,7 @@ impl MessageType {
             | MessageType::Response
             | MessageType::Complete => Plane::Data,
             MessageType::Fork | MessageType::Promote => Plane::Session,
+            MessageType::DeployAgent | MessageType::DeleteAgent => Plane::Infra,
         }
     }
 }
@@ -101,6 +108,8 @@ impl std::str::FromStr for MessageType {
             "complete" => Ok(MessageType::Complete),
             "fork" => Ok(MessageType::Fork),
             "promote" => Ok(MessageType::Promote),
+            "deploy-agent" => Ok(MessageType::DeployAgent),
+            "delete-agent" => Ok(MessageType::DeleteAgent),
             _ => Err(format!("unknown message type: {s}")),
         }
     }
@@ -253,6 +262,24 @@ pub trait DagWorker: Send {
         _created_at: DateTime<Utc>,
     ) {
     }
+
+    /// Persist a deploy-agent message (infra-plane path).
+    fn on_deploy_agent(
+        &mut self,
+        _key: &super::InfraRoutingKey,
+        _msg: &super::DeployAgentMessage,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
+
+    /// Persist a delete-agent message (infra-plane path).
+    fn on_delete_agent(
+        &mut self,
+        _key: &super::InfraRoutingKey,
+        _msg: &super::DeleteAgentMessage,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
 }
 
 /// Persistence layer for DAG nodes.
@@ -366,6 +393,34 @@ pub trait DagStore: Send + Sync {
     ) -> Result<(), String> {
         let _ = (dag_id, parent_id, created_at, state, key, msg);
         Err("insert_promote_node not implemented".to_string())
+    }
+
+    /// Insert a typed deploy-agent node. Writes to `dag_nodes` + `deploy_agent_nodes`.
+    fn insert_deploy_agent_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        key: &super::InfraRoutingKey,
+        msg: &super::DeployAgentMessage,
+    ) -> Result<(), String> {
+        let _ = (dag_id, parent_id, created_at, state, key, msg);
+        Err("insert_deploy_agent_node not implemented".to_string())
+    }
+
+    /// Insert a typed delete-agent node. Writes to `dag_nodes` + `delete_agent_nodes`.
+    fn insert_delete_agent_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        key: &super::InfraRoutingKey,
+        msg: &super::DeleteAgentMessage,
+    ) -> Result<(), String> {
+        let _ = (dag_id, parent_id, created_at, state, key, msg);
+        Err("insert_delete_agent_node not implemented".to_string())
     }
 
     /// Retrieve a node by its content-addressed ID.
@@ -495,6 +550,7 @@ pub struct InMemoryDagStore {
     nodes: std::sync::Mutex<Vec<DagNode>>,
     branches: std::sync::Mutex<Vec<Branch>>,
     sessions: std::sync::Mutex<Vec<Session>>,
+    agent_states: std::sync::Mutex<Vec<super::AgentState>>,
 }
 
 impl InMemoryDagStore {
@@ -503,6 +559,7 @@ impl InMemoryDagStore {
             nodes: std::sync::Mutex::new(Vec::new()),
             branches: std::sync::Mutex::new(Vec::new()),
             sessions: std::sync::Mutex::new(Vec::new()),
+            agent_states: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -850,6 +907,49 @@ impl DagStore for InMemoryDagStore {
     }
 }
 
+impl super::RegistryRepository for InMemoryDagStore {
+    fn save_model(&self, _: &super::Model) -> Result<(), super::RepositoryError> {
+        Ok(())
+    }
+    fn load_models(&self) -> Result<Vec<super::Model>, super::RepositoryError> {
+        Ok(vec![])
+    }
+    fn delete_model(&self, _: &str) -> Result<bool, super::RepositoryError> {
+        Ok(false)
+    }
+    fn model_exists(&self, _: &str) -> Result<bool, super::RepositoryError> {
+        Ok(false)
+    }
+    fn save_agent(&self, _: &super::Agent) -> Result<(), super::RepositoryError> {
+        Ok(())
+    }
+    fn load_agents(&self) -> Result<Vec<super::Agent>, super::RepositoryError> {
+        Ok(vec![])
+    }
+    fn delete_agent(&self, _: &str) -> Result<bool, super::RepositoryError> {
+        Ok(false)
+    }
+    fn agent_exists(&self, _: &str) -> Result<bool, super::RepositoryError> {
+        Ok(false)
+    }
+    fn append_agent_state(&self, state: &super::AgentState) -> Result<(), super::RepositoryError> {
+        let mut states = self.agent_states.lock().unwrap();
+        states.push(state.clone());
+        Ok(())
+    }
+    fn get_agent_state(
+        &self,
+        name: &str,
+    ) -> Result<Option<super::AgentState>, super::RepositoryError> {
+        let states = self.agent_states.lock().unwrap();
+        Ok(states
+            .iter()
+            .rev()
+            .find(|s| s.agent.as_str() == name)
+            .cloned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -866,6 +966,8 @@ mod tests {
             MessageType::Complete,
             MessageType::Fork,
             MessageType::Promote,
+            MessageType::DeployAgent,
+            MessageType::DeleteAgent,
         ] {
             assert_eq!(MessageType::from_str(mt.as_str()), Ok(mt));
         }
@@ -874,6 +976,16 @@ mod tests {
     #[test]
     fn message_type_from_unknown_returns_none() {
         assert!(MessageType::from_str("unknown").is_err());
+    }
+
+    #[test]
+    fn message_type_planes() {
+        assert_eq!(MessageType::Invoke.plane(), Plane::Data);
+        assert_eq!(MessageType::Complete.plane(), Plane::Data);
+        assert_eq!(MessageType::Fork.plane(), Plane::Session);
+        assert_eq!(MessageType::Promote.plane(), Plane::Session);
+        assert_eq!(MessageType::DeployAgent.plane(), Plane::Infra);
+        assert_eq!(MessageType::DeleteAgent.plane(), Plane::Infra);
     }
 
     // --- hash_dag_node tests ---

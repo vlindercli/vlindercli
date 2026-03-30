@@ -600,6 +600,81 @@ impl DagStore for GrpcStateClient {
         }
     }
 
+    fn insert_deploy_agent_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::InfraRoutingKey,
+        msg: &vlinder_core::domain::DeployAgentMessage,
+    ) -> Result<(), String> {
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot: {e}"))?;
+        let manifest_json =
+            serde_json::to_string(&msg.manifest).map_err(|e| format!("serialize manifest: {e}"))?;
+
+        let request = proto::InsertDeployAgentNodeRequest {
+            dag_hash: dag_id.to_string(),
+            parent_hash: parent_id.to_string(),
+            created_at: created_at.to_rfc3339(),
+            snapshot: snapshot_json,
+            submission_id: key.submission.as_str().to_string(),
+            agent_name: msg.manifest.name.clone(),
+            manifest_json,
+            message_id: msg.id.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = self
+            .runtime
+            .block_on(async { client.insert_deploy_agent_node(request).await })
+            .map_err(|e| e.to_string())?;
+
+        let resp = response.into_inner();
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_else(|| "unknown error".to_string()))
+        }
+    }
+
+    fn insert_delete_agent_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::InfraRoutingKey,
+        msg: &vlinder_core::domain::DeleteAgentMessage,
+    ) -> Result<(), String> {
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot: {e}"))?;
+
+        let request = proto::InsertDeleteAgentNodeRequest {
+            dag_hash: dag_id.to_string(),
+            parent_hash: parent_id.to_string(),
+            created_at: created_at.to_rfc3339(),
+            snapshot: snapshot_json,
+            submission_id: key.submission.as_str().to_string(),
+            agent_name: msg.agent.as_str().to_string(),
+            message_id: msg.id.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = self
+            .runtime
+            .block_on(async { client.insert_delete_agent_node(request).await })
+            .map_err(|e| e.to_string())?;
+
+        let resp = response.into_inner();
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_else(|| "unknown error".to_string()))
+        }
+    }
+
     fn get_invoke_node(
         &self,
         dag_hash: &DagNodeId,

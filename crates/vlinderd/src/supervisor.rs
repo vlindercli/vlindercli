@@ -109,7 +109,18 @@ impl Supervisor {
             &mut workers,
         );
 
-        // Registry must start next — other workers connect to it.
+        // State service — must start before registry (registry's RecordingQueue
+        // connects to it for DAG recording).
+        spawn_n(&mut workers, WorkerRole::State, 1);
+        wait_for_service(
+            &ensure_http(&config.distributed.state_addr),
+            "State service",
+            ping_state_service,
+            HealthCheckPolicy::Warn,
+            &mut workers,
+        );
+
+        // Registry — depends on secret service and state service.
         spawn_n(&mut workers, WorkerRole::Registry, counts.registry);
         if counts.registry > 0 {
             wait_for_service(
@@ -120,16 +131,6 @@ impl Supervisor {
                 &mut workers,
             );
         }
-
-        // State service — singleton gRPC server for DagStore queries (ADR 079).
-        spawn_n(&mut workers, WorkerRole::State, 1);
-        wait_for_service(
-            &ensure_http(&config.distributed.state_addr),
-            "State service",
-            ping_state_service,
-            HealthCheckPolicy::Warn,
-            &mut workers,
-        );
 
         // Catalog service — model catalog queries.
         #[cfg(any(feature = "ollama", feature = "openrouter"))]
@@ -193,6 +194,9 @@ impl Supervisor {
             WorkerRole::StorageVectorSqlite,
             counts.storage.vector.sqlite,
         );
+
+        // Infra plane worker
+        spawn_n(&mut workers, WorkerRole::Infra, counts.infra);
 
         // DAG git worker
         spawn_n(&mut workers, WorkerRole::DagGit, counts.dag_git);

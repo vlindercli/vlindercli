@@ -10,11 +10,11 @@ use super::proto::{
 use vlinder_core::domain::SecretStore;
 
 /// gRPC server that wraps a `SecretStore` implementation.
-pub struct SecretServiceServer {
+pub struct SecretServer {
     store: Arc<dyn SecretStore>,
 }
 
-impl SecretServiceServer {
+impl SecretServer {
     pub fn new(store: Arc<dyn SecretStore>) -> Self {
         Self { store }
     }
@@ -28,7 +28,7 @@ impl SecretServiceServer {
 }
 
 #[tonic::async_trait]
-impl SecretStoreService for SecretServiceServer {
+impl SecretStoreService for SecretServer {
     async fn ping(&self, _request: Request<PingRequest>) -> Result<Response<SemVer>, Status> {
         Ok(Response::new(SemVer {
             major: 0,

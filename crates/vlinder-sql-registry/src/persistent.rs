@@ -1,15 +1,13 @@
-//! `PersistentRegistry` — write-through registry with `SQLite` persistence.
+//! `PersistentRegistry` — write-through registry with pluggable persistence.
 //!
-//! Composes `InMemoryRegistry` (fast reads) with `SqliteRegistryRepository`
-//! (durable writes). `SQLite` is the source of truth; in-memory is a cache.
+//! Composes `InMemoryRegistry` (fast reads) with any `RegistryRepository`
+//! (durable writes). The repository is the source of truth; in-memory is a cache.
 //!
-//! On construction, loads all models and agents from disk (fail-fast).
+//! On construction, loads all models and agents from the repository (fail-fast).
 //! On `register_model()`/`register_agent()`, writes to disk first, then updates cache.
 
-use std::path::Path;
 use std::sync::Arc;
 
-use crate::storage::SqliteRegistryRepository;
 use crate::RegistryConfig;
 use vlinder_core::domain::InMemoryRegistry;
 use vlinder_core::domain::{
@@ -18,34 +16,26 @@ use vlinder_core::domain::{
     VectorStorageType,
 };
 
-/// Registry with write-through persistence to `SQLite`.
+/// Registry with write-through persistence.
 ///
-/// `SQLite` is the source of truth. `InMemoryRegistry` is the read cache.
-/// All writes go to disk first (fail-fast), then update the cache.
+/// The `RegistryRepository` is the source of truth. `InMemoryRegistry` is the read cache.
+/// All writes go to the repository first (fail-fast), then update the cache.
 pub struct PersistentRegistry {
     inner: InMemoryRegistry,
-    repo: SqliteRegistryRepository,
+    repo: Arc<dyn RegistryRepository>,
 }
 
 impl PersistentRegistry {
-    /// Open a persistent registry backed by `SQLite` at the given path.
+    /// Create a persistent registry backed by the given repository.
     ///
     /// Registers engine capabilities from config first, then loads all
-    /// existing models from disk (validating each against available engines).
+    /// existing models from the repository (validating each against available engines).
     /// Fails fast with a clear error on any failure.
-    pub fn open(
-        db_path: &Path,
+    pub fn new(
+        repo: Arc<dyn RegistryRepository>,
         config: &RegistryConfig,
         secret_store: Arc<dyn SecretStore>,
     ) -> Result<Self, RegistrationError> {
-        let repo = SqliteRegistryRepository::open(db_path).map_err(|e| {
-            RegistrationError::Persistence(format!(
-                "failed to open registry database '{}': {}",
-                db_path.display(),
-                e
-            ))
-        })?;
-
         let inner = InMemoryRegistry::new(secret_store);
 
         // Register engine capabilities BEFORE loading models so validation works
@@ -57,26 +47,18 @@ impl PersistentRegistry {
         }
 
         // Load persisted models (each validated against registered engines)
-        let models = repo.load_models().map_err(|e| {
-            RegistrationError::Persistence(format!(
-                "failed to load models from '{}': {}",
-                db_path.display(),
-                e
-            ))
-        })?;
+        let models = repo
+            .load_models()
+            .map_err(|e| RegistrationError::Persistence(format!("failed to load models: {e}")))?;
 
         for model in models {
             inner.register_model(model)?;
         }
 
         // Load persisted agents (bypasses validation — capabilities not yet registered)
-        let agents = repo.load_agents().map_err(|e| {
-            RegistrationError::Persistence(format!(
-                "failed to load agents from '{}': {}",
-                db_path.display(),
-                e
-            ))
-        })?;
+        let agents = repo
+            .load_agents()
+            .map_err(|e| RegistrationError::Persistence(format!("failed to load agents: {e}")))?;
 
         for agent in agents {
             inner.restore_agent(agent)?;
@@ -305,7 +287,8 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use vlinder_core::domain::InMemorySecretStore;
-    use vlinder_core::domain::{ModelType, Requirements, RuntimeType};
+    use vlinder_core::domain::{ModelType, RegistryRepository, Requirements, RuntimeType};
+    use vlinder_sql_state::SqliteDagStore;
 
     fn test_secret_store() -> Arc<dyn SecretStore> {
         Arc::new(InMemorySecretStore::new())
@@ -316,6 +299,15 @@ mod tests {
             inference_engines: vec![Provider::Ollama],
             embedding_engines: vec![Provider::Ollama],
         }
+    }
+
+    fn open_repo(db_path: &std::path::Path) -> Arc<SqliteDagStore> {
+        Arc::new(SqliteDagStore::open(db_path).unwrap())
+    }
+
+    fn open_registry(db_path: &std::path::Path) -> PersistentRegistry {
+        let repo = open_repo(db_path);
+        PersistentRegistry::new(repo, &test_config(), test_secret_store()).unwrap()
     }
 
     fn test_model(name: &str) -> Model {
@@ -332,43 +324,39 @@ mod tests {
     #[test]
     fn open_creates_db_if_not_exists() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
-
-        let registry =
-            PersistentRegistry::open(&db_path, &test_config(), test_secret_store()).unwrap();
+        let db_path = temp.path().join("state.db");
+        let registry = open_registry(&db_path);
         assert!(registry.get_models().is_empty());
     }
 
     #[test]
     fn loads_existing_models_on_open() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
 
-        // Pre-populate SQLite
+        // Pre-populate via SqliteDagStore
         {
-            let repo = SqliteRegistryRepository::open(&db_path).unwrap();
+            let repo = open_repo(&db_path);
             repo.save_model(&test_model("llama3")).unwrap();
         }
 
-        let registry =
-            PersistentRegistry::open(&db_path, &test_config(), test_secret_store()).unwrap();
+        let registry = open_registry(&db_path);
         assert!(registry.get_model("llama3").is_some());
     }
 
     #[test]
     fn register_model_persists_to_disk() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
 
-        let registry =
-            PersistentRegistry::open(&db_path, &test_config(), test_secret_store()).unwrap();
+        let registry = open_registry(&db_path);
         registry.register_model(test_model("phi3")).unwrap();
 
         // Verify in-memory
         assert!(registry.get_model("phi3").is_some());
 
-        // Verify on disk: open a fresh repo and check
-        let repo = SqliteRegistryRepository::open(&db_path).unwrap();
+        // Verify on disk: open a fresh store and check
+        let repo = open_repo(&db_path);
         let models = repo.load_models().unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "phi3");
@@ -377,10 +365,9 @@ mod tests {
     #[test]
     fn delete_model_removes_from_both() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
 
-        let registry =
-            PersistentRegistry::open(&db_path, &test_config(), test_secret_store()).unwrap();
+        let registry = open_registry(&db_path);
         registry.register_model(test_model("phi3")).unwrap();
         assert!(registry.get_model("phi3").is_some());
 
@@ -391,17 +378,16 @@ mod tests {
         assert!(registry.get_model("phi3").is_none());
 
         // Gone from disk
-        let repo = SqliteRegistryRepository::open(&db_path).unwrap();
+        let repo = open_repo(&db_path);
         assert!(!repo.model_exists("phi3").unwrap());
     }
 
     #[test]
     fn delete_nonexistent_model_returns_false() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
 
-        let registry =
-            PersistentRegistry::open(&db_path, &test_config(), test_secret_store()).unwrap();
+        let registry = open_registry(&db_path);
         let deleted = registry.delete_model("nope").unwrap();
         assert!(!deleted);
     }
@@ -409,33 +395,27 @@ mod tests {
     #[test]
     fn open_fails_fast_on_corrupt_db() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
         std::fs::write(&db_path, b"not a database").unwrap();
 
-        let result = PersistentRegistry::open(&db_path, &test_config(), test_secret_store());
-        let err = match result {
-            Err(e) => e.to_string(),
-            Ok(_) => panic!("expected error for corrupt db"),
-        };
-        assert!(err.contains("persistence error"), "got: {err}");
+        let result = SqliteDagStore::open(&db_path);
+        assert!(result.is_err());
     }
 
     #[test]
     fn survives_restart() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
 
         // First "session": add a model
         {
-            let registry =
-                PersistentRegistry::open(&db_path, &test_config(), test_secret_store()).unwrap();
+            let registry = open_registry(&db_path);
             registry.register_model(test_model("llama3")).unwrap();
         }
 
         // Second "session": model should be there
         {
-            let registry =
-                PersistentRegistry::open(&db_path, &test_config(), test_secret_store()).unwrap();
+            let registry = open_registry(&db_path);
             let model = registry.get_model("llama3");
             assert!(model.is_some(), "model should survive restart");
             assert_eq!(model.unwrap().name, "llama3");
@@ -467,8 +447,7 @@ mod tests {
 
     /// Open a `PersistentRegistry` with container runtime pre-registered.
     fn open_with_runtime(db_path: &std::path::Path) -> PersistentRegistry {
-        let registry =
-            PersistentRegistry::open(db_path, &test_config(), test_secret_store()).unwrap();
+        let registry = open_registry(db_path);
         registry.register_runtime(RuntimeType::Container);
         registry
     }
@@ -476,7 +455,7 @@ mod tests {
     #[test]
     fn register_agent_persists_to_disk() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
 
         let registry = open_with_runtime(&db_path);
         registry.register_agent(test_agent("echo")).unwrap();
@@ -485,8 +464,8 @@ mod tests {
         let agent = registry.get_agent_by_name("echo");
         assert!(agent.is_some());
 
-        // Verify on disk: open a fresh repo and check
-        let repo = SqliteRegistryRepository::open(&db_path).unwrap();
+        // Verify on disk: open a fresh store and check
+        let repo = open_repo(&db_path);
         let agents = repo.load_agents().unwrap();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].name, "echo");
@@ -495,7 +474,7 @@ mod tests {
     #[test]
     fn agents_survive_restart() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
 
         // First "session": register an agent
         {
@@ -505,8 +484,7 @@ mod tests {
 
         // Second "session": agent should be loaded via restore_agent
         {
-            let registry =
-                PersistentRegistry::open(&db_path, &test_config(), test_secret_store()).unwrap();
+            let registry = open_registry(&db_path);
             let agent = registry.get_agent_by_name("echo");
             assert!(agent.is_some(), "agent should survive restart");
             assert_eq!(agent.unwrap().name, "echo");
@@ -518,7 +496,7 @@ mod tests {
     #[test]
     fn delete_agent_removes_from_both() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
 
         let registry = open_with_runtime(&db_path);
         registry.register_agent(test_agent("echo")).unwrap();
@@ -531,14 +509,14 @@ mod tests {
         assert!(registry.get_agent_by_name("echo").is_none());
 
         // Gone from disk
-        let repo = SqliteRegistryRepository::open(&db_path).unwrap();
+        let repo = open_repo(&db_path);
         assert!(!repo.agent_exists("echo").unwrap());
     }
 
     #[test]
     fn delete_nonexistent_agent_returns_false() {
         let temp = tempfile::TempDir::new().unwrap();
-        let db_path = temp.path().join("registry.db");
+        let db_path = temp.path().join("state.db");
 
         let registry = open_with_runtime(&db_path);
         let deleted = registry.delete_agent("nope").unwrap();

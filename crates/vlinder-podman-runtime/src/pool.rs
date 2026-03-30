@@ -11,7 +11,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use vlinder_core::domain::{Agent, ImageRef, PodId, Registry, ResourceId, Runtime, RuntimeType};
+use vlinder_core::domain::{
+    Agent, AgentName, AgentState, AgentStatus, ImageRef, PodId, Registry, RegistryRepository,
+    ResourceId, Runtime, RuntimeType,
+};
 
 use crate::config::PodmanRuntimeConfig;
 use crate::podman_api::PodmanApiClient;
@@ -55,6 +58,7 @@ struct Pod {
 pub struct ContainerRuntime {
     id: ResourceId,
     registry: Arc<dyn Registry>,
+    repo: Arc<dyn RegistryRepository>,
     pods: HashMap<String, Pod>,
     config: PodmanRuntimeConfig,
     image_policy: ImagePolicy,
@@ -69,6 +73,7 @@ impl ContainerRuntime {
     pub fn new(
         config: &PodmanRuntimeConfig,
         registry: Arc<dyn Registry>,
+        repo: Arc<dyn RegistryRepository>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let registry_id = ResourceId::new(&config.registry_addr);
         let id = ResourceId::new(format!(
@@ -101,6 +106,7 @@ impl ContainerRuntime {
         Ok(Self {
             id,
             registry,
+            repo,
             pods: HashMap::new(),
             config: config.clone(),
             image_policy,
@@ -458,18 +464,60 @@ impl ContainerRuntime {
             }
         }
 
-        // Start pods for agents that don't have one yet
         for agent in &agents {
-            if self.pods.contains_key(&agent.name) {
-                continue;
-            }
-            if let Err(e) = self.start(&agent.name, agent) {
-                tracing::error!(
-                    event = "pod.start_failed",
-                    agent = %agent.name,
-                    error = %e,
-                    "Failed to start pod"
-                );
+            let state = self.repo.get_agent_state(&agent.name).ok().flatten();
+            let status = state.as_ref().map(|s| &s.status);
+
+            match status {
+                // Deploying: start pod, transition to Live or Failed
+                Some(AgentStatus::Deploying) if !self.pods.contains_key(&agent.name) => {
+                    match self.start(&agent.name, agent) {
+                        Ok(()) => {
+                            let live = AgentState::registered(AgentName::new(&agent.name))
+                                .transition(AgentStatus::Live, None);
+                            if let Err(e) = self.repo.append_agent_state(&live) {
+                                tracing::warn!(error = %e, "Failed to set Live state");
+                            }
+                            tracing::info!(
+                                event = "pod.deployed",
+                                agent = %agent.name,
+                                "Agent provisioned: Live"
+                            );
+                        }
+                        Err(e) => {
+                            let failed = AgentState::registered(AgentName::new(&agent.name))
+                                .transition(AgentStatus::Failed, Some(e.clone()));
+                            if let Err(e2) = self.repo.append_agent_state(&failed) {
+                                tracing::warn!(error = %e2, "Failed to set Failed state");
+                            }
+                            tracing::error!(
+                                event = "pod.start_failed",
+                                agent = %agent.name,
+                                error = %e,
+                                "Failed to start pod"
+                            );
+                        }
+                    }
+                }
+
+                // Deleting: tear down pod, delete from registry, transition to Deleted
+                Some(AgentStatus::Deleting) => {
+                    if let Some(pod) = self.pods.remove(&agent.name) {
+                        tracing::info!(event = "pod.teardown", agent = %agent.name, "Tearing down pod");
+                        self.podman.pod_stop_and_remove(&pod.pod_id, 5);
+                        self.cleanup_mount_volumes(&pod.mount_volumes);
+                    }
+                    // Soft delete: agent row stays in registry, state says Deleted
+                    let deleted = AgentState::registered(AgentName::new(&agent.name))
+                        .transition(AgentStatus::Deleted, None);
+                    if let Err(e) = self.repo.append_agent_state(&deleted) {
+                        tracing::warn!(error = %e, "Failed to set Deleted state");
+                    }
+                    tracing::info!(event = "agent.deleted", agent = %agent.name, "Agent torn down: Deleted");
+                }
+
+                // Live, Registered, or no state: nothing to do
+                _ => {}
             }
         }
     }
@@ -541,6 +589,10 @@ mod tests {
         Arc::new(InMemoryRegistry::new(secret_store))
     }
 
+    fn test_repo() -> Arc<dyn RegistryRepository> {
+        Arc::new(vlinder_core::domain::InMemoryDagStore::new())
+    }
+
     #[test]
     fn image_policy_from_config_pinned() {
         assert_eq!(ImagePolicy::from_config("pinned"), ImagePolicy::Pinned);
@@ -586,7 +638,7 @@ mod tests {
     fn runtime_id_format() {
         let config = test_config();
         let registry = test_registry();
-        let runtime = ContainerRuntime::new(&config, registry).unwrap();
+        let runtime = ContainerRuntime::new(&config, registry, test_repo()).unwrap();
 
         assert_eq!(
             runtime.id().as_str(),
@@ -599,7 +651,7 @@ mod tests {
     fn tick_returns_false_when_no_agents() {
         let config = test_config();
         let registry = test_registry();
-        let mut runtime = ContainerRuntime::new(&config, registry).unwrap();
+        let mut runtime = ContainerRuntime::new(&config, registry, test_repo()).unwrap();
 
         assert!(!runtime.tick());
     }

@@ -7,10 +7,11 @@ use std::thread;
 use std::time::Duration;
 
 use vlinder_core::domain::{
-    Agent, InMemoryRegistry, InMemorySecretStore, Registry, Requirements, RuntimeType, SecretStore,
-    SubmissionId,
+    Agent, InMemoryDagStore, InMemoryRegistry, InMemorySecretStore, MessageQueue, Registry,
+    RegistryRepository, Requirements, RuntimeType, SecretStore, SubmissionId,
 };
-use vlinder_sql_registry::registry_service::{GrpcRegistryClient, RegistryServiceServer};
+use vlinder_core::queue::InMemoryQueue;
+use vlinder_sql_registry::registry_service::{GrpcRegistryClient, RegistryServer};
 
 fn test_secret_store() -> Arc<dyn SecretStore> {
     Arc::new(InMemorySecretStore::new())
@@ -28,6 +29,9 @@ fn empty_requirements() -> Requirements {
 fn start_server_background(registry: Arc<dyn Registry>) -> SocketAddr {
     use tonic::transport::Server;
 
+    let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
+    let repo: Arc<dyn RegistryRepository> = Arc::new(InMemoryDagStore::new());
+
     // Use a channel to communicate the bound address
     let (tx, rx) = std::sync::mpsc::channel();
 
@@ -40,7 +44,7 @@ fn start_server_background(registry: Arc<dyn Registry>) -> SocketAddr {
 
             tx.send(bound_addr).unwrap();
 
-            let service = RegistryServiceServer::new(registry).into_service();
+            let service = RegistryServer::new(registry, queue, repo).into_service();
             Server::builder()
                 .add_service(service)
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))

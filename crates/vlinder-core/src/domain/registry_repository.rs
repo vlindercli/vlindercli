@@ -37,6 +37,18 @@ pub trait RegistryRepository: Send + Sync {
 
     /// Check if an agent exists.
     fn agent_exists(&self, name: &str) -> Result<bool, RepositoryError>;
+
+    /// Append a state transition to the agent state log.
+    fn append_agent_state(&self, _state: &super::AgentState) -> Result<(), RepositoryError> {
+        Err(RepositoryError::Database(
+            "append_agent_state not implemented".to_string(),
+        ))
+    }
+
+    /// Get the latest agent deployment state by name.
+    fn get_agent_state(&self, _name: &str) -> Result<Option<super::AgentState>, RepositoryError> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug)]

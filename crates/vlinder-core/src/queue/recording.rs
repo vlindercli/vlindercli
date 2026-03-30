@@ -13,8 +13,9 @@ use chrono::Utc;
 
 use crate::domain::{
     hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataRoutingKey,
-    ForkMessage, Instance, InvokeMessage, MessageQueue, MessageType, PromoteMessage, QueueError,
-    SessionMessageKind, SessionRoutingKey, SessionStartMessage, Snapshot, StateHash, SubmissionId,
+    DeleteAgentMessage, DeployAgentMessage, ForkMessage, InfraRoutingKey, Instance, InvokeMessage,
+    MessageQueue, MessageType, PromoteMessage, QueueError, SessionMessageKind, SessionRoutingKey,
+    SessionStartMessage, Snapshot, StateHash, SubmissionId,
 };
 
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
@@ -484,6 +485,38 @@ impl MessageQueue for RecordingQueue {
         let _ = self.inner.send_session_start(key, msg);
         Ok(default_branch)
     }
+
+    fn send_deploy_agent(
+        &self,
+        key: InfraRoutingKey,
+        msg: DeployAgentMessage,
+    ) -> Result<(), QueueError> {
+        self.record_deploy_agent(&key, &msg);
+        let _ = self.inner.send_deploy_agent(key, msg);
+        Ok(())
+    }
+
+    fn send_delete_agent(
+        &self,
+        key: InfraRoutingKey,
+        msg: DeleteAgentMessage,
+    ) -> Result<(), QueueError> {
+        self.record_delete_agent(&key, &msg);
+        let _ = self.inner.send_delete_agent(key, msg);
+        Ok(())
+    }
+
+    fn receive_deploy_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
+        self.inner.receive_deploy_agent()
+    }
+
+    fn receive_delete_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
+        self.inner.receive_delete_agent()
+    }
 }
 
 impl RecordingQueue {
@@ -545,6 +578,60 @@ impl RecordingQueue {
                 .insert_promote_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
         {
             tracing::warn!(error = %id, "Failed to record promote node: {e}");
+        }
+    }
+
+    /// Record a deploy-agent DAG node.
+    fn record_deploy_agent(&self, key: &InfraRoutingKey, msg: &DeployAgentMessage) {
+        // HACK: hash_dag_node requires a SessionId, but infra nodes are cluster-scoped
+        // and have no session. Using a synthetic zero UUID as a placeholder. The real fix
+        // is to make session_id optional in hash_dag_node.
+        let synthetic_session =
+            crate::domain::SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string())
+                .unwrap();
+        let id = hash_dag_node(
+            msg.manifest.name.as_bytes(),
+            &DagNodeId::root(),
+            &MessageType::DeployAgent,
+            &[],
+            &synthetic_session,
+        );
+
+        if let Err(e) = self.store.insert_deploy_agent_node(
+            &id,
+            &DagNodeId::root(),
+            Utc::now(),
+            &Snapshot::empty(),
+            key,
+            msg,
+        ) {
+            tracing::warn!(error = %e, "Failed to record deploy-agent node");
+        }
+    }
+
+    /// Record a delete-agent DAG node.
+    fn record_delete_agent(&self, key: &InfraRoutingKey, msg: &DeleteAgentMessage) {
+        // HACK: same synthetic session as record_deploy_agent — see comment above.
+        let synthetic_session =
+            crate::domain::SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string())
+                .unwrap();
+        let id = hash_dag_node(
+            msg.agent.as_str().as_bytes(),
+            &DagNodeId::root(),
+            &MessageType::DeleteAgent,
+            &[],
+            &synthetic_session,
+        );
+
+        if let Err(e) = self.store.insert_delete_agent_node(
+            &id,
+            &DagNodeId::root(),
+            Utc::now(),
+            &Snapshot::empty(),
+            key,
+            msg,
+        ) {
+            tracing::warn!(error = %e, "Failed to record delete-agent node");
         }
     }
 }

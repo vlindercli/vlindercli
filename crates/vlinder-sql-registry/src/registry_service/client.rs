@@ -38,6 +38,82 @@ impl GrpcRegistryClient {
             })
         })
     }
+
+    /// Submit an agent deploy via the infra plane (CQRS write path).
+    ///
+    /// Returns a submission ID for polling status.
+    pub fn deploy_agent(
+        &self,
+        manifest: &vlinder_core::domain::AgentManifest,
+    ) -> Result<SubmissionId, String> {
+        let manifest_json =
+            serde_json::to_string(&manifest).map_err(|e| format!("serialize manifest: {e}"))?;
+        let mut client = self.client.clone();
+        let response = self
+            .runtime
+            .block_on(async {
+                client
+                    .deploy_agent(proto::DeployAgentRequest { manifest_json })
+                    .await
+            })
+            .map_err(|e| e.to_string())?;
+        let resp = response.into_inner();
+        Ok(SubmissionId::from(resp.submission_id))
+    }
+
+    /// Submit an agent delete via the infra plane (CQRS write path).
+    pub fn submit_delete_agent(&self, name: &str) -> Result<SubmissionId, String> {
+        let mut client = self.client.clone();
+        let response = self
+            .runtime
+            .block_on(async {
+                client
+                    .submit_delete_agent(proto::SubmitDeleteAgentRequest {
+                        name: name.to_string(),
+                    })
+                    .await
+            })
+            .map_err(|e| e.to_string())?;
+        let resp = response.into_inner();
+        Ok(SubmissionId::from(resp.submission_id))
+    }
+
+    /// Query agent deployment state.
+    pub fn get_agent_state(
+        &self,
+        name: &str,
+    ) -> Result<Option<vlinder_core::domain::AgentState>, String> {
+        let mut client = self.client.clone();
+        let response = self
+            .runtime
+            .block_on(async {
+                client
+                    .get_agent_state(proto::GetAgentStateRequest {
+                        name: name.to_string(),
+                    })
+                    .await
+            })
+            .map_err(|e| e.to_string())?;
+        let resp = response.into_inner();
+        match resp.status {
+            Some(status) => {
+                let agent_status: vlinder_core::domain::AgentStatus =
+                    status.parse().map_err(|e: String| e)?;
+                let updated_at = resp
+                    .updated_at
+                    .as_deref()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map_or_else(chrono::Utc::now, |dt| dt.with_timezone(&chrono::Utc));
+                Ok(Some(vlinder_core::domain::AgentState {
+                    agent: vlinder_core::domain::AgentName::new(name),
+                    status: agent_status,
+                    updated_at,
+                    error: resp.error,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 /// Ping a registry server at the given address, returning its protocol version.

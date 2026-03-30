@@ -19,7 +19,7 @@ use vlinder_core::domain::{
 
 /// SQLite-backed `DagStore`.
 pub struct SqliteDagStore {
-    conn: Arc<Mutex<SqliteConnection>>,
+    pub(crate) conn: Arc<Mutex<SqliteConnection>>,
 }
 
 impl SqliteDagStore {
@@ -61,11 +61,11 @@ impl SqliteDagStore {
                  hash TEXT PRIMARY KEY,
                  parent_hash TEXT NOT NULL,
                  message_type TEXT NOT NULL,
-                 session_id TEXT NOT NULL REFERENCES sessions(id),
-                 submission_id TEXT NOT NULL,
+                 session_id TEXT REFERENCES sessions(id),
+                 submission_id TEXT,
+                 branch_id INTEGER REFERENCES branches(id),
                  created_at TEXT NOT NULL,
                  protocol_version TEXT NOT NULL DEFAULT '',
-                 branch_id INTEGER NOT NULL REFERENCES branches(id),
                  snapshot TEXT NOT NULL DEFAULT '{}'
              );
              CREATE INDEX IF NOT EXISTS idx_dag_nodes_session
@@ -134,6 +134,48 @@ impl SqliteDagStore {
                  message_id TEXT NOT NULL UNIQUE,
                  branch_id INTEGER REFERENCES branches(id)
              );
+
+             -- Infra read model (ADR 121)
+             CREATE TABLE IF NOT EXISTS agents (
+                 name TEXT PRIMARY KEY,
+                 description TEXT NOT NULL,
+                 source TEXT,
+                 runtime TEXT NOT NULL,
+                 executable TEXT NOT NULL,
+                 image_digest TEXT,
+                 object_storage TEXT,
+                 vector_storage TEXT,
+                 requirements_json TEXT NOT NULL,
+                 prompts_json TEXT,
+                 public_key TEXT
+             );
+             CREATE TABLE IF NOT EXISTS models (
+                 name TEXT PRIMARY KEY,
+                 model_type TEXT NOT NULL,
+                 provider TEXT NOT NULL,
+                 model_path TEXT NOT NULL,
+                 digest TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS deploy_agent_nodes (
+                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
+                 agent_name TEXT NOT NULL,
+                 manifest_json TEXT NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE
+             );
+             CREATE TABLE IF NOT EXISTS delete_agent_nodes (
+                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
+                 agent_name TEXT NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE
+             );
+             CREATE TABLE IF NOT EXISTS agent_states (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 agent_name TEXT NOT NULL REFERENCES agents(name),
+                 state TEXT NOT NULL,
+                 updated_at TEXT NOT NULL,
+                 error TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_agent_states_name
+                 ON agent_states (agent_name, updated_at);
              ",
         )
         .map_err(|e| format!("failed to initialize dag store: {e}"))?;
@@ -194,11 +236,14 @@ fn dag_node_row_to_domain(r: crate::models::DagNodeRow) -> DagNode {
         .unwrap_or_default();
     let state: vlinder_core::domain::Snapshot = serde_json::from_str(&r.snapshot)
         .unwrap_or_else(|_| vlinder_core::domain::Snapshot::empty());
-    let session = SessionId::try_from(r.session_id).unwrap_or_else(|_| {
-        SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string()).unwrap()
-    });
-    let branch = vlinder_core::domain::BranchId::from(r.branch_id);
-    let submission = vlinder_core::domain::SubmissionId::from(r.submission_id);
+    let session = r
+        .session_id
+        .and_then(|s| SessionId::try_from(s).ok())
+        .unwrap_or_else(|| {
+            SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string()).unwrap()
+        });
+    let branch = vlinder_core::domain::BranchId::from(r.branch_id.unwrap_or(0));
+    let submission = vlinder_core::domain::SubmissionId::from(r.submission_id.unwrap_or_default());
 
     DagNode {
         id: DagNodeId::from(r.hash),
@@ -261,11 +306,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "invoke",
-                session_id: key.session.as_str(),
-                submission_id: key.submission.as_str(),
+                session_id: Some(key.session.as_str()),
+                submission_id: Some(key.submission.as_str()),
+                branch_id: Some(key.branch.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: key.branch.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -315,11 +360,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "complete",
-                session_id: session.as_str(),
-                submission_id: submission.as_str(),
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: branch.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -372,11 +417,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "request",
-                session_id: session.as_str(),
-                submission_id: submission.as_str(),
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: branch.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -432,11 +477,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "response",
-                session_id: session.as_str(),
-                submission_id: submission.as_str(),
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: branch.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -661,20 +706,26 @@ impl DagStore for SqliteDagStore {
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
 
-        let row: Option<(crate::models::InvokeNodeRow, String, String, i64, String)> =
-            invoke_nodes::table
-                .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(invoke_nodes::dag_hash)))
-                .filter(invoke_nodes::dag_hash.eq(dag_hash.as_str()))
-                .select((
-                    crate::models::InvokeNodeRow::as_select(),
-                    dag_nodes::session_id,
-                    dag_nodes::submission_id,
-                    dag_nodes::branch_id,
-                    dag_nodes::parent_hash,
-                ))
-                .first(&mut *conn)
-                .optional()
-                .map_err(|e| format!("get_invoke_node failed: {e}"))?;
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            crate::models::InvokeNodeRow,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            String,
+        )> = invoke_nodes::table
+            .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(invoke_nodes::dag_hash)))
+            .filter(invoke_nodes::dag_hash.eq(dag_hash.as_str()))
+            .select((
+                crate::models::InvokeNodeRow::as_select(),
+                dag_nodes::session_id,
+                dag_nodes::submission_id,
+                dag_nodes::branch_id,
+                dag_nodes::parent_hash,
+            ))
+            .first(&mut *conn)
+            .optional()
+            .map_err(|e| format!("get_invoke_node failed: {e}"))?;
 
         let result = row.map(|(inv, session_id, submission_id, branch, parent_hash)| {
             let harness: vlinder_core::domain::HarnessType = inv
@@ -687,9 +738,13 @@ impl DagStore for SqliteDagStore {
                 .unwrap_or(vlinder_core::domain::RuntimeType::Container);
 
             let key = vlinder_core::domain::DataRoutingKey {
-                session: SessionId::try_from(session_id).unwrap_or_else(|_| SessionId::new()),
-                branch: BranchId::from(branch),
-                submission: vlinder_core::domain::SubmissionId::from(submission_id),
+                session: session_id
+                    .and_then(|s| SessionId::try_from(s).ok())
+                    .unwrap_or_else(SessionId::new),
+                branch: BranchId::from(branch.unwrap_or(0)),
+                submission: vlinder_core::domain::SubmissionId::from(
+                    submission_id.unwrap_or_default(),
+                ),
                 kind: vlinder_core::domain::DataMessageKind::Invoke {
                     harness,
                     runtime,
@@ -981,11 +1036,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "fork",
-                session_id: key.session.as_str(),
-                submission_id: key.submission.as_str(),
+                session_id: Some(key.session.as_str()),
+                submission_id: Some(key.submission.as_str()),
+                branch_id: Some(branch_id.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: branch_id.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -1031,11 +1086,11 @@ impl DagStore for SqliteDagStore {
                 hash: dag_id.as_str(),
                 parent_hash: parent_id.as_str(),
                 message_type: "promote",
-                session_id: key.session.as_str(),
-                submission_id: key.submission.as_str(),
+                session_id: Some(key.session.as_str()),
+                submission_id: Some(key.submission.as_str()),
+                branch_id: Some(msg.branch_id.as_i64()),
                 created_at: &created_at_str,
                 protocol_version: "v1",
-                branch_id: msg.branch_id.as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -1050,6 +1105,99 @@ impl DagStore for SqliteDagStore {
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert promote_nodes failed: {e}"))?;
+
+        Ok(())
+    }
+
+    fn insert_deploy_agent_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::InfraRoutingKey,
+        msg: &vlinder_core::domain::DeployAgentMessage,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewDeployAgentNode};
+        use crate::schema::{dag_nodes, deploy_agent_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let created_at_str = created_at.to_rfc3339();
+        let manifest_json = serde_json::to_string(&msg.manifest)
+            .map_err(|e| format!("serialize manifest failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "deploy-agent",
+                session_id: None,
+                submission_id: Some(key.submission.as_str()),
+                branch_id: None,
+                created_at: &created_at_str,
+                protocol_version: "v1",
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(deploy_agent_nodes::table)
+            .values(&NewDeployAgentNode {
+                dag_hash: dag_id.as_str(),
+                agent_name: &msg.manifest.name,
+                manifest_json: &manifest_json,
+                message_id: msg.id.as_str(),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert deploy_agent_nodes failed: {e}"))?;
+
+        Ok(())
+    }
+
+    fn insert_delete_agent_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::InfraRoutingKey,
+        msg: &vlinder_core::domain::DeleteAgentMessage,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewDeleteAgentNode};
+        use crate::schema::{dag_nodes, delete_agent_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let created_at_str = created_at.to_rfc3339();
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "delete-agent",
+                session_id: None,
+                submission_id: Some(key.submission.as_str()),
+                branch_id: None,
+                created_at: &created_at_str,
+                protocol_version: "v1",
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(delete_agent_nodes::table)
+            .values(&NewDeleteAgentNode {
+                dag_hash: dag_id.as_str(),
+                agent_name: msg.agent.as_str(),
+                message_id: msg.id.as_str(),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert delete_agent_nodes failed: {e}"))?;
 
         Ok(())
     }
@@ -1087,11 +1235,11 @@ impl SqliteDagStore {
                 hash: node.id.as_str(),
                 parent_hash: node.parent_id.as_str(),
                 message_type: node.message_type().as_str(),
-                session_id: node.session_id().as_str(),
-                submission_id: node.submission_id().as_str(),
+                session_id: Some(node.session_id().as_str()),
+                submission_id: Some(node.submission_id().as_str()),
+                branch_id: Some(node.branch_id().as_i64()),
                 created_at: &created_at_str,
                 protocol_version: node.protocol_version(),
-                branch_id: node.branch_id().as_i64(),
                 snapshot: &snapshot_json,
             })
             .execute(&mut *conn)
@@ -1457,5 +1605,80 @@ mod tests {
         assert!(result.is_ok());
         let node = result.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::Fork);
+    }
+
+    // ========================================================================
+    // Infra plane insert tests
+    // ========================================================================
+
+    #[test]
+    fn insert_deploy_agent_node_round_trip() {
+        let (store, _dir) = test_store();
+
+        let manifest = vlinder_core::domain::AgentManifest {
+            name: "test-agent".to_string(),
+            description: "Test".to_string(),
+            source: None,
+            runtime: "container".to_string(),
+            executable: "localhost/test:latest".to_string(),
+            requirements: vlinder_core::domain::RequirementsConfig {
+                models: std::collections::HashMap::new(),
+                services: std::collections::HashMap::new(),
+                mounts: std::collections::HashMap::new(),
+            },
+            prompts: None,
+            object_storage: None,
+            vector_storage: None,
+        };
+
+        let msg = vlinder_core::domain::DeployAgentMessage::new(manifest);
+        let key = vlinder_core::domain::InfraRoutingKey {
+            submission: sub(),
+            kind: vlinder_core::domain::InfraMessageKind::DeployAgent,
+        };
+        let dag_id = DagNodeId::from("deploy-hash-1".to_string());
+
+        store
+            .insert_deploy_agent_node(
+                &dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &key,
+                &msg,
+            )
+            .unwrap();
+
+        let node = store.get_node(&dag_id).unwrap().unwrap();
+        assert_eq!(node.message_type(), MessageType::DeployAgent);
+        assert!(node.session.as_str().contains("00000000")); // nullable → default
+    }
+
+    #[test]
+    fn insert_delete_agent_node_round_trip() {
+        let (store, _dir) = test_store();
+
+        let msg = vlinder_core::domain::DeleteAgentMessage::new(
+            vlinder_core::domain::AgentName::new("echo"),
+        );
+        let key = vlinder_core::domain::InfraRoutingKey {
+            submission: sub(),
+            kind: vlinder_core::domain::InfraMessageKind::DeleteAgent,
+        };
+        let dag_id = DagNodeId::from("delete-hash-1".to_string());
+
+        store
+            .insert_delete_agent_node(
+                &dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &key,
+                &msg,
+            )
+            .unwrap();
+
+        let node = store.get_node(&dag_id).unwrap().unwrap();
+        assert_eq!(node.message_type(), MessageType::DeleteAgent);
     }
 }

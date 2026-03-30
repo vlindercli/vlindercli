@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    Agent, AgentName, CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey, MessageId,
-    MessageQueue, Registry, ResourceId, Runtime, RuntimeDiagnostics, RuntimeType,
+    Agent, AgentName, AgentState, AgentStatus, CompleteMessage, DagNodeId, DataMessageKind,
+    DataRoutingKey, MessageId, MessageQueue, Registry, RegistryRepository, ResourceId, Runtime,
+    RuntimeDiagnostics, RuntimeType,
 };
 
 use crate::config::LambdaRuntimeConfig;
@@ -30,6 +31,7 @@ pub struct LambdaRuntime {
     id: ResourceId,
     queue: Arc<dyn MessageQueue + Send + Sync>,
     registry: Arc<dyn Registry>,
+    repo: Arc<dyn RegistryRepository>,
     functions: HashMap<String, DeployedFunction>,
     config: LambdaRuntimeConfig,
     client: Box<dyn LambdaClient>,
@@ -42,16 +44,24 @@ impl LambdaRuntime {
     pub fn new(
         config: &LambdaRuntimeConfig,
         registry: Arc<dyn Registry>,
+        repo: Arc<dyn RegistryRepository>,
         queue: Arc<dyn MessageQueue + Send + Sync>,
     ) -> Result<Self, LambdaError> {
         let client = AwsLambdaClient::new(&config.region)?;
-        Ok(Self::with_client(config, registry, queue, Box::new(client)))
+        Ok(Self::with_client(
+            config,
+            registry,
+            repo,
+            queue,
+            Box::new(client),
+        ))
     }
 
     /// Create a runtime with an injected client (for testing).
     fn with_client(
         config: &LambdaRuntimeConfig,
         registry: Arc<dyn Registry>,
+        repo: Arc<dyn RegistryRepository>,
         queue: Arc<dyn MessageQueue + Send + Sync>,
         client: Box<dyn LambdaClient>,
     ) -> Self {
@@ -66,6 +76,7 @@ impl LambdaRuntime {
             id,
             queue,
             registry,
+            repo,
             functions: HashMap::new(),
             config: config.clone(),
             client,
@@ -98,17 +109,53 @@ impl LambdaRuntime {
             self.undeploy(&name);
         }
 
-        // Deploy missing: in registry but not deployed.
         for (name, agent) in &desired {
-            if !self.functions.contains_key(name) {
-                tracing::info!(agent = name.as_str(), "Deploying Lambda function");
-                if let Err(e) = self.deploy(name, agent) {
-                    tracing::error!(
-                        agent = name.as_str(),
-                        error = %e,
-                        "Failed to deploy Lambda function"
-                    );
+            let state = self.repo.get_agent_state(name).ok().flatten();
+            let status = state.as_ref().map(|s| &s.status);
+
+            match status {
+                // Deploying: create Lambda function, transition to Live or Failed
+                Some(AgentStatus::Deploying) if !self.functions.contains_key(name) => {
+                    tracing::info!(agent = name.as_str(), "Deploying Lambda function");
+                    match self.deploy(name, agent) {
+                        Ok(()) => {
+                            let live = AgentState::registered(AgentName::new(name))
+                                .transition(AgentStatus::Live, None);
+                            if let Err(e) = self.repo.append_agent_state(&live) {
+                                tracing::warn!(error = %e, "Failed to set Live state");
+                            }
+                            tracing::info!(agent = name.as_str(), "Lambda function deployed: Live");
+                        }
+                        Err(e) => {
+                            let failed = AgentState::registered(AgentName::new(name))
+                                .transition(AgentStatus::Failed, Some(e.to_string()));
+                            if let Err(e2) = self.repo.append_agent_state(&failed) {
+                                tracing::warn!(error = %e2, "Failed to set Failed state");
+                            }
+                            tracing::error!(
+                                agent = name.as_str(),
+                                error = %e,
+                                "Failed to deploy Lambda function"
+                            );
+                        }
+                    }
                 }
+
+                // Deleting: tear down function, delete from registry, transition to Deleted
+                Some(AgentStatus::Deleting) => {
+                    tracing::info!(agent = name.as_str(), "Tearing down Lambda function");
+                    self.undeploy(name);
+                    // Soft delete: agent row stays in registry, state says Deleted
+                    let deleted = AgentState::registered(AgentName::new(name))
+                        .transition(AgentStatus::Deleted, None);
+                    if let Err(e) = self.repo.append_agent_state(&deleted) {
+                        tracing::warn!(error = %e, "Failed to set Deleted state");
+                    }
+                    tracing::info!(agent = name.as_str(), "Lambda function torn down: Deleted");
+                }
+
+                // Live or other states: nothing to do
+                _ => {}
             }
         }
 
@@ -437,10 +484,30 @@ mod tests {
         .unwrap()
     }
 
-    fn make_runtime(registry: Arc<dyn Registry>) -> LambdaRuntime {
+    fn test_repo() -> Arc<dyn RegistryRepository> {
+        Arc::new(vlinder_core::domain::InMemoryDagStore::new())
+    }
+
+    /// Set an agent to `Deploying` state so the runtime will provision it.
+    fn set_deploying(repo: &dyn RegistryRepository, name: &str) {
+        let state =
+            AgentState::registered(AgentName::new(name)).transition(AgentStatus::Deploying, None);
+        repo.append_agent_state(&state).unwrap();
+    }
+
+    fn make_runtime(
+        registry: Arc<dyn Registry>,
+        repo: Arc<dyn RegistryRepository>,
+    ) -> LambdaRuntime {
         let config = test_config();
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
-        LambdaRuntime::with_client(&config, registry, queue, Box::new(MockLambdaClient::new()))
+        LambdaRuntime::with_client(
+            &config,
+            registry,
+            repo,
+            queue,
+            Box::new(MockLambdaClient::new()),
+        )
     }
 
     // ── Tests ───────────────────────────────────────────────────────
@@ -448,7 +515,7 @@ mod tests {
     #[test]
     fn runtime_id_format() {
         let registry = test_registry();
-        let runtime = make_runtime(registry);
+        let runtime = make_runtime(registry, test_repo());
 
         assert_eq!(
             runtime.id().as_str(),
@@ -460,7 +527,7 @@ mod tests {
     #[test]
     fn tick_returns_false_when_no_agents() {
         let registry = test_registry();
-        let mut runtime = make_runtime(registry);
+        let mut runtime = make_runtime(registry, test_repo());
 
         assert!(!runtime.tick());
         assert!(runtime.functions.is_empty());
@@ -469,27 +536,31 @@ mod tests {
     #[test]
     fn tick_deploys_new_agent() {
         let registry = test_registry();
+        let repo = test_repo();
         let agent = make_lambda_agent("echo");
         registry.register_agent(agent).unwrap();
+        set_deploying(&*repo, "echo");
 
-        let mut runtime = make_runtime(registry);
+        let mut runtime = make_runtime(registry, repo);
 
         // First tick: deploys the agent → count changed.
         assert!(runtime.tick());
         assert_eq!(runtime.functions.len(), 1);
         assert!(runtime.functions.contains_key("echo"));
 
-        // Second tick: no change.
+        // Second tick: no change (now Live).
         assert!(!runtime.tick());
     }
 
     #[test]
     fn tick_removes_orphan() {
         let registry = test_registry();
+        let repo = test_repo();
         let agent = make_lambda_agent("echo");
         registry.register_agent(agent).unwrap();
+        set_deploying(&*repo, "echo");
 
-        let mut runtime = make_runtime(registry.clone());
+        let mut runtime = make_runtime(registry.clone(), repo);
         runtime.tick(); // deploys
         assert_eq!(runtime.functions.len(), 1);
 
@@ -502,10 +573,13 @@ mod tests {
     #[test]
     fn shutdown_undeploys_all() {
         let registry = test_registry();
+        let repo = test_repo();
         registry.register_agent(make_lambda_agent("alpha")).unwrap();
         registry.register_agent(make_lambda_agent("beta")).unwrap();
+        set_deploying(&*repo, "alpha");
+        set_deploying(&*repo, "beta");
 
-        let mut runtime = make_runtime(registry);
+        let mut runtime = make_runtime(registry, repo);
         runtime.tick();
         assert_eq!(runtime.functions.len(), 2);
 
@@ -516,13 +590,16 @@ mod tests {
     #[test]
     fn deploy_creates_role_and_function_with_correct_names() {
         let registry = test_registry();
+        let repo = test_repo();
         let agent = make_lambda_agent("echo");
         registry.register_agent(agent).unwrap();
+        set_deploying(&*repo, "echo");
 
         let mock = MockLambdaClient::new();
         let config = test_config();
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
-        let mut runtime = LambdaRuntime::with_client(&config, registry, queue, Box::new(mock));
+        let mut runtime =
+            LambdaRuntime::with_client(&config, registry, repo, queue, Box::new(mock));
 
         runtime.tick();
 
@@ -539,14 +616,17 @@ mod tests {
         };
 
         let registry = test_registry();
+        let repo = test_repo();
         let agent = make_lambda_agent("echo");
         registry.register_agent(agent).unwrap();
+        set_deploying(&*repo, "echo");
 
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let config = test_config();
         let mut runtime = LambdaRuntime::with_client(
             &config,
             registry,
+            repo,
             queue.clone(),
             Box::new(MockLambdaClient::new()),
         );
@@ -597,8 +677,10 @@ mod tests {
         };
 
         let registry = test_registry();
+        let repo = test_repo();
         let agent = make_lambda_agent("echo");
         registry.register_agent(agent).unwrap();
+        set_deploying(&*repo, "echo");
 
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let config = test_config();
@@ -607,6 +689,7 @@ mod tests {
         let mut runtime = LambdaRuntime::with_client(
             &config,
             registry,
+            repo,
             queue.clone(),
             Box::new(FailingLambdaClient),
         );
@@ -701,8 +784,10 @@ mod tests {
         }
 
         let registry = test_registry();
+        let repo = test_repo();
         let agent = make_lambda_agent("echo");
         registry.register_agent(agent).unwrap();
+        set_deploying(&*repo, "echo");
 
         let captured = StdArc::new(Mutex::new(CapturedVpc::default()));
 
@@ -714,7 +799,8 @@ mod tests {
             captured: captured.clone(),
         };
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
-        let mut runtime = LambdaRuntime::with_client(&config, registry, queue, Box::new(client));
+        let mut runtime =
+            LambdaRuntime::with_client(&config, registry, repo, queue, Box::new(client));
 
         runtime.tick();
 

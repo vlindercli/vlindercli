@@ -12,7 +12,7 @@ mod server;
 #[cfg(feature = "client")]
 pub use client::{ping_harness, GrpcHarnessClient};
 #[cfg(feature = "server")]
-pub use server::HarnessServiceServer;
+pub use server::HarnessServer;
 
 /// Generated protobuf types — tonic does not emit `#[automatically_derived]` yet,
 /// so we suppress pedantic lints manually until it does.

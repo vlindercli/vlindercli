@@ -33,6 +33,11 @@ service Registry {
   rpc GetJob(GetJobRequest) returns (GetJobResponse);
   rpc UpdateJobStatus(UpdateJobStatusRequest) returns (UpdateJobStatusResponse);
   rpc ListPendingJobs(ListPendingJobsRequest) returns (ListPendingJobsResponse);
+
+  // Infra plane (ADR 121)
+  rpc DeployAgent(DeployAgentRequest) returns (DeployAgentResponse);
+  rpc SubmitDeleteAgent(SubmitDeleteAgentRequest) returns (SubmitDeleteAgentResponse);
+  rpc GetAgentState(GetAgentStateRequest) returns (GetAgentStateResponse);
 }
 
 // =============================================================================
@@ -306,4 +311,34 @@ message ListPendingJobsRequest {}
 
 message ListPendingJobsResponse {
   repeated Job jobs = 1;
+}
+
+// =============================================================================
+// Infra Plane (ADR 121)
+// =============================================================================
+
+message DeployAgentRequest {
+  string manifest_json = 1;  // JSON-serialized AgentManifest
+}
+
+message DeployAgentResponse {
+  string submission_id = 1;
+}
+
+message SubmitDeleteAgentRequest {
+  string name = 1;
+}
+
+message SubmitDeleteAgentResponse {
+  string submission_id = 1;
+}
+
+message GetAgentStateRequest {
+  string name = 1;
+}
+
+message GetAgentStateResponse {
+  optional string status = 1;
+  optional string updated_at = 2;
+  optional string error = 3;
 }

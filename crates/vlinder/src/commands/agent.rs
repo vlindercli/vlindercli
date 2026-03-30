@@ -4,7 +4,10 @@ use std::sync::Arc;
 use clap::{Subcommand, ValueEnum};
 
 use crate::config::CliConfig;
-use vlinder_core::domain::{Agent, AgentManifest, BranchId, DagNodeId, DagStore, Registry};
+use vlinder_core::domain::{
+    Agent, AgentManifest, AgentStatus, BranchId, DagNodeId, DagStore, Registry,
+};
+use vlinder_sql_registry::registry_service::GrpcRegistryClient;
 
 use super::connect::{connect_harness, connect_registry, open_dag_store};
 use super::repl;
@@ -111,10 +114,73 @@ fn deploy(path: Option<PathBuf>) {
         .canonicalize()
         .expect("Failed to resolve agent path");
 
-    let registry = connect_registry(&config);
-    let agent = deploy_agent_from_path(&absolute_path, &*registry);
+    let registry_addr = super::connect::normalize_addr(&config.daemon.registry_addr);
+    let client = GrpcRegistryClient::connect(&registry_addr).unwrap_or_else(|e| {
+        eprintln!("Cannot reach registry at {registry_addr}: {e}");
+        std::process::exit(1);
+    });
 
-    println!("Deployed: {} ({})", agent.name, agent.id);
+    let manifest_path = absolute_path.join("agent.toml");
+    let manifest = AgentManifest::load(&manifest_path).unwrap_or_else(|e| {
+        eprintln!("Failed to load agent manifest: {e:?}");
+        std::process::exit(1);
+    });
+
+    let agent_name = manifest.name.clone();
+
+    // Auto-deploy models (still synchronous via Registry trait)
+    match auto_deploy_models(&absolute_path, &manifest, &client) {
+        Ok(deployed) => {
+            for name in &deployed {
+                println!("  Model: {name} (auto-deployed)");
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+
+    // Enqueue deploy via infra plane (CQRS write path)
+    let _submission = client.deploy_agent(&manifest).unwrap_or_else(|e| {
+        eprintln!("Failed to submit deploy: {e}");
+        std::process::exit(1);
+    });
+
+    // Poll for state transition, printing status changes
+    let mut last_status: Option<AgentStatus> = None;
+    loop {
+        match client.get_agent_state(&agent_name) {
+            Ok(Some(state)) => {
+                if last_status.as_ref() != Some(&state.status) {
+                    match &state.status {
+                        AgentStatus::Registered => println!("  Registered"),
+                        AgentStatus::Deploying => println!("  Deploying..."),
+                        AgentStatus::Live => {
+                            println!("  Live");
+                            println!("Deployed: {agent_name}");
+                            break;
+                        }
+                        AgentStatus::Failed => {
+                            eprintln!(
+                                "Deploy failed: {}",
+                                state.error.as_deref().unwrap_or("unknown error")
+                            );
+                            std::process::exit(1);
+                        }
+                        _ => {}
+                    }
+                    last_status = Some(state.status);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("Failed to query agent state: {e}");
+                std::process::exit(1);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// Load an agent manifest from a directory, auto-deploy its models, and register it.
@@ -403,13 +469,48 @@ fn get(name: &str) {
 
 fn delete(name: &str) {
     let config = CliConfig::load();
-    let registry = open_registry(&config);
-    let Some(registry) = registry else { return };
+    let registry_addr = super::connect::normalize_addr(&config.daemon.registry_addr);
+    let client = GrpcRegistryClient::connect(&registry_addr).unwrap_or_else(|e| {
+        eprintln!("Cannot reach registry at {registry_addr}: {e}");
+        std::process::exit(1);
+    });
 
-    match registry.delete_agent(name) {
-        Ok(true) => println!("Deleted agent '{name}'"),
-        Ok(false) => eprintln!("Agent '{name}' not found"),
-        Err(e) => eprintln!("Error: {e}"),
+    let _submission = client.submit_delete_agent(name).unwrap_or_else(|e| {
+        eprintln!("Failed to submit delete: {e}");
+        std::process::exit(1);
+    });
+
+    // Poll for deletion completion, printing status changes
+    let mut last_status: Option<AgentStatus> = None;
+    loop {
+        match client.get_agent_state(name) {
+            Ok(Some(state)) => {
+                if last_status.as_ref() != Some(&state.status) {
+                    match &state.status {
+                        AgentStatus::Deleting => println!("  Deleting..."),
+                        AgentStatus::Deleted => {
+                            println!("Deleted agent '{name}'");
+                            break;
+                        }
+                        AgentStatus::Failed => {
+                            eprintln!(
+                                "Delete failed: {}",
+                                state.error.as_deref().unwrap_or("unknown error")
+                            );
+                            std::process::exit(1);
+                        }
+                        _ => {}
+                    }
+                    last_status = Some(state.status);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("Failed to query agent state: {e}");
+                std::process::exit(1);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
 

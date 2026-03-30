@@ -44,6 +44,8 @@ pub enum WorkerRole {
     /// Catalog service — gRPC interface to model catalogs (Ollama, `OpenRouter`)
     #[cfg(any(feature = "ollama", feature = "openrouter"))]
     Catalog,
+    /// Infra plane worker — processes deploy/delete agent messages
+    Infra,
     /// DAG git worker — writes messages as git commits for time-travel
     DagGit,
     /// Session viewer HTTP server — read-only conversation browser
@@ -81,6 +83,7 @@ impl WorkerRole {
             WorkerRole::State => "state",
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             WorkerRole::Catalog => "catalog",
+            WorkerRole::Infra => "infra",
             WorkerRole::DagGit => "dag-git",
             WorkerRole::SessionViewer => "session-viewer",
         }
@@ -107,6 +110,7 @@ impl WorkerRole {
             WorkerRole::State => "State service",
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             WorkerRole::Catalog => "Catalog service",
+            WorkerRole::Infra => "Infra plane worker",
             WorkerRole::DagGit => "DAG git worker",
             WorkerRole::SessionViewer => "Session viewer HTTP server",
         }
@@ -142,6 +146,7 @@ impl FromStr for WorkerRole {
             "state" => Ok(WorkerRole::State),
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             "catalog" => Ok(WorkerRole::Catalog),
+            "infra" => Ok(WorkerRole::Infra),
             "dag-git" => Ok(WorkerRole::DagGit),
             "session-viewer" => Ok(WorkerRole::SessionViewer),
             _ => Err(ParseWorkerRoleError(s.to_string())),
@@ -244,6 +249,7 @@ mod tests {
             WorkerRole::State,
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             WorkerRole::Catalog,
+            WorkerRole::Infra,
             WorkerRole::DagGit,
             WorkerRole::SessionViewer,
         ] {

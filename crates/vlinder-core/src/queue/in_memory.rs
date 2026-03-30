@@ -4,9 +4,10 @@
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
-    ForkMessage, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
-    RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey,
-    SessionStartMessage, SubmissionId,
+    DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey,
+    InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError, RequestMessage,
+    ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessage,
+    SubmissionId,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -217,6 +218,22 @@ impl MessageQueue for InMemoryQueue {
         // InMemoryQueue doesn't have a store — return a placeholder.
         // RecordingQueue wraps this and returns the real branch ID.
         Ok(BranchId::from(1))
+    }
+
+    fn send_deploy_agent(
+        &self,
+        _key: InfraRoutingKey,
+        _msg: DeployAgentMessage,
+    ) -> Result<(), QueueError> {
+        Ok(())
+    }
+
+    fn send_delete_agent(
+        &self,
+        _key: InfraRoutingKey,
+        _msg: DeleteAgentMessage,
+    ) -> Result<(), QueueError> {
+        Ok(())
     }
 }
 

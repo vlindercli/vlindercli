@@ -4298,7 +4298,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "prost",
- "rusqlite",
  "serde_json",
  "tempfile",
  "tokio",
@@ -4307,12 +4306,14 @@ dependencies = [
  "tonic-build",
  "tracing",
  "vlinder-core",
+ "vlinder-sql-state",
 ]
 
 [[package]]
 name = "vlinder-sql-state"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "diesel",
  "prost",

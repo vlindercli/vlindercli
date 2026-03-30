@@ -19,7 +19,8 @@ use std::str::FromStr;
 
 use vlinder_core::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
-    ForkMessage, HarnessType, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
+    DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType, InfraMessageKind,
+    InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
     RequestMessage, ResponseMessage, RuntimeType, Sequence, ServiceBackend, ServiceType, SessionId,
     SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
@@ -450,7 +451,7 @@ impl MessageQueue for NatsQueue {
 
         self.inner.runtime.block_on(async {
             let mut headers = async_nats::HeaderMap::new();
-            headers.insert("msg-id", msg.id.as_str());
+            headers.insert("Nats-Msg-Id", msg.id.as_str());
 
             self.inner
                 .jetstream
@@ -473,7 +474,7 @@ impl MessageQueue for NatsQueue {
 
         self.inner.runtime.block_on(async {
             let mut headers = async_nats::HeaderMap::new();
-            headers.insert("msg-id", msg.id.as_str());
+            headers.insert("Nats-Msg-Id", msg.id.as_str());
 
             self.inner
                 .jetstream
@@ -494,6 +495,94 @@ impl MessageQueue for NatsQueue {
         // Session start is fire-and-forget — no NATS message needed.
         // RecordingQueue handles persistence before this is called.
         Ok(BranchId::from(1))
+    }
+
+    fn send_deploy_agent(
+        &self,
+        key: InfraRoutingKey,
+        msg: DeployAgentMessage,
+    ) -> Result<(), QueueError> {
+        let subject = deploy_agent_subject(&key);
+        let body = serde_json::to_vec(&msg)
+            .map_err(|e| QueueError::SendFailed(format!("serialize deploy_agent: {e}")))?;
+
+        self.inner.runtime.block_on(async {
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert("Nats-Msg-Id", msg.id.as_str());
+
+            self.inner
+                .jetstream
+                .publish_with_headers(subject, headers, body.into())
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn send_delete_agent(
+        &self,
+        key: InfraRoutingKey,
+        msg: DeleteAgentMessage,
+    ) -> Result<(), QueueError> {
+        let subject = delete_agent_subject(&key);
+        let body = serde_json::to_vec(&msg)
+            .map_err(|e| QueueError::SendFailed(format!("serialize delete_agent: {e}")))?;
+
+        self.inner.runtime.block_on(async {
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert("Nats-Msg-Id", msg.id.as_str());
+
+            self.inner
+                .jetstream
+                .publish_with_headers(subject, headers, body.into())
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?
+                .await
+                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn receive_deploy_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
+        let filter = "vlinder.infra.v1.*.deploy-agent";
+
+        self.inner.runtime.block_on(async {
+            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+
+            let subject = js_msg.subject.as_str();
+            let key = deploy_agent_parse_subject(subject).ok_or_else(|| {
+                QueueError::ReceiveFailed(format!("invalid deploy-agent subject: {subject}"))
+            })?;
+
+            let msg: DeployAgentMessage = serde_json::from_slice(&js_msg.payload)
+                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize deploy-agent: {e}")))?;
+
+            Ok((key, msg, ack_fn))
+        })
+    }
+
+    fn receive_delete_agent(
+        &self,
+    ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
+        let filter = "vlinder.infra.v1.*.delete-agent";
+
+        self.inner.runtime.block_on(async {
+            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+
+            let subject = js_msg.subject.as_str();
+            let key = delete_agent_parse_subject(subject).ok_or_else(|| {
+                QueueError::ReceiveFailed(format!("invalid delete-agent subject: {subject}"))
+            })?;
+
+            let msg: DeleteAgentMessage = serde_json::from_slice(&js_msg.payload)
+                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize delete-agent: {e}")))?;
+
+            Ok((key, msg, ack_fn))
+        })
     }
 }
 
@@ -802,6 +891,59 @@ pub fn promote_parse_subject(subject: &str) -> Option<SessionRoutingKey> {
     })
 }
 
+// ============================================================================
+// Infra-plane subjects (ADR 121)
+//
+// Format: vlinder.infra.v1.{submission}.deploy-agent
+// Positions: 0      1     2  3            4
+// ============================================================================
+
+/// Build a NATS subject for a deploy-agent message.
+fn deploy_agent_subject(key: &InfraRoutingKey) -> String {
+    format!("vlinder.infra.v1.{}.deploy-agent", key.submission)
+}
+
+/// Build a NATS subject for a delete-agent message.
+fn delete_agent_subject(key: &InfraRoutingKey) -> String {
+    format!("vlinder.infra.v1.{}.delete-agent", key.submission)
+}
+
+/// Parse a deploy-agent NATS subject. Returns `InfraRoutingKey` if the subject matches.
+pub fn deploy_agent_parse_subject(subject: &str) -> Option<InfraRoutingKey> {
+    let s: Vec<&str> = subject.split('.').collect();
+    // vlinder.infra.v1.{submission}.deploy-agent
+    if s.len() != 5
+        || s[0] != "vlinder"
+        || s[1] != "infra"
+        || s[2] != "v1"
+        || s[4] != "deploy-agent"
+    {
+        return None;
+    }
+    Some(InfraRoutingKey {
+        submission: SubmissionId::from(s[3].to_string()),
+        kind: InfraMessageKind::DeployAgent,
+    })
+}
+
+/// Parse a delete-agent NATS subject. Returns `InfraRoutingKey` if the subject matches.
+pub fn delete_agent_parse_subject(subject: &str) -> Option<InfraRoutingKey> {
+    let s: Vec<&str> = subject.split('.').collect();
+    // vlinder.infra.v1.{submission}.delete-agent
+    if s.len() != 5
+        || s[0] != "vlinder"
+        || s[1] != "infra"
+        || s[2] != "v1"
+        || s[4] != "delete-agent"
+    {
+        return None;
+    }
+    Some(InfraRoutingKey {
+        submission: SubmissionId::from(s[3].to_string()),
+        kind: InfraMessageKind::DeleteAgent,
+    })
+}
+
 /// Derive a stable consumer name from a filter pattern.
 ///
 /// NATS consumer names must be alphanumeric + dash/underscore.
@@ -908,5 +1050,72 @@ mod tests {
             submission()
         );
         assert!(invoke_parse_subject(&subject).is_none());
+    }
+
+    // ========================================================================
+    // Infra plane subject format (ADR 121)
+    // ========================================================================
+
+    #[test]
+    fn infra_deploy_agent_subject_format() {
+        let key = InfraRoutingKey {
+            submission: submission(),
+            kind: InfraMessageKind::DeployAgent,
+        };
+        assert_eq!(
+            deploy_agent_subject(&key),
+            format!("vlinder.infra.v1.{}.deploy-agent", submission()),
+        );
+    }
+
+    #[test]
+    fn infra_deploy_agent_subject_round_trips() {
+        let key = InfraRoutingKey {
+            submission: submission(),
+            kind: InfraMessageKind::DeployAgent,
+        };
+        let subject = deploy_agent_subject(&key);
+        let parsed = deploy_agent_parse_subject(&subject).expect("should parse");
+        assert_eq!(parsed.submission, key.submission);
+        assert_eq!(parsed.kind, InfraMessageKind::DeployAgent);
+    }
+
+    #[test]
+    fn infra_delete_agent_subject_format() {
+        let key = InfraRoutingKey {
+            submission: submission(),
+            kind: InfraMessageKind::DeleteAgent,
+        };
+        assert_eq!(
+            delete_agent_subject(&key),
+            format!("vlinder.infra.v1.{}.delete-agent", submission()),
+        );
+    }
+
+    #[test]
+    fn infra_delete_agent_subject_round_trips() {
+        let key = InfraRoutingKey {
+            submission: submission(),
+            kind: InfraMessageKind::DeleteAgent,
+        };
+        let subject = delete_agent_subject(&key);
+        let parsed = delete_agent_parse_subject(&subject).expect("should parse");
+        assert_eq!(parsed.submission, key.submission);
+        assert_eq!(parsed.kind, InfraMessageKind::DeleteAgent);
+    }
+
+    #[test]
+    fn infra_deploy_agent_parse_rejects_invalid() {
+        assert!(deploy_agent_parse_subject("vlinder.infra.v1.sub.delete-agent").is_none());
+        assert!(deploy_agent_parse_subject("vlinder.data.v1.sub.deploy-agent").is_none());
+        assert!(deploy_agent_parse_subject("vlinder.infra.v2.sub.deploy-agent").is_none());
+        assert!(deploy_agent_parse_subject("").is_none());
+    }
+
+    #[test]
+    fn infra_delete_agent_parse_rejects_invalid() {
+        assert!(delete_agent_parse_subject("vlinder.infra.v1.sub.deploy-agent").is_none());
+        assert!(delete_agent_parse_subject("vlinder.data.v1.sub.delete-agent").is_none());
+        assert!(delete_agent_parse_subject("").is_none());
     }
 }

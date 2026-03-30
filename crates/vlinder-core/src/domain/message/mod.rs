@@ -24,6 +24,8 @@ pub(crate) mod base64_serde {
 }
 
 pub mod complete;
+pub mod delete_agent;
+pub mod deploy_agent;
 pub mod fork;
 pub mod identity;
 pub mod invoke;
@@ -34,6 +36,8 @@ pub mod session_start;
 
 // Re-export everything at the module level for backwards compatibility.
 pub use complete::CompleteMessage;
+pub use delete_agent::DeleteAgentMessage;
+pub use deploy_agent::DeployAgentMessage;
 pub use fork::ForkMessage;
 pub use identity::{
     BranchId, DagNodeId, HarnessType, Instance, MessageId, Sequence, SequenceCounter, SessionId,

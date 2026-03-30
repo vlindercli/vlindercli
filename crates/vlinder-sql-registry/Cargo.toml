@@ -7,11 +7,10 @@ publish = false
 [features]
 default = ["client", "server"]
 client = []
-server = ["dep:rusqlite", "tonic/server", "tonic/router"]
+server = ["tonic/server", "tonic/router"]
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 tonic = { version = "0.12", default-features = false, features = ["channel", "codegen", "prost", "transport", "tls", "tls-roots"] }
 prost = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
@@ -25,6 +24,7 @@ tonic-build = "0.12"
 [dev-dependencies]
 tempfile = "3"
 tokio-stream = { version = "0.1.18", features = ["net"] }
+vlinder-sql-state = { path = "../vlinder-sql-state" }
 
 [lints]
 workspace = true

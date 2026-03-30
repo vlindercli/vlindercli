@@ -9,6 +9,7 @@
 
 mod agent;
 mod agent_manifest;
+mod agent_state;
 mod catalog;
 mod container_id;
 mod dag;
@@ -45,6 +46,7 @@ pub mod workers;
 // ============================================================================
 
 pub use agent::{Agent, LoadError as AgentLoadError, Prompts, Requirements};
+pub use agent_state::{AgentState, AgentStatus};
 pub use container_id::ContainerId;
 pub use image_digest::ImageDigest;
 pub use image_ref::ImageRef;
@@ -61,14 +63,15 @@ pub use diagnostics::{
     RuntimeInfo, ServiceDiagnostics, ServiceMetrics,
 };
 pub use message::{
-    BranchId, CompleteMessage, DagNodeId, ForkMessage, HarnessType, Instance, InvokeMessage,
-    MessageId, PromoteMessage, RequestMessage, ResponseMessage, Sequence, SequenceCounter,
-    SessionId, SessionStartMessage, StateHash, SubmissionId, PROTOCOL_VERSION,
+    BranchId, CompleteMessage, DagNodeId, DeleteAgentMessage, DeployAgentMessage, ForkMessage,
+    HarnessType, Instance, InvokeMessage, MessageId, PromoteMessage, RequestMessage,
+    ResponseMessage, Sequence, SequenceCounter, SessionId, SessionStartMessage, StateHash,
+    SubmissionId, PROTOCOL_VERSION,
 };
 pub use message_queue::{agent_routing_key, Acknowledgement, MessageQueue, QueueError};
 pub use routing_key::{
     AgentName, DataMessageKind, DataRoutingKey, EmbeddingBackendType, InferenceBackendType,
-    ServiceBackend, SessionMessageKind, SessionRoutingKey,
+    InfraMessageKind, InfraRoutingKey, ServiceBackend, SessionMessageKind, SessionRoutingKey,
 };
 
 // ============================================================================

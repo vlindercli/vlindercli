@@ -57,6 +57,7 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
         WorkerRole::State => run_state_worker(&config, shutdown),
         #[cfg(any(feature = "ollama", feature = "openrouter"))]
         WorkerRole::Catalog => run_catalog_worker(&config, shutdown),
+        WorkerRole::Infra => run_infra_worker(&config, shutdown),
         WorkerRole::DagGit => run_dag_git_worker(&config, shutdown),
         WorkerRole::SessionViewer => run_session_viewer_worker(&config, shutdown),
     }
@@ -73,12 +74,13 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
 // ============================================================================
 
 fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
-    use crate::config::registry_db_path;
+    use crate::config::dag_db_path;
     use tonic::transport::Server;
     use vlinder_core::domain::{ObjectStorageType, RuntimeType, VectorStorageType};
     use vlinder_nats::secret_service::GrpcSecretClient;
-    use vlinder_sql_registry::registry_service::RegistryServiceServer;
+    use vlinder_sql_registry::registry_service::RegistryServer;
     use vlinder_sql_registry::PersistentRegistry;
+    use vlinder_sql_state::SqliteDagStore;
 
     let secret_addr = if config.distributed.secret_addr.starts_with("http://") {
         config.distributed.secret_addr.clone()
@@ -90,7 +92,18 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
             .unwrap_or_else(|e| panic!("Failed to connect to secret service: {e}")),
     );
 
-    let db_path = registry_db_path();
+    // Registry now shares the DAG database (single SQLite, FK integrity across planes)
+    let db_path = dag_db_path();
+    let store = Arc::new(
+        SqliteDagStore::open(&db_path)
+            .unwrap_or_else(|e| panic!("Failed to open state database: {e}")),
+    );
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::clone(&store) as _;
+
+    // Queue for infra plane — RecordingQueue records deploy/delete to DAG before NATS
+    let queue: Arc<dyn vlinder_core::domain::MessageQueue + Send + Sync> =
+        crate::queue_factory::recording_from_config(config)
+            .expect("Failed to create queue for registry");
 
     // Build registry config from cluster topology
     let mut inference_engines = Vec::new();
@@ -107,7 +120,7 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
         embedding_engines,
     };
 
-    let registry = PersistentRegistry::open(&db_path, &registry_config, secret_store)
+    let registry = PersistentRegistry::new(repo, &registry_config, secret_store)
         .unwrap_or_else(|e| panic!("Failed to initialize registry: {e}"));
 
     // Register non-engine capabilities (engines are registered by open())
@@ -133,7 +146,7 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
     // Run the gRPC server until shutdown
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let service = RegistryServiceServer::new(registry).into_service();
+        let service = RegistryServer::new(registry, queue, Arc::clone(&store) as _).into_service();
 
         // Start server with graceful shutdown
         let server = Server::builder()
@@ -151,9 +164,103 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
     });
 }
 
+fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
+    use crate::config::dag_db_path;
+    use vlinder_core::domain::{
+        AgentName, AgentState, AgentStatus, QueueError, RegistryRepository,
+    };
+    use vlinder_sql_state::SqliteDagStore;
+
+    let queue =
+        crate::queue_factory::from_config(config).expect("Failed to create queue for infra worker");
+
+    // Open the shared DAG database for agent state management
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn RegistryRepository> = Arc::new(store);
+
+    // Connect to registry for agent registration
+    let registry_addr = grpc_registry_addr(config);
+    let registry: Arc<dyn vlinder_core::domain::Registry> = Arc::new(
+        vlinder_sql_registry::registry_service::GrpcRegistryClient::connect(&registry_addr)
+            .expect("Failed to connect to registry"),
+    );
+
+    tracing::info!("Infra plane worker ready");
+
+    while !shutdown.load(Ordering::Relaxed) {
+        // Try deploy
+        match queue.receive_deploy_agent() {
+            Ok((_key, deploy_msg, ack)) => {
+                let _ = ack();
+                let agent_name = deploy_msg.manifest.name.clone();
+                tracing::info!(agent = %agent_name, "Processing deploy-agent");
+
+                let registry_clone = Arc::clone(&registry);
+                let manifest = deploy_msg.manifest.clone();
+                let reg_result =
+                    std::thread::spawn(move || registry_clone.register_manifest(manifest))
+                        .join()
+                        .unwrap_or_else(|_| {
+                            Err(vlinder_core::domain::RegistrationError::Persistence(
+                                "registry thread panicked".to_string(),
+                            ))
+                        });
+
+                match reg_result {
+                    Ok(_agent) => {
+                        let name = AgentName::new(&agent_name);
+                        let deploying =
+                            AgentState::registered(name).transition(AgentStatus::Deploying, None);
+                        if let Err(e) = repo.append_agent_state(&deploying) {
+                            tracing::warn!(error = %e, "Failed to set Deploying state");
+                        }
+                        tracing::info!(agent = %agent_name, "Agent registered, awaiting runtime provisioning");
+                    }
+                    Err(e) => {
+                        let name = AgentName::new(&agent_name);
+                        let failed = AgentState::registered(name)
+                            .transition(AgentStatus::Failed, Some(e.to_string()));
+                        if let Err(e2) = repo.append_agent_state(&failed) {
+                            tracing::warn!(error = %e2, "Failed to set Failed state");
+                        }
+                        tracing::warn!(agent = %agent_name, error = %e, "Agent deploy failed");
+                    }
+                }
+            }
+            Err(QueueError::Timeout) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Infra worker deploy receive error");
+            }
+        }
+
+        // Try delete
+        match queue.receive_delete_agent() {
+            Ok((_key, delete_msg, ack)) => {
+                let _ = ack();
+                let agent_name = delete_msg.agent.as_str().to_string();
+                tracing::info!(agent = %agent_name, "Processing delete-agent");
+
+                let name = AgentName::new(&agent_name);
+                let deleting = AgentState::registered(name).transition(AgentStatus::Deleting, None);
+                let _ = repo.append_agent_state(&deleting);
+
+                tracing::info!(agent = %agent_name, "Agent marked for deletion, awaiting runtime teardown");
+            }
+            Err(QueueError::Timeout) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Infra worker delete receive error");
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn run_secret_worker(config: &Config, shutdown: &AtomicBool) {
     use tonic::transport::Server;
-    use vlinder_nats::secret_service::SecretServiceServer;
+    use vlinder_nats::secret_service::SecretServer;
 
     let secret_store = crate::secret_store_factory::from_config(config)
         .unwrap_or_else(|e| panic!("Failed to open secret store: {e}"));
@@ -170,7 +277,7 @@ fn run_secret_worker(config: &Config, shutdown: &AtomicBool) {
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let service = SecretServiceServer::new(secret_store).into_service();
+        let service = SecretServer::new(secret_store).into_service();
 
         let server = Server::builder()
             .add_service(service)
@@ -189,7 +296,7 @@ fn run_secret_worker(config: &Config, shutdown: &AtomicBool) {
 fn run_harness_worker(config: &Config, shutdown: &AtomicBool) {
     use tonic::transport::Server;
     use vlinder_core::domain::{CoreHarness, HarnessType};
-    use vlinder_harness::harness_service::HarnessServiceServer;
+    use vlinder_harness::harness_service::HarnessServer;
     use vlinder_sql_registry::registry_service::GrpcRegistryClient;
 
     let queue =
@@ -217,7 +324,7 @@ fn run_harness_worker(config: &Config, shutdown: &AtomicBool) {
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let service = HarnessServiceServer::new(Box::new(harness)).into_service();
+        let service = HarnessServer::new(Box::new(harness)).into_service();
 
         let server = Server::builder()
             .add_service(service)
@@ -235,11 +342,18 @@ fn run_harness_worker(config: &Config, shutdown: &AtomicBool) {
 
 #[cfg(feature = "container")]
 fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
+    use crate::config::dag_db_path;
     use vlinder_core::domain::Runtime;
     use vlinder_podman_runtime::{ContainerRuntime, PodmanRuntimeConfig};
+    use vlinder_sql_state::SqliteDagStore;
 
     let registry =
         crate::registry_factory::from_config(config).expect("Failed to connect to registry");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
 
     let podman_config = PodmanRuntimeConfig {
         image_policy: config.runtime.image_policy.clone(),
@@ -251,7 +365,7 @@ fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
         secret_addr: config.distributed.secret_addr.clone(),
     };
 
-    let mut runtime = ContainerRuntime::new(&podman_config, registry)
+    let mut runtime = ContainerRuntime::new(&podman_config, registry, repo)
         .expect("Failed to create container runtime");
 
     tracing::info!("Container agent worker ready");
@@ -264,11 +378,18 @@ fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
 
 #[cfg(feature = "lambda")]
 fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
+    use crate::config::dag_db_path;
     use vlinder_core::domain::Runtime;
     use vlinder_nats_lambda_runtime::{LambdaRuntime, LambdaRuntimeConfig};
+    use vlinder_sql_state::SqliteDagStore;
 
     let registry =
         crate::registry_factory::from_config(config).expect("Failed to connect to registry");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
 
     let queue = crate::queue_factory::from_config(config)
         .expect("Failed to create queue for Lambda runtime");
@@ -289,7 +410,7 @@ fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
         vpc_security_group_ids: config.runtime.lambda_vpc_security_group_ids.clone(),
     };
 
-    let mut runtime = LambdaRuntime::new(&lambda_config, registry, queue)
+    let mut runtime = LambdaRuntime::new(&lambda_config, registry, repo, queue)
         .expect("Failed to create Lambda runtime");
 
     tracing::info!(
@@ -499,8 +620,9 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
     use vlinder_core::domain::DagWorker;
     use vlinder_git_dag::GitDagWorker;
     use vlinder_nats::{
-        complete_parse_subject, fork_parse_subject, invoke_parse_subject, promote_parse_subject,
-        request_parse_subject, response_parse_subject, NatsQueue,
+        complete_parse_subject, delete_agent_parse_subject, deploy_agent_parse_subject,
+        fork_parse_subject, invoke_parse_subject, promote_parse_subject, request_parse_subject,
+        response_parse_subject, NatsQueue,
     };
 
     let nats = NatsQueue::connect(&config.queue.nats_config()).expect("Failed to connect to NATS");
@@ -633,6 +755,11 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
                             "DAG git: failed to deserialize PromoteMessage"
                         );
                     }
+                } else if deploy_agent_parse_subject(&subject).is_some()
+                    || delete_agent_parse_subject(&subject).is_some()
+                {
+                    // Infra plane — acknowledged, no git subtree yet
+                    tracing::debug!(subject = subject.as_str(), "DAG git: infra plane event");
                 } else {
                     tracing::warn!(
                         subject = subject.as_str(),

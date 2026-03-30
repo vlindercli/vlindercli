@@ -6,24 +6,40 @@ use tonic::{Request, Response, Status};
 use super::proto::{
     self, registry_server::Registry as RegistryService, CreateJobRequest, CreateJobResponse,
     DeleteAgentRequest, DeleteAgentResponse, DeleteModelRequest, DeleteModelResponse,
-    GetAgentByNameRequest, GetAgentRequest, GetAgentResponse, GetFleetRequest, GetFleetResponse,
-    GetJobRequest, GetJobResponse, GetModelRequest, GetModelResponse, ListAgentsRequest,
-    ListAgentsResponse, ListFleetsRequest, ListFleetsResponse, ListModelsRequest,
-    ListModelsResponse, ListPendingJobsRequest, ListPendingJobsResponse, PingRequest,
-    RegisterAgentRequest, RegisterAgentResponse, RegisterFleetRequest, RegisterFleetResponse,
-    RegisterModelRequest, RegisterModelResponse, SemVer, UpdateJobStatusRequest,
+    DeployAgentRequest, DeployAgentResponse, GetAgentByNameRequest, GetAgentRequest,
+    GetAgentResponse, GetAgentStateRequest, GetAgentStateResponse, GetFleetRequest,
+    GetFleetResponse, GetJobRequest, GetJobResponse, GetModelRequest, GetModelResponse,
+    ListAgentsRequest, ListAgentsResponse, ListFleetsRequest, ListFleetsResponse,
+    ListModelsRequest, ListModelsResponse, ListPendingJobsRequest, ListPendingJobsResponse,
+    PingRequest, RegisterAgentRequest, RegisterAgentResponse, RegisterFleetRequest,
+    RegisterFleetResponse, RegisterModelRequest, RegisterModelResponse, SemVer,
+    SubmitDeleteAgentRequest, SubmitDeleteAgentResponse, UpdateJobStatusRequest,
     UpdateJobStatusResponse,
 };
-use vlinder_core::domain::{JobStatus as DomainJobStatus, Registry, ResourceId, SubmissionId};
+use vlinder_core::domain::{
+    AgentManifest, AgentName, DeleteAgentMessage, DeployAgentMessage, InfraMessageKind,
+    InfraRoutingKey, JobStatus as DomainJobStatus, MessageQueue, Registry, RegistryRepository,
+    ResourceId, SubmissionId,
+};
 
 /// gRPC server that wraps a Registry implementation.
-pub struct RegistryServiceServer {
+pub struct RegistryServer {
     registry: Arc<dyn Registry>,
+    queue: Arc<dyn MessageQueue + Send + Sync>,
+    repo: Arc<dyn RegistryRepository>,
 }
 
-impl RegistryServiceServer {
-    pub fn new(registry: Arc<dyn Registry>) -> Self {
-        Self { registry }
+impl RegistryServer {
+    pub fn new(
+        registry: Arc<dyn Registry>,
+        queue: Arc<dyn MessageQueue + Send + Sync>,
+        repo: Arc<dyn RegistryRepository>,
+    ) -> Self {
+        Self {
+            registry,
+            queue,
+            repo,
+        }
     }
 
     /// Create a tonic service from this server.
@@ -33,7 +49,7 @@ impl RegistryServiceServer {
 }
 
 #[tonic::async_trait]
-impl RegistryService for RegistryServiceServer {
+impl RegistryService for RegistryServer {
     async fn ping(&self, _request: Request<PingRequest>) -> Result<Response<SemVer>, Status> {
         Ok(Response::new(SemVer {
             major: 0,
@@ -334,5 +350,81 @@ impl RegistryService for RegistryServiceServer {
             .collect();
 
         Ok(Response::new(ListPendingJobsResponse { jobs }))
+    }
+
+    async fn deploy_agent(
+        &self,
+        request: Request<DeployAgentRequest>,
+    ) -> Result<Response<DeployAgentResponse>, Status> {
+        let req = request.into_inner();
+
+        let manifest: AgentManifest = serde_json::from_str(&req.manifest_json)
+            .map_err(|e| Status::invalid_argument(format!("invalid manifest JSON: {e}")))?;
+
+        let submission = SubmissionId::new();
+        let key = InfraRoutingKey {
+            submission: submission.clone(),
+            kind: InfraMessageKind::DeployAgent,
+        };
+        let msg = DeployAgentMessage::new(manifest);
+
+        let queue = Arc::clone(&self.queue);
+        tokio::task::spawn_blocking(move || queue.send_deploy_agent(key, msg))
+            .await
+            .map_err(|e| Status::internal(format!("task join error: {e}")))?
+            .map_err(|e| Status::internal(format!("queue error: {e}")))?;
+
+        Ok(Response::new(DeployAgentResponse {
+            submission_id: submission.as_str().to_string(),
+        }))
+    }
+
+    async fn submit_delete_agent(
+        &self,
+        request: Request<SubmitDeleteAgentRequest>,
+    ) -> Result<Response<SubmitDeleteAgentResponse>, Status> {
+        let req = request.into_inner();
+
+        let submission = SubmissionId::new();
+        let key = InfraRoutingKey {
+            submission: submission.clone(),
+            kind: InfraMessageKind::DeleteAgent,
+        };
+        let msg = DeleteAgentMessage::new(AgentName::new(req.name));
+
+        let queue = Arc::clone(&self.queue);
+        tokio::task::spawn_blocking(move || queue.send_delete_agent(key, msg))
+            .await
+            .map_err(|e| Status::internal(format!("task join error: {e}")))?
+            .map_err(|e| Status::internal(format!("queue error: {e}")))?;
+
+        Ok(Response::new(SubmitDeleteAgentResponse {
+            submission_id: submission.as_str().to_string(),
+        }))
+    }
+
+    async fn get_agent_state(
+        &self,
+        request: Request<GetAgentStateRequest>,
+    ) -> Result<Response<GetAgentStateResponse>, Status> {
+        let req = request.into_inner();
+
+        let state = self
+            .repo
+            .get_agent_state(&req.name)
+            .map_err(|e| Status::internal(format!("state query failed: {e}")))?;
+
+        match state {
+            Some(s) => Ok(Response::new(GetAgentStateResponse {
+                status: Some(s.status.as_str().to_string()),
+                updated_at: Some(s.updated_at.to_rfc3339()),
+                error: s.error,
+            })),
+            None => Ok(Response::new(GetAgentStateResponse {
+                status: None,
+                updated_at: None,
+                error: None,
+            })),
+        }
     }
 }

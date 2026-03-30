@@ -10,11 +10,11 @@ diesel::table! {
         hash -> Text,
         parent_hash -> Text,
         message_type -> Text,
-        session_id -> Text,
-        submission_id -> Text,
+        session_id -> Nullable<Text>,
+        submission_id -> Nullable<Text>,
+        branch_id -> Nullable<BigInt>,
         created_at -> Text,
         protocol_version -> Text,
-        branch_id -> BigInt,
         snapshot -> Text,
     }
 }
@@ -117,6 +117,59 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    agents (name) {
+        name -> Text,
+        description -> Text,
+        source -> Nullable<Text>,
+        runtime -> Text,
+        executable -> Text,
+        image_digest -> Nullable<Text>,
+        object_storage -> Nullable<Text>,
+        vector_storage -> Nullable<Text>,
+        requirements_json -> Text,
+        prompts_json -> Nullable<Text>,
+        public_key -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    deploy_agent_nodes (dag_hash) {
+        dag_hash -> Text,
+        agent_name -> Text,
+        manifest_json -> Text,
+        message_id -> Text,
+    }
+}
+
+diesel::table! {
+    delete_agent_nodes (dag_hash) {
+        dag_hash -> Text,
+        agent_name -> Text,
+        message_id -> Text,
+    }
+}
+
+diesel::table! {
+    agent_states (id) {
+        id -> Integer,
+        agent_name -> Text,
+        state -> Text,
+        updated_at -> Text,
+        error -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    models (name) {
+        name -> Text,
+        model_type -> Text,
+        provider -> Text,
+        model_path -> Text,
+        digest -> Text,
+    }
+}
+
 // Foreign key relationships — lets Diesel verify joins at compile time.
 diesel::joinable!(invoke_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(complete_nodes -> dag_nodes (dag_hash));
@@ -124,6 +177,9 @@ diesel::joinable!(request_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(response_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(fork_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(promote_nodes -> dag_nodes (dag_hash));
+diesel::joinable!(deploy_agent_nodes -> dag_nodes (dag_hash));
+diesel::joinable!(delete_agent_nodes -> dag_nodes (dag_hash));
+diesel::joinable!(agent_states -> agents (agent_name));
 
 diesel::allow_tables_to_appear_in_same_query!(
     dag_nodes,
@@ -135,4 +191,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     promote_nodes,
     branches,
     sessions,
+    agents,
+    agent_states,
+    deploy_agent_nodes,
+    delete_agent_nodes,
+    models,
 );

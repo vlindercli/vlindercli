@@ -8,6 +8,8 @@ pub mod dag_store;
 #[cfg(feature = "server")]
 pub mod models;
 #[cfg(feature = "server")]
+pub mod registry_store;
+#[cfg(feature = "server")]
 pub mod schema;
 pub mod state_service;
 #[cfg(feature = "server")]
