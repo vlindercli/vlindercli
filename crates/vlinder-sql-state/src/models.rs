@@ -337,6 +337,7 @@ pub struct NewModel<'a> {
 #[derive(Queryable, Selectable, Debug)]
 #[diesel(table_name = agent_states)]
 pub struct AgentStateRow {
+    pub id: i32,
     pub agent_name: String,
     pub state: String,
     pub updated_at: String,

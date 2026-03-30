@@ -42,6 +42,8 @@ service StateService {
   rpc InsertResponseNode(InsertResponseNodeRequest) returns (InsertResponseNodeResponse);
   rpc InsertForkNode(InsertForkNodeRequest) returns (InsertForkNodeResponse);
   rpc InsertPromoteNode(InsertPromoteNodeRequest) returns (InsertPromoteNodeResponse);
+  rpc InsertDeployAgentNode(InsertDeployAgentNodeRequest) returns (InsertDeployAgentNodeResponse);
+  rpc InsertDeleteAgentNode(InsertDeleteAgentNodeRequest) returns (InsertDeleteAgentNodeResponse);
 
   // Branch head query
   rpc LatestNodeOnBranch(LatestNodeOnBranchRequest) returns (LatestNodeOnBranchResponse);
@@ -383,6 +385,35 @@ message InsertPromoteNodeRequest {
   int64 branch_id = 9;
 }
 message InsertPromoteNodeResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message InsertDeployAgentNodeRequest {
+  string dag_hash = 1;
+  string parent_hash = 2;
+  string created_at = 3;
+  string snapshot = 4;
+  string submission_id = 5;
+  string agent_name = 6;
+  string manifest_json = 7;
+  string message_id = 8;
+}
+message InsertDeployAgentNodeResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message InsertDeleteAgentNodeRequest {
+  string dag_hash = 1;
+  string parent_hash = 2;
+  string created_at = 3;
+  string snapshot = 4;
+  string submission_id = 5;
+  string agent_name = 6;
+  string message_id = 7;
+}
+message InsertDeleteAgentNodeResponse {
   bool success = 1;
   optional string error = 2;
 }

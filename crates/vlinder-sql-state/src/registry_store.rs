@@ -153,7 +153,7 @@ impl RegistryRepository for SqliteDagStore {
         Ok(count > 0)
     }
 
-    fn upsert_agent_state(
+    fn append_agent_state(
         &self,
         state: &vlinder_core::domain::AgentState,
     ) -> Result<(), RepositoryError> {
@@ -163,7 +163,7 @@ impl RegistryRepository for SqliteDagStore {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
         let updated_at_str = state.updated_at.to_rfc3339();
 
-        diesel::replace_into(agent_states::table)
+        diesel::insert_into(agent_states::table)
             .values(&NewAgentState {
                 agent_name: state.agent.as_str(),
                 state: state.status.as_str(),
@@ -185,7 +185,8 @@ impl RegistryRepository for SqliteDagStore {
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
         let row: Option<AgentStateRow> = agent_states::table
-            .find(name)
+            .filter(agent_states::agent_name.eq(name))
+            .order(agent_states::updated_at.desc())
             .select(AgentStateRow::as_select())
             .first(&mut *conn)
             .optional()
@@ -403,7 +404,7 @@ mod tests {
         let state = vlinder_core::domain::AgentState::registered(
             vlinder_core::domain::AgentName::new("echo"),
         );
-        store.upsert_agent_state(&state).unwrap();
+        store.append_agent_state(&state).unwrap();
 
         let loaded = store.get_agent_state("echo").unwrap().unwrap();
         assert_eq!(loaded.agent, state.agent);
@@ -419,10 +420,10 @@ mod tests {
         let initial = vlinder_core::domain::AgentState::registered(
             vlinder_core::domain::AgentName::new("echo"),
         );
-        store.upsert_agent_state(&initial).unwrap();
+        store.append_agent_state(&initial).unwrap();
 
         let live = initial.transition(vlinder_core::domain::AgentStatus::Live, None);
-        store.upsert_agent_state(&live).unwrap();
+        store.append_agent_state(&live).unwrap();
 
         let loaded = store.get_agent_state("echo").unwrap().unwrap();
         assert_eq!(loaded.status, vlinder_core::domain::AgentStatus::Live);
@@ -441,7 +442,7 @@ mod tests {
             vlinder_core::domain::AgentStatus::Failed,
             Some("image not found".to_string()),
         );
-        store.upsert_agent_state(&failed).unwrap();
+        store.append_agent_state(&failed).unwrap();
 
         let loaded = store.get_agent_state("echo").unwrap().unwrap();
         assert_eq!(loaded.status, vlinder_core::domain::AgentStatus::Failed);

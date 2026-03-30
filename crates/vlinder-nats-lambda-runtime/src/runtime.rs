@@ -121,7 +121,7 @@ impl LambdaRuntime {
                         Ok(()) => {
                             let live = AgentState::registered(AgentName::new(name))
                                 .transition(AgentStatus::Live, None);
-                            if let Err(e) = self.repo.upsert_agent_state(&live) {
+                            if let Err(e) = self.repo.append_agent_state(&live) {
                                 tracing::warn!(error = %e, "Failed to set Live state");
                             }
                             tracing::info!(agent = name.as_str(), "Lambda function deployed: Live");
@@ -129,7 +129,7 @@ impl LambdaRuntime {
                         Err(e) => {
                             let failed = AgentState::registered(AgentName::new(name))
                                 .transition(AgentStatus::Failed, Some(e.to_string()));
-                            if let Err(e2) = self.repo.upsert_agent_state(&failed) {
+                            if let Err(e2) = self.repo.append_agent_state(&failed) {
                                 tracing::warn!(error = %e2, "Failed to set Failed state");
                             }
                             tracing::error!(
@@ -145,16 +145,10 @@ impl LambdaRuntime {
                 Some(AgentStatus::Deleting) => {
                     tracing::info!(agent = name.as_str(), "Tearing down Lambda function");
                     self.undeploy(name);
-                    if let Err(e) = self.registry.delete_agent(name) {
-                        tracing::warn!(
-                            agent = name.as_str(),
-                            error = %e,
-                            "Failed to delete agent from registry"
-                        );
-                    }
+                    // Soft delete: agent row stays in registry, state says Deleted
                     let deleted = AgentState::registered(AgentName::new(name))
                         .transition(AgentStatus::Deleted, None);
-                    if let Err(e) = self.repo.upsert_agent_state(&deleted) {
+                    if let Err(e) = self.repo.append_agent_state(&deleted) {
                         tracing::warn!(error = %e, "Failed to set Deleted state");
                     }
                     tracing::info!(agent = name.as_str(), "Lambda function torn down: Deleted");
@@ -498,7 +492,7 @@ mod tests {
     fn set_deploying(repo: &dyn RegistryRepository, name: &str) {
         let state =
             AgentState::registered(AgentName::new(name)).transition(AgentStatus::Deploying, None);
-        repo.upsert_agent_state(&state).unwrap();
+        repo.append_agent_state(&state).unwrap();
     }
 
     fn make_runtime(

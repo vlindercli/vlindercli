@@ -13,14 +13,15 @@ use super::proto::{
     GetRequestNodeRequest, GetRequestNodeResponse, GetResponseNodeRequest, GetResponseNodeResponse,
     GetSessionByNameRequest, GetSessionNodesRequest, GetSessionNodesResponse, GetSessionRequest,
     GetSessionResponse, InsertCompleteNodeRequest, InsertCompleteNodeResponse,
-    InsertForkNodeRequest, InsertForkNodeResponse, InsertInvokeNodeRequest,
-    InsertInvokeNodeResponse, InsertPromoteNodeRequest, InsertPromoteNodeResponse,
-    InsertRequestNodeRequest, InsertRequestNodeResponse, InsertResponseNodeRequest,
-    InsertResponseNodeResponse, InvokeNodeProto, LatestNodeOnBranchRequest,
-    LatestNodeOnBranchResponse, ListSessionsRequest, ListSessionsResponse, PingRequest,
-    RenameBranchRequest, RenameBranchResponse, RequestNodeProto, ResponseNodeProto,
-    SealBranchRequest, SealBranchResponse, SemVer, UpdateSessionDefaultBranchRequest,
-    UpdateSessionDefaultBranchResponse,
+    InsertDeleteAgentNodeRequest, InsertDeleteAgentNodeResponse, InsertDeployAgentNodeRequest,
+    InsertDeployAgentNodeResponse, InsertForkNodeRequest, InsertForkNodeResponse,
+    InsertInvokeNodeRequest, InsertInvokeNodeResponse, InsertPromoteNodeRequest,
+    InsertPromoteNodeResponse, InsertRequestNodeRequest, InsertRequestNodeResponse,
+    InsertResponseNodeRequest, InsertResponseNodeResponse, InvokeNodeProto,
+    LatestNodeOnBranchRequest, LatestNodeOnBranchResponse, ListSessionsRequest,
+    ListSessionsResponse, PingRequest, RenameBranchRequest, RenameBranchResponse, RequestNodeProto,
+    ResponseNodeProto, SealBranchRequest, SealBranchResponse, SemVer,
+    UpdateSessionDefaultBranchRequest, UpdateSessionDefaultBranchResponse,
 };
 use vlinder_core::domain::{DagNodeId, DagStore, MessageType, SessionId};
 
@@ -827,6 +828,90 @@ impl StateService for StateServiceServer {
                 error: None,
             })),
             Err(e) => Ok(Response::new(UpdateSessionDefaultBranchResponse {
+                success: false,
+                error: Some(e),
+            })),
+        }
+    }
+
+    async fn insert_deploy_agent_node(
+        &self,
+        request: Request<InsertDeployAgentNodeRequest>,
+    ) -> Result<Response<InsertDeployAgentNodeResponse>, Status> {
+        let req = request.into_inner();
+
+        let dag_id = DagNodeId::from(req.dag_hash);
+        let parent_id = DagNodeId::from(req.parent_hash);
+        let created_at: chrono::DateTime<chrono::Utc> =
+            chrono::DateTime::parse_from_rfc3339(&req.created_at)
+                .map_err(|e| Status::invalid_argument(format!("invalid created_at: {e}")))?
+                .with_timezone(&chrono::Utc);
+        let snapshot: vlinder_core::domain::Snapshot = serde_json::from_str(&req.snapshot)
+            .map_err(|e| Status::invalid_argument(format!("invalid snapshot: {e}")))?;
+
+        let manifest: vlinder_core::domain::AgentManifest =
+            serde_json::from_str(&req.manifest_json)
+                .map_err(|e| Status::invalid_argument(format!("invalid manifest: {e}")))?;
+
+        let key = vlinder_core::domain::InfraRoutingKey {
+            submission: vlinder_core::domain::SubmissionId::from(req.submission_id),
+            kind: vlinder_core::domain::InfraMessageKind::DeployAgent,
+        };
+
+        let msg = vlinder_core::domain::DeployAgentMessage {
+            id: vlinder_core::domain::MessageId::from(req.message_id),
+            manifest,
+        };
+
+        match self
+            .store
+            .insert_deploy_agent_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+        {
+            Ok(()) => Ok(Response::new(InsertDeployAgentNodeResponse {
+                success: true,
+                error: None,
+            })),
+            Err(e) => Ok(Response::new(InsertDeployAgentNodeResponse {
+                success: false,
+                error: Some(e),
+            })),
+        }
+    }
+
+    async fn insert_delete_agent_node(
+        &self,
+        request: Request<InsertDeleteAgentNodeRequest>,
+    ) -> Result<Response<InsertDeleteAgentNodeResponse>, Status> {
+        let req = request.into_inner();
+
+        let dag_id = DagNodeId::from(req.dag_hash);
+        let parent_id = DagNodeId::from(req.parent_hash);
+        let created_at: chrono::DateTime<chrono::Utc> =
+            chrono::DateTime::parse_from_rfc3339(&req.created_at)
+                .map_err(|e| Status::invalid_argument(format!("invalid created_at: {e}")))?
+                .with_timezone(&chrono::Utc);
+        let snapshot: vlinder_core::domain::Snapshot = serde_json::from_str(&req.snapshot)
+            .map_err(|e| Status::invalid_argument(format!("invalid snapshot: {e}")))?;
+
+        let key = vlinder_core::domain::InfraRoutingKey {
+            submission: vlinder_core::domain::SubmissionId::from(req.submission_id),
+            kind: vlinder_core::domain::InfraMessageKind::DeleteAgent,
+        };
+
+        let msg = vlinder_core::domain::DeleteAgentMessage {
+            id: vlinder_core::domain::MessageId::from(req.message_id),
+            agent: vlinder_core::domain::AgentName::new(req.agent_name),
+        };
+
+        match self
+            .store
+            .insert_delete_agent_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+        {
+            Ok(()) => Ok(Response::new(InsertDeleteAgentNodeResponse {
+                success: true,
+                error: None,
+            })),
+            Err(e) => Ok(Response::new(InsertDeleteAgentNodeResponse {
                 success: false,
                 error: Some(e),
             })),

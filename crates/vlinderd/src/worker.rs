@@ -262,7 +262,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                                     let name = AgentName::new(&agent_name);
                                     let state = AgentState::registered(name.clone());
                                     let deploying = state.transition(AgentStatus::Deploying, None);
-                                    if let Err(e) = repo.upsert_agent_state(&deploying) {
+                                    if let Err(e) = repo.append_agent_state(&deploying) {
                                         tracing::warn!(error = %e, "Failed to set Deploying state");
                                     }
 
@@ -274,7 +274,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                                     let state = AgentState::registered(name);
                                     let failed =
                                         state.transition(AgentStatus::Failed, Some(e.to_string()));
-                                    if let Err(e2) = repo.upsert_agent_state(&failed) {
+                                    if let Err(e2) = repo.append_agent_state(&failed) {
                                         tracing::warn!(error = %e2, "Failed to set Failed state");
                                     }
                                     tracing::warn!(
@@ -303,7 +303,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                             let name = AgentName::new(&agent_name);
                             let deleting = AgentState::registered(name.clone())
                                 .transition(AgentStatus::Deleting, None);
-                            let _ = repo.upsert_agent_state(&deleting);
+                            let _ = repo.append_agent_state(&deleting);
 
                             tracing::info!(agent = %agent_name, "Agent marked for deletion, awaiting runtime teardown");
                         }

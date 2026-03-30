@@ -151,7 +151,8 @@ diesel::table! {
 }
 
 diesel::table! {
-    agent_states (agent_name) {
+    agent_states (id) {
+        id -> Integer,
         agent_name -> Text,
         state -> Text,
         updated_at -> Text,
