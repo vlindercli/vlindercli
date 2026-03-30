@@ -167,22 +167,18 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
 fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
     use crate::config::dag_db_path;
     use vlinder_core::domain::{
-        AgentName, AgentState, AgentStatus, DeleteAgentMessage, DeployAgentMessage,
-        RegistryRepository,
+        AgentName, AgentState, AgentStatus, QueueError, RegistryRepository,
     };
-    use vlinder_nats::{delete_agent_parse_subject, deploy_agent_parse_subject, NatsQueue};
     use vlinder_sql_state::SqliteDagStore;
 
-    let nats = NatsQueue::connect(&config.queue.nats_config())
-        .expect("Failed to connect to NATS for infra worker");
+    let queue =
+        crate::queue_factory::from_config(config).expect("Failed to create queue for infra worker");
 
     // Open the shared DAG database for agent state management
     let db_path = dag_db_path();
-    let store = Arc::new(
-        SqliteDagStore::open(&db_path)
-            .unwrap_or_else(|e| panic!("Failed to open state database: {e}")),
-    );
-    let repo: Arc<dyn RegistryRepository> = Arc::clone(&store) as _;
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn RegistryRepository> = Arc::new(store);
 
     // Connect to registry for agent registration
     let registry_addr = grpc_registry_addr(config);
@@ -193,145 +189,72 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
 
     tracing::info!("Infra plane worker ready");
 
-    let js = nats.jetstream().clone();
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-
-    let consumer = rt.block_on(async {
-        let stream = js
-            .get_stream("VLINDER")
-            .await
-            .expect("Failed to get VLINDER stream");
-
-        stream
-            .create_consumer(async_nats::jetstream::consumer::pull::Config {
-                name: Some("infra".to_string()),
-                filter_subject: "vlinder.infra.v1.>".to_string(),
-                ack_wait: std::time::Duration::from_secs(300),
-                inactive_threshold: std::time::Duration::from_secs(300),
-                ..Default::default()
-            })
-            .await
-            .expect("Failed to create infra consumer")
-    });
-
     while !shutdown.load(Ordering::Relaxed) {
-        let msg_result = rt.block_on(async {
-            use futures::StreamExt;
-            let mut messages = consumer
-                .fetch()
-                .max_messages(1)
-                .expires(std::time::Duration::from_millis(100))
-                .messages()
-                .await
-                .map_err(|e| format!("fetch failed: {e}"))?;
+        // Try deploy
+        match queue.receive_deploy_agent() {
+            Ok((_key, deploy_msg, ack)) => {
+                let _ = ack();
+                let agent_name = deploy_msg.manifest.name.clone();
+                tracing::info!(agent = %agent_name, "Processing deploy-agent");
 
-            match messages.next().await {
-                Some(Ok(msg)) => Ok(Some(msg)),
-                Some(Err(e)) => Err(format!("message error: {e}")),
-                None => Ok(None),
-            }
-        });
+                let registry_clone = Arc::clone(&registry);
+                let manifest = deploy_msg.manifest.clone();
+                let reg_result =
+                    std::thread::spawn(move || registry_clone.register_manifest(manifest))
+                        .join()
+                        .unwrap_or_else(|_| {
+                            Err(vlinder_core::domain::RegistrationError::Persistence(
+                                "registry thread panicked".to_string(),
+                            ))
+                        });
 
-        match msg_result {
-            Ok(Some(msg)) => {
-                let subject = msg.subject.to_string();
-                let payload = msg.payload.to_vec();
-
-                if let Some(_key) = deploy_agent_parse_subject(&subject) {
-                    match serde_json::from_slice::<DeployAgentMessage>(&payload) {
-                        Ok(deploy_msg) => {
-                            let agent_name = deploy_msg.manifest.name.clone();
-                            tracing::info!(agent = %agent_name, "Processing deploy-agent");
-
-                            // 1. Register agent via registry (validates manifest)
-                            let registry_clone = Arc::clone(&registry);
-                            let manifest = deploy_msg.manifest.clone();
-                            let reg_result = std::thread::spawn(move || {
-                                registry_clone.register_manifest(manifest)
-                            })
-                            .join()
-                            .unwrap_or_else(|_| {
-                                Err(vlinder_core::domain::RegistrationError::Persistence(
-                                    "registry thread panicked".to_string(),
-                                ))
-                            });
-
-                            match reg_result {
-                                Ok(_agent) => {
-                                    // Set Deploying — runtime worker transitions to Live
-                                    let name = AgentName::new(&agent_name);
-                                    let state = AgentState::registered(name.clone());
-                                    let deploying = state.transition(AgentStatus::Deploying, None);
-                                    if let Err(e) = repo.append_agent_state(&deploying) {
-                                        tracing::warn!(error = %e, "Failed to set Deploying state");
-                                    }
-
-                                    tracing::info!(agent = %agent_name, "Agent registered, awaiting runtime provisioning");
-                                }
-                                Err(e) => {
-                                    // Registration failed — set Failed state
-                                    let name = AgentName::new(&agent_name);
-                                    let state = AgentState::registered(name);
-                                    let failed =
-                                        state.transition(AgentStatus::Failed, Some(e.to_string()));
-                                    if let Err(e2) = repo.append_agent_state(&failed) {
-                                        tracing::warn!(error = %e2, "Failed to set Failed state");
-                                    }
-                                    tracing::warn!(
-                                        agent = %agent_name,
-                                        error = %e,
-                                        "Agent deploy failed"
-                                    );
-                                }
-                            }
+                match reg_result {
+                    Ok(_agent) => {
+                        let name = AgentName::new(&agent_name);
+                        let deploying =
+                            AgentState::registered(name).transition(AgentStatus::Deploying, None);
+                        if let Err(e) = repo.append_agent_state(&deploying) {
+                            tracing::warn!(error = %e, "Failed to set Deploying state");
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                subject = subject.as_str(),
-                                error = %e,
-                                "Failed to deserialize DeployAgentMessage"
-                            );
-                        }
+                        tracing::info!(agent = %agent_name, "Agent registered, awaiting runtime provisioning");
                     }
-                } else if let Some(_key) = delete_agent_parse_subject(&subject) {
-                    match serde_json::from_slice::<DeleteAgentMessage>(&payload) {
-                        Ok(delete_msg) => {
-                            let agent_name = delete_msg.agent.as_str().to_string();
-                            tracing::info!(agent = %agent_name, "Processing delete-agent");
-
-                            // Set Deleting — runtime worker tears down and transitions to Deleted
-                            let name = AgentName::new(&agent_name);
-                            let deleting = AgentState::registered(name.clone())
-                                .transition(AgentStatus::Deleting, None);
-                            let _ = repo.append_agent_state(&deleting);
-
-                            tracing::info!(agent = %agent_name, "Agent marked for deletion, awaiting runtime teardown");
+                    Err(e) => {
+                        let name = AgentName::new(&agent_name);
+                        let failed = AgentState::registered(name)
+                            .transition(AgentStatus::Failed, Some(e.to_string()));
+                        if let Err(e2) = repo.append_agent_state(&failed) {
+                            tracing::warn!(error = %e2, "Failed to set Failed state");
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                subject = subject.as_str(),
-                                error = %e,
-                                "Failed to deserialize DeleteAgentMessage"
-                            );
-                        }
+                        tracing::warn!(agent = %agent_name, error = %e, "Agent deploy failed");
                     }
-                } else {
-                    tracing::warn!(
-                        subject = subject.as_str(),
-                        "Infra worker: unrecognized subject"
-                    );
                 }
-
-                let _ = rt.block_on(async { msg.ack().await });
             }
-            Ok(None) => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            Err(QueueError::Timeout) => {}
             Err(e) => {
-                tracing::warn!(error = %e, "Infra worker fetch error");
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                tracing::warn!(error = %e, "Infra worker deploy receive error");
             }
         }
+
+        // Try delete
+        match queue.receive_delete_agent() {
+            Ok((_key, delete_msg, ack)) => {
+                let _ = ack();
+                let agent_name = delete_msg.agent.as_str().to_string();
+                tracing::info!(agent = %agent_name, "Processing delete-agent");
+
+                let name = AgentName::new(&agent_name);
+                let deleting = AgentState::registered(name).transition(AgentStatus::Deleting, None);
+                let _ = repo.append_agent_state(&deleting);
+
+                tracing::info!(agent = %agent_name, "Agent marked for deletion, awaiting runtime teardown");
+            }
+            Err(QueueError::Timeout) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Infra worker delete receive error");
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
