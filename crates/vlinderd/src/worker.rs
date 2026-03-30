@@ -260,7 +260,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
 
 fn run_secret_worker(config: &Config, shutdown: &AtomicBool) {
     use tonic::transport::Server;
-    use vlinder_nats::secret_service::SecretServiceServer;
+    use vlinder_nats::secret_service::SecretServer;
 
     let secret_store = crate::secret_store_factory::from_config(config)
         .unwrap_or_else(|e| panic!("Failed to open secret store: {e}"));
@@ -277,7 +277,7 @@ fn run_secret_worker(config: &Config, shutdown: &AtomicBool) {
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let service = SecretServiceServer::new(secret_store).into_service();
+        let service = SecretServer::new(secret_store).into_service();
 
         let server = Server::builder()
             .add_service(service)
@@ -296,7 +296,7 @@ fn run_secret_worker(config: &Config, shutdown: &AtomicBool) {
 fn run_harness_worker(config: &Config, shutdown: &AtomicBool) {
     use tonic::transport::Server;
     use vlinder_core::domain::{CoreHarness, HarnessType};
-    use vlinder_harness::harness_service::HarnessServiceServer;
+    use vlinder_harness::harness_service::HarnessServer;
     use vlinder_sql_registry::registry_service::GrpcRegistryClient;
 
     let queue =
@@ -324,7 +324,7 @@ fn run_harness_worker(config: &Config, shutdown: &AtomicBool) {
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
-        let service = HarnessServiceServer::new(Box::new(harness)).into_service();
+        let service = HarnessServer::new(Box::new(harness)).into_service();
 
         let server = Server::builder()
             .add_service(service)

@@ -17,11 +17,11 @@ use vlinder_core::domain::{
 ///
 /// Uses `Arc<…>` so the harness can be shared into
 /// `spawn_blocking` for long-running calls like `run_agent`.
-pub struct HarnessServiceServer {
+pub struct HarnessServer {
     harness: Arc<Box<dyn Harness + Send + Sync>>,
 }
 
-impl HarnessServiceServer {
+impl HarnessServer {
     pub fn new(harness: Box<dyn Harness + Send + Sync>) -> Self {
         Self {
             harness: Arc::new(harness),
@@ -35,7 +35,7 @@ impl HarnessServiceServer {
 }
 
 #[tonic::async_trait]
-impl HarnessService for HarnessServiceServer {
+impl HarnessService for HarnessServer {
     async fn ping(&self, _request: Request<PingRequest>) -> Result<Response<SemVer>, Status> {
         Ok(Response::new(SemVer {
             major: 0,
