@@ -583,7 +583,9 @@ impl RecordingQueue {
 
     /// Record a deploy-agent DAG node.
     fn record_deploy_agent(&self, key: &InfraRoutingKey, msg: &DeployAgentMessage) {
-        // Infra nodes are cluster-scoped — no session, so use a synthetic session for hashing
+        // HACK: hash_dag_node requires a SessionId, but infra nodes are cluster-scoped
+        // and have no session. Using a synthetic zero UUID as a placeholder. The real fix
+        // is to make session_id optional in hash_dag_node.
         let synthetic_session =
             crate::domain::SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string())
                 .unwrap();
@@ -609,6 +611,7 @@ impl RecordingQueue {
 
     /// Record a delete-agent DAG node.
     fn record_delete_agent(&self, key: &InfraRoutingKey, msg: &DeleteAgentMessage) {
+        // HACK: same synthetic session as record_deploy_agent — see comment above.
         let synthetic_session =
             crate::domain::SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string())
                 .unwrap();
