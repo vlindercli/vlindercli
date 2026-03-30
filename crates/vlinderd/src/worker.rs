@@ -257,19 +257,15 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
 
                             match reg_result {
                                 Ok(_agent) => {
-                                    // 2. Create initial state: Registered → Live
+                                    // Set Deploying — runtime worker transitions to Live
                                     let name = AgentName::new(&agent_name);
                                     let state = AgentState::registered(name.clone());
-                                    if let Err(e) = repo.upsert_agent_state(&state) {
-                                        tracing::warn!(error = %e, "Failed to set Registered state");
+                                    let deploying = state.transition(AgentStatus::Deploying, None);
+                                    if let Err(e) = repo.upsert_agent_state(&deploying) {
+                                        tracing::warn!(error = %e, "Failed to set Deploying state");
                                     }
 
-                                    let live = state.transition(AgentStatus::Live, None);
-                                    if let Err(e) = repo.upsert_agent_state(&live) {
-                                        tracing::warn!(error = %e, "Failed to set Live state");
-                                    }
-
-                                    tracing::info!(agent = %agent_name, "Agent deployed: Live");
+                                    tracing::info!(agent = %agent_name, "Agent registered, awaiting runtime provisioning");
                                 }
                                 Err(e) => {
                                     // Registration failed — set Failed state
@@ -302,33 +298,13 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                             let agent_name = delete_msg.agent.as_str().to_string();
                             tracing::info!(agent = %agent_name, "Processing delete-agent");
 
+                            // Set Deleting — runtime worker tears down and transitions to Deleted
                             let name = AgentName::new(&agent_name);
                             let deleting = AgentState::registered(name.clone())
                                 .transition(AgentStatus::Deleting, None);
                             let _ = repo.upsert_agent_state(&deleting);
 
-                            match registry.delete_agent(&agent_name) {
-                                Ok(true) => {
-                                    let deleted = deleting.transition(AgentStatus::Deleted, None);
-                                    let _ = repo.upsert_agent_state(&deleted);
-                                    tracing::info!(agent = %agent_name, "Agent deleted");
-                                }
-                                Ok(false) => {
-                                    let deleted = deleting.transition(AgentStatus::Deleted, None);
-                                    let _ = repo.upsert_agent_state(&deleted);
-                                    tracing::warn!(agent = %agent_name, "Agent not found for deletion");
-                                }
-                                Err(e) => {
-                                    let failed = deleting
-                                        .transition(AgentStatus::Failed, Some(e.to_string()));
-                                    let _ = repo.upsert_agent_state(&failed);
-                                    tracing::warn!(
-                                        agent = %agent_name,
-                                        error = %e,
-                                        "Agent delete failed"
-                                    );
-                                }
-                            }
+                            tracing::info!(agent = %agent_name, "Agent marked for deletion, awaiting runtime teardown");
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -442,11 +418,18 @@ fn run_harness_worker(config: &Config, shutdown: &AtomicBool) {
 
 #[cfg(feature = "container")]
 fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
+    use crate::config::dag_db_path;
     use vlinder_core::domain::Runtime;
     use vlinder_podman_runtime::{ContainerRuntime, PodmanRuntimeConfig};
+    use vlinder_sql_state::SqliteDagStore;
 
     let registry =
         crate::registry_factory::from_config(config).expect("Failed to connect to registry");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
 
     let podman_config = PodmanRuntimeConfig {
         image_policy: config.runtime.image_policy.clone(),
@@ -458,7 +441,7 @@ fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
         secret_addr: config.distributed.secret_addr.clone(),
     };
 
-    let mut runtime = ContainerRuntime::new(&podman_config, registry)
+    let mut runtime = ContainerRuntime::new(&podman_config, registry, repo)
         .expect("Failed to create container runtime");
 
     tracing::info!("Container agent worker ready");
