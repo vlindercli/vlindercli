@@ -1603,4 +1603,79 @@ mod tests {
         let node = result.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::Fork);
     }
+
+    // ========================================================================
+    // Infra plane insert tests
+    // ========================================================================
+
+    #[test]
+    fn insert_deploy_agent_node_round_trip() {
+        let (store, _dir) = test_store();
+
+        let manifest = vlinder_core::domain::AgentManifest {
+            name: "test-agent".to_string(),
+            description: "Test".to_string(),
+            source: None,
+            runtime: "container".to_string(),
+            executable: "localhost/test:latest".to_string(),
+            requirements: vlinder_core::domain::RequirementsConfig {
+                models: std::collections::HashMap::new(),
+                services: std::collections::HashMap::new(),
+                mounts: std::collections::HashMap::new(),
+            },
+            prompts: None,
+            object_storage: None,
+            vector_storage: None,
+        };
+
+        let msg = vlinder_core::domain::DeployAgentMessage::new(manifest);
+        let key = vlinder_core::domain::InfraRoutingKey {
+            submission: sub(),
+            kind: vlinder_core::domain::InfraMessageKind::DeployAgent,
+        };
+        let dag_id = DagNodeId::from("deploy-hash-1".to_string());
+
+        store
+            .insert_deploy_agent_node(
+                &dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &key,
+                &msg,
+            )
+            .unwrap();
+
+        let node = store.get_node(&dag_id).unwrap().unwrap();
+        assert_eq!(node.message_type(), MessageType::DeployAgent);
+        assert!(node.session.as_str().contains("00000000")); // nullable → default
+    }
+
+    #[test]
+    fn insert_delete_agent_node_round_trip() {
+        let (store, _dir) = test_store();
+
+        let msg = vlinder_core::domain::DeleteAgentMessage::new(
+            vlinder_core::domain::AgentName::new("echo"),
+        );
+        let key = vlinder_core::domain::InfraRoutingKey {
+            submission: sub(),
+            kind: vlinder_core::domain::InfraMessageKind::DeleteAgent,
+        };
+        let dag_id = DagNodeId::from("delete-hash-1".to_string());
+
+        store
+            .insert_delete_agent_node(
+                &dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &key,
+                &msg,
+            )
+            .unwrap();
+
+        let node = store.get_node(&dag_id).unwrap().unwrap();
+        assert_eq!(node.message_type(), MessageType::DeleteAgent);
+    }
 }

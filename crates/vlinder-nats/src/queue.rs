@@ -1011,4 +1011,71 @@ mod tests {
         );
         assert!(invoke_parse_subject(&subject).is_none());
     }
+
+    // ========================================================================
+    // Infra plane subject format (ADR 121)
+    // ========================================================================
+
+    #[test]
+    fn infra_deploy_agent_subject_format() {
+        let key = InfraRoutingKey {
+            submission: submission(),
+            kind: InfraMessageKind::DeployAgent,
+        };
+        assert_eq!(
+            deploy_agent_subject(&key),
+            format!("vlinder.infra.v1.{}.deploy-agent", submission()),
+        );
+    }
+
+    #[test]
+    fn infra_deploy_agent_subject_round_trips() {
+        let key = InfraRoutingKey {
+            submission: submission(),
+            kind: InfraMessageKind::DeployAgent,
+        };
+        let subject = deploy_agent_subject(&key);
+        let parsed = deploy_agent_parse_subject(&subject).expect("should parse");
+        assert_eq!(parsed.submission, key.submission);
+        assert_eq!(parsed.kind, InfraMessageKind::DeployAgent);
+    }
+
+    #[test]
+    fn infra_delete_agent_subject_format() {
+        let key = InfraRoutingKey {
+            submission: submission(),
+            kind: InfraMessageKind::DeleteAgent,
+        };
+        assert_eq!(
+            delete_agent_subject(&key),
+            format!("vlinder.infra.v1.{}.delete-agent", submission()),
+        );
+    }
+
+    #[test]
+    fn infra_delete_agent_subject_round_trips() {
+        let key = InfraRoutingKey {
+            submission: submission(),
+            kind: InfraMessageKind::DeleteAgent,
+        };
+        let subject = delete_agent_subject(&key);
+        let parsed = delete_agent_parse_subject(&subject).expect("should parse");
+        assert_eq!(parsed.submission, key.submission);
+        assert_eq!(parsed.kind, InfraMessageKind::DeleteAgent);
+    }
+
+    #[test]
+    fn infra_deploy_agent_parse_rejects_invalid() {
+        assert!(deploy_agent_parse_subject("vlinder.infra.v1.sub.delete-agent").is_none());
+        assert!(deploy_agent_parse_subject("vlinder.data.v1.sub.deploy-agent").is_none());
+        assert!(deploy_agent_parse_subject("vlinder.infra.v2.sub.deploy-agent").is_none());
+        assert!(deploy_agent_parse_subject("").is_none());
+    }
+
+    #[test]
+    fn infra_delete_agent_parse_rejects_invalid() {
+        assert!(delete_agent_parse_subject("vlinder.infra.v1.sub.deploy-agent").is_none());
+        assert!(delete_agent_parse_subject("vlinder.data.v1.sub.delete-agent").is_none());
+        assert!(delete_agent_parse_subject("").is_none());
+    }
 }

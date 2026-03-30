@@ -966,6 +966,8 @@ mod tests {
             MessageType::Complete,
             MessageType::Fork,
             MessageType::Promote,
+            MessageType::DeployAgent,
+            MessageType::DeleteAgent,
         ] {
             assert_eq!(MessageType::from_str(mt.as_str()), Ok(mt));
         }
@@ -974,6 +976,16 @@ mod tests {
     #[test]
     fn message_type_from_unknown_returns_none() {
         assert!(MessageType::from_str("unknown").is_err());
+    }
+
+    #[test]
+    fn message_type_planes() {
+        assert_eq!(MessageType::Invoke.plane(), Plane::Data);
+        assert_eq!(MessageType::Complete.plane(), Plane::Data);
+        assert_eq!(MessageType::Fork.plane(), Plane::Session);
+        assert_eq!(MessageType::Promote.plane(), Plane::Session);
+        assert_eq!(MessageType::DeployAgent.plane(), Plane::Infra);
+        assert_eq!(MessageType::DeleteAgent.plane(), Plane::Infra);
     }
 
     // --- hash_dag_node tests ---
