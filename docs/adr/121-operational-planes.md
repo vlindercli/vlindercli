@@ -1,227 +1,87 @@
 # ADR 121: Operational Planes
 
-**Status:** Draft
+**Status:** Accepted
 
 ## Context
 
-The platform has three distinct operational concerns that are currently conflated:
+The platform has three distinct operational concerns:
 
-1. **Data plane** — agent execution. Invoke, request, response, complete, delegate. Every message is DAG-recorded. Session-scoped. Latency-sensitive. The agent is waiting.
+1. **Data plane** — agent execution. Invoke, request, response, complete. DAG-recorded. Session-scoped. Latency-sensitive.
 
-2. **Session plane** — compensating transactions. Fork, repair, promote. Corrective actions applied on top of the immutable execution record. Session-scoped. Deliberate, not real-time.
+2. **Session plane** — compensating transactions. Fork, promote, session start. Corrective actions on top of the immutable execution record. Session-scoped. Deliberate, not real-time.
 
-3. **Infra plane** — provisioning. Deploy, delete. Changes what agents exist and how they're provisioned. Not session-scoped. Currently bypasses the queue entirely (direct gRPC to registry). Status is a read — it queries the registry, not the queue.
-
-Today these are tangled:
-
-- All message types share one `RoutingKey` type with one address format (`vlinder.{session}.{branch}.{submission}.{type}...`), even though infra operations have no session.
-- The `Registry` trait mixes infra operations (`register_agent`, `delete_agent`) with data-plane queries (`get_agent`, `get_model`).
-- Deploy goes direct to gRPC, bypassing the queue. There's no audit trail, no status tracking, no async lifecycle.
-- NATS consumers subscribe to `vlinder.>` and receive all planes — no way to subscribe to data-only or infra-only.
-
-### Why separate now
-
-Issue #15 (async deploy + agent status) requires infra write operations to have their own lifecycle: `Registered → Deploying → Live → Failed`. This doesn't fit the data-plane model — there's no session, no submission. Forcing deploy into the existing `RoutingKey` would require fake session/submission IDs. Infra operations are DAG-recorded (same store, same chain index) but use their own routing key shape — cluster-scoped, not session-scoped.
+3. **Infra plane** — provisioning. Deploy, delete. Changes what agents exist and how they're provisioned. Cluster-scoped. Async lifecycle with state tracking.
 
 ## Decision
 
-### 1. The plane is the top-level discriminant
+### 1. Each plane owns its routing key
 
-Each plane gets its own message address type. The plane determines the address shape — data and session are session-scoped, infra is cluster-scoped. There is no wrapper enum — each plane's routing key is used directly by its queue methods.
+The plane determines the address shape. No wrapper enum — each plane's routing key is used directly by its queue methods.
 
-### 2. Each plane owns its routing key
+- **Data plane** — `DataRoutingKey { session, branch, submission, kind }`. Session-scoped.
+- **Session plane** — `SessionRoutingKey { session, submission, kind }`. Session-scoped, no branch.
+- **Infra plane** — `InfraRoutingKey { submission, kind }`. Cluster-scoped, no session.
 
-**Data plane** — session-scoped, DAG-recorded:
-```rust
-pub struct DataRoutingKey {
-    pub session: SessionId,
-    pub branch: BranchId,
-    pub submission: SubmissionId,
-    pub kind: DataMessageKind,
-}
+Submission ID is present on all three planes — it correlates every CLI action to its outcome.
 
-pub enum DataMessageKind {
-    Invoke { harness, runtime, agent },
-    Complete { agent, harness },
-    Request { agent, service, operation, sequence },
-    Response { service, agent, operation, sequence },
-}
-```
+### 2. NATS subject hierarchy by plane
 
-**Session plane** — session-scoped, DAG-recorded:
-```rust
-pub struct SessionRoutingKey {
-    pub session: SessionId,
-    pub submission: SubmissionId,
-    pub kind: SessionMessageKind,
-}
-
-pub enum SessionMessageKind {
-    Start { agent_name },
-    Fork { agent_name },
-    Promote { agent_name },
-}
-```
-
-**Infra plane** — agent-scoped, audit-logged:
-```rust
-pub struct InfraRoutingKey {
-    pub kind: InfraMessageKind,
-}
-
-pub enum InfraMessageKind {
-    Deploy { agent_name },
-    Delete { agent_name },
-}
-```
-
-Data and Session share the same address shape today (session, branch, submission) but are separate types. If Session ever needs different fields (e.g. `reason` for audit), it can diverge without touching Data.
-
-### 3. NATS subject prefixes by plane
-
-The subject hierarchy matches the type hierarchy:
-
-| Plane | Subject prefix | Example |
+| Plane | Format | Example |
 |---|---|---|
-| Data | `vlinder.data.v1.{session}.{branch}.{sub}...` | `vlinder.data.v1.abc123.1.sub456.invoke.cli.container.echo` |
-| Session | `vlinder.session.v1.{session}.{branch}.{sub}...` | `vlinder.session.v1.abc123.1.sub456.fork.echo` |
-| Infra | `vlinder.infra.v1...` | `vlinder.infra.v1.deploy.todoapp` |
+| Data | `vlinder.data.v1.{session}.{branch}.{sub}.{type}...` | `vlinder.data.v1.abc.1.sub.invoke.cli.container.echo` |
+| Session | `vlinder.{session}.{sub}.{type}.{agent}` | `vlinder.abc.sub.fork.echo` |
+| Infra | `vlinder.infra.v1.{sub}.{type}` | `vlinder.infra.v1.sub.deploy-agent` |
 
-Consumers subscribe to `vlinder.data.>` for data only, `vlinder.session.>` for session only, `vlinder.infra.>` for infra only, or `vlinder.>` for everything.
+Consumers subscribe to plane-specific prefixes or `vlinder.>` for everything.
 
-### 4. Separate JetStream streams per plane
+### 3. CQRS — writes go through the queue
 
-Each plane can have its own retention policy:
-- **Data**: limits-based retention (bounded by session count)
-- **Session**: limits-based (fewer messages, longer retention for decision history)
-- **Infra**: interest-based or work-queue (exactly-once delivery for deploy)
+All write operations go through the message queue. The CLI sends commands via gRPC to a service that enqueues. Workers process asynchronously.
 
-### 5. Different planes serve different audiences
+- **Data/session plane**: CLI → Harness (gRPC) → RecordingQueue → NATS → workers
+- **Infra plane**: CLI → Registry (gRPC) → RecordingQueue → NATS → infra worker → runtime worker
 
-Data plane messages are agents doing real work for external users. Session plane messages are developers/operators applying compensating transactions — corrective actions (fork, repair, promote) on top of the immutable execution record. This distinction has implications:
+The RecordingQueue records every message to the DagStore before forwarding to NATS (transactional outbox). Read operations go directly to the store.
 
-- **Access control**: data plane is open to anyone who can invoke an agent. Session plane (fork, promote) should be restricted to operators — promoting a branch rewrites what "main" means.
-- **Audit**: data plane audit is the DAG. Session plane audit is "who forked what, when, why" — a different kind of record about human decisions, not agent behavior.
-- **Replay**: data plane messages are replayable (same input, same output). Session plane messages are control actions that change structure, not content. You don't replay a fork.
-- **Rate**: data plane is bounded by agent activity. Session plane is bounded by human activity (much lower).
-- **Retention**: data plane retention is bounded by session lifecycle. Session plane decisions (fork, promote) may need to be retained indefinitely as decision history.
+### 4. Infra plane shares the same store
 
-### 6. Registry becomes the infra read model
+All three planes share one database. Infra plane nodes live in the same `dag_nodes` chain index as data/session nodes, with `session_id` and `branch_id` nullable (infra nodes are cluster-scoped). This enables foreign key integrity — agent IDs are FK targets for session and data plane tables.
 
-The `Registry` trait is to the infra plane what `DagStore` is to the data/session planes: a query interface. Infra writes (deploy, delete) go through the message queue. An infra worker processes them, updates the registry store, and manages agent lifecycle state. The `Registry` trait stays as the read-side interface.
+### 5. Agent lifecycle state machine
 
-### 7. Infra plane shares the same store
-
-Infra plane nodes live in the same `dag_nodes` chain index and the same SQLite database as data/session plane nodes. This enables foreign key integrity: agent IDs in session and data plane tables can reference agents as FK targets. The `vlinder-sql-registry` rusqlite store migrates into `vlinder-sql-state` (Diesel, single connection).
+`AgentState` is a domain object separate from `Agent` (which stays a pure manifest). State is tracked in `agent_states` with FK to `agents(name)`.
 
 ```
-vlinder-sql-state (single SQLite, single Diesel connection)
-├── dag_nodes              (chain index — all planes)
-├── invoke_nodes           (data plane)
-├── complete_nodes         (data plane)
-├── request_nodes          (data plane)
-├── response_nodes         (data plane)
-├── fork_nodes             (session plane)
-├── promote_nodes          (session plane)
-├── deploy_agent_nodes     (infra plane)
-├── delete_agent_nodes     (infra plane)
-├── agents                 (infra read model)
-├── models                 (infra read model)
-├── sessions               (session read model)
-├── branches               (session read model)
-```
-
-### 8. Agent lifecycle state machine
-
-Agents have deployment state. The infra worker drives transitions:
-
-```
-Registered → Deploying → Live
-                ↓
-              Failed → Deploying (retry)
+Deploying → Live
+    ↓
+  Failed
 
 Live → Deleting → Deleted
 ```
 
-- `Registered` — manifest accepted, queued for deployment.
-- `Deploying` — worker is provisioning (pulling image, creating Lambda, etc.).
-- `Live` — ready to receive invocations.
-- `Failed` — deployment failed. Can retry.
-- `Deleting` — teardown in progress.
-- `Deleted` — removed.
+The infra worker sets intent (`Deploying` / `Deleting`). The runtime worker (container/Lambda) does the actual provisioning or teardown and transitions to the terminal state (`Live` / `Failed` / `Deleted`).
 
-State lives on the agent record in the `agents` table. Each transition is a DAG node in the infra chain.
+### 6. Registry is the infra read model
 
-## Open Questions
+The `Registry` trait is to the infra plane what `DagStore` is to the data/session planes — a query interface. Infra writes go through the queue. The registry stays as the read-side interface.
 
-### Repair: session plane or data plane?
+### 7. Wire format
 
-Repair carries `harness` and `agent` — it routes to the agent's sidecar and triggers a service call replay. Fork and Promote are processed by the `RecordingQueue`. Repair behaves more like a specialised Invoke than a session operation. Should it move to the data plane?
+Consistent across all three planes:
 
-## Implementation Strategy
-
-Strangler fig — one message type at a time, each e2e-green.
-
-### Per-message migration steps
-
-1. **Typed table + v2 payload type.** Create per-message SQL table (e.g. `request_nodes`). Define `FooMessage` with only payload fields (id, dag_id, state, diagnostics, payload). Routing fields live in `DataRoutingKey`. Wire `get_foo_node` / `insert_foo_node` through DagStore → SQLite → gRPC.
-2. **Recording queue.** Switch `send_foo` to write to the typed table via `record_foo` instead of the generic `ObservableMessage` blob path.
-3. **DataMessageKind + wire format.** Add variant to `DataMessageKind`. Wire NATS subject (builder, parser, filter). Add `send_foo` / `receive_foo` to MessageQueue trait. Implement in InMemoryQueue, NatsQueue, RecordingQueue.
-4. **Git DAG worker.** Add `on_foo` to `DagWorker` trait + `GitDagWorker` impl. Wire into vlinderd's DAG consumer dispatch.
-5. **Add v2 receivers.** Service workers / sidecar try v2 first, fall back to v1. Decouples handler logic from v1 types.
-6. **Switch senders.** Provider server, sidecar dispatch construct `DataRoutingKey` + v2 payload. **This is the only commit that changes runtime behavior.**
-7. **Remove v1.** Delete old trait methods, impls, `ObservableMessage` variants, `From` impls, old header serialization, dead tests. Tree-shake: remove `pub`, let the compiler find dead code, delete, repeat.
-8. **Rename.** Drop V2 suffix from types and methods. Clean up stale v2 references in variables, error strings, test names.
-
-Each step compiles and passes e2e independently. Steps 1-5 are pure additions. Step 6 is the cutover. Steps 7-8 are cleanup.
-
-### Progress
-
-**Data plane:**
-
-| Message type | Status |
-|---|---|
-| Invoke | ✅ Complete |
-| Complete | ✅ Complete |
-| Request | ✅ Complete |
-| Response | ✅ Complete |
-| Delegate | ⏸ Deferred — peer-to-peer removed (ADR 124), will be rebuilt as harness-mediated |
-
-**Session plane:**
-
-| Message type | Status |
-|---|---|
-| Fork | ✅ Complete |
-| Promote | ✅ Complete |
-| SessionStart | ✅ Complete |
-| Repair | ⏸ Deferred — depends on delegation rebuild |
-
-**Infra plane:**
-
-| Message type | Status |
-|---|---|
-| DeployAgent | 🔲 Next |
-| DeleteAgent | 🔲 Next |
-
-### Wire format
-
-The v2 wire format separates concerns cleanly:
-
-- **Subject** — routing + protocol version. Parsed without touching the payload.
+- **Subject** — routing. Parsed without touching the payload.
 - **Headers** — NATS concerns only (`Nats-Msg-Id` for dedup). No domain data.
-- **Payload** — `serde_json::to_vec(&FooMessage)`. Self-contained, no header extraction needed. Diagnostics, state, and all domain metadata live here.
+- **Payload** — `serde_json::to_vec(&FooMessage)`. Self-contained.
 
-This eliminates `from_nats_headers`, manual header insertion/extraction, and the risk of header size limits for structured data like diagnostics.
+### 8. Infra messages are self-sufficient
+
+Infra plane message payloads carry all context needed to act on the message — agent name lives in the payload, not the routing key. This enables replay from the DAG without reconstructing routing context.
 
 ## Consequences
 
-- The plane is the top-level type discriminant — code that handles one plane doesn't see the others
-- Infra operations (deploy, delete) go through the queue with their own routing and lifecycle
+- The plane is the top-level discriminant — code that handles one plane doesn't see the others
 - Each plane is independently subscribable at the NATS level
 - Retention and delivery guarantees can differ per plane
-- Data and Session share an address shape but are separate types — can diverge independently
-- Infra has a simpler address — cluster-scoped, no session, branch, or submission
-- Agent status tracking (issue #15) fits naturally on the infra plane
-- All three planes share one SQLite database — agent IDs are FK targets for session/data plane tables
-- `vlinder-sql-registry` (rusqlite) merges into `vlinder-sql-state` (Diesel) — one connection, one migration framework
-- Registry becomes a read model — vlinder eventually runs on vlinder (infra operations are agent workloads too)
+- Agent deployment is async with observable lifecycle state
+- All three planes share one database with FK integrity across planes
+- Registry is a read model — vlinder eventually runs on vlinder
