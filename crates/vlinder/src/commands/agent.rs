@@ -147,28 +147,33 @@ fn deploy(path: Option<PathBuf>) {
         std::process::exit(1);
     });
 
-    // Poll for state transition
+    // Poll for state transition, printing status changes
+    let mut last_status: Option<AgentStatus> = None;
     loop {
         match client.get_agent_state(&agent_name) {
-            Ok(Some(state)) => match state.status {
-                AgentStatus::Live => {
-                    println!("Deployed: {agent_name}");
-                    break;
+            Ok(Some(state)) => {
+                if last_status.as_ref() != Some(&state.status) {
+                    match &state.status {
+                        AgentStatus::Registered => println!("  Registered"),
+                        AgentStatus::Deploying => println!("  Deploying..."),
+                        AgentStatus::Live => {
+                            println!("  Live");
+                            println!("Deployed: {agent_name}");
+                            break;
+                        }
+                        AgentStatus::Failed => {
+                            eprintln!(
+                                "Deploy failed: {}",
+                                state.error.as_deref().unwrap_or("unknown error")
+                            );
+                            std::process::exit(1);
+                        }
+                        _ => {}
+                    }
+                    last_status = Some(state.status);
                 }
-                AgentStatus::Failed => {
-                    eprintln!(
-                        "Deploy failed: {}",
-                        state.error.as_deref().unwrap_or("unknown error")
-                    );
-                    std::process::exit(1);
-                }
-                _ => {
-                    // Still in progress — keep polling
-                }
-            },
-            Ok(None) => {
-                // State not yet created — worker hasn't picked it up
             }
+            Ok(None) => {}
             Err(e) => {
                 eprintln!("Failed to query agent state: {e}");
                 std::process::exit(1);
@@ -475,23 +480,30 @@ fn delete(name: &str) {
         std::process::exit(1);
     });
 
-    // Poll for deletion completion
+    // Poll for deletion completion, printing status changes
+    let mut last_status: Option<AgentStatus> = None;
     loop {
         match client.get_agent_state(name) {
-            Ok(Some(state)) => match state.status {
-                AgentStatus::Deleted => {
-                    println!("Deleted agent '{name}'");
-                    break;
+            Ok(Some(state)) => {
+                if last_status.as_ref() != Some(&state.status) {
+                    match &state.status {
+                        AgentStatus::Deleting => println!("  Deleting..."),
+                        AgentStatus::Deleted => {
+                            println!("Deleted agent '{name}'");
+                            break;
+                        }
+                        AgentStatus::Failed => {
+                            eprintln!(
+                                "Delete failed: {}",
+                                state.error.as_deref().unwrap_or("unknown error")
+                            );
+                            std::process::exit(1);
+                        }
+                        _ => {}
+                    }
+                    last_status = Some(state.status);
                 }
-                AgentStatus::Failed => {
-                    eprintln!(
-                        "Delete failed: {}",
-                        state.error.as_deref().unwrap_or("unknown error")
-                    );
-                    std::process::exit(1);
-                }
-                _ => {}
-            },
+            }
             Ok(None) => {}
             Err(e) => {
                 eprintln!("Failed to query agent state: {e}");
