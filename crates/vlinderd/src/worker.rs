@@ -100,9 +100,10 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
     );
     let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::clone(&store) as _;
 
-    // Queue for infra plane (deploy/delete agent)
+    // Queue for infra plane — RecordingQueue records deploy/delete to DAG before NATS
     let queue: Arc<dyn vlinder_core::domain::MessageQueue + Send + Sync> =
-        crate::queue_factory::from_config(config).expect("Failed to create queue for registry");
+        crate::queue_factory::recording_from_config(config)
+            .expect("Failed to create queue for registry");
 
     // Build registry config from cluster topology
     let mut inference_engines = Vec::new();

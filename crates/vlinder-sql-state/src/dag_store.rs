@@ -1106,6 +1106,99 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
+    fn insert_deploy_agent_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::InfraRoutingKey,
+        msg: &vlinder_core::domain::DeployAgentMessage,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewDeployAgentNode};
+        use crate::schema::{dag_nodes, deploy_agent_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let created_at_str = created_at.to_rfc3339();
+        let manifest_json = serde_json::to_string(&msg.manifest)
+            .map_err(|e| format!("serialize manifest failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "deploy-agent",
+                session_id: None,
+                submission_id: Some(key.submission.as_str()),
+                branch_id: None,
+                created_at: &created_at_str,
+                protocol_version: "v1",
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(deploy_agent_nodes::table)
+            .values(&NewDeployAgentNode {
+                dag_hash: dag_id.as_str(),
+                agent_name: &msg.manifest.name,
+                manifest_json: &manifest_json,
+                message_id: msg.id.as_str(),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert deploy_agent_nodes failed: {e}"))?;
+
+        Ok(())
+    }
+
+    fn insert_delete_agent_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        key: &vlinder_core::domain::InfraRoutingKey,
+        msg: &vlinder_core::domain::DeleteAgentMessage,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewDeleteAgentNode};
+        use crate::schema::{dag_nodes, delete_agent_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let created_at_str = created_at.to_rfc3339();
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_id.as_str(),
+                message_type: "delete-agent",
+                session_id: None,
+                submission_id: Some(key.submission.as_str()),
+                branch_id: None,
+                created_at: &created_at_str,
+                protocol_version: "v1",
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(delete_agent_nodes::table)
+            .values(&NewDeleteAgentNode {
+                dag_hash: dag_id.as_str(),
+                agent_name: msg.agent.as_str(),
+                message_id: msg.id.as_str(),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert delete_agent_nodes failed: {e}"))?;
+
+        Ok(())
+    }
+
     fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {
         use crate::schema::sessions;
 

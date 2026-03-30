@@ -486,15 +486,14 @@ impl MessageQueue for RecordingQueue {
         Ok(default_branch)
     }
 
-    // Infra plane: forward-only for now. DAG recording will be added when
-    // deploy_agent_nodes / delete_agent_nodes tables are wired into DagStore.
-
     fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeployAgentMessage,
     ) -> Result<(), QueueError> {
-        self.inner.send_deploy_agent(key, msg)
+        self.record_deploy_agent(&key, &msg);
+        let _ = self.inner.send_deploy_agent(key, msg);
+        Ok(())
     }
 
     fn send_delete_agent(
@@ -502,7 +501,9 @@ impl MessageQueue for RecordingQueue {
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
     ) -> Result<(), QueueError> {
-        self.inner.send_delete_agent(key, msg)
+        self.record_delete_agent(&key, &msg);
+        let _ = self.inner.send_delete_agent(key, msg);
+        Ok(())
     }
 }
 
@@ -565,6 +566,57 @@ impl RecordingQueue {
                 .insert_promote_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
         {
             tracing::warn!(error = %id, "Failed to record promote node: {e}");
+        }
+    }
+
+    /// Record a deploy-agent DAG node.
+    fn record_deploy_agent(&self, key: &InfraRoutingKey, msg: &DeployAgentMessage) {
+        // Infra nodes are cluster-scoped — no session, so use a synthetic session for hashing
+        let synthetic_session =
+            crate::domain::SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string())
+                .unwrap();
+        let id = hash_dag_node(
+            msg.manifest.name.as_bytes(),
+            &DagNodeId::root(),
+            &MessageType::DeployAgent,
+            &[],
+            &synthetic_session,
+        );
+
+        if let Err(e) = self.store.insert_deploy_agent_node(
+            &id,
+            &DagNodeId::root(),
+            Utc::now(),
+            &Snapshot::empty(),
+            key,
+            msg,
+        ) {
+            tracing::warn!(error = %e, "Failed to record deploy-agent node");
+        }
+    }
+
+    /// Record a delete-agent DAG node.
+    fn record_delete_agent(&self, key: &InfraRoutingKey, msg: &DeleteAgentMessage) {
+        let synthetic_session =
+            crate::domain::SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string())
+                .unwrap();
+        let id = hash_dag_node(
+            msg.agent.as_str().as_bytes(),
+            &DagNodeId::root(),
+            &MessageType::DeleteAgent,
+            &[],
+            &synthetic_session,
+        );
+
+        if let Err(e) = self.store.insert_delete_agent_node(
+            &id,
+            &DagNodeId::root(),
+            Utc::now(),
+            &Snapshot::empty(),
+            key,
+            msg,
+        ) {
+            tracing::warn!(error = %e, "Failed to record delete-agent node");
         }
     }
 }
