@@ -34,7 +34,7 @@ Worker (picks up from NATS, does the actual work)
 ```
 
 - **Data/session plane**: CLI -> Harness -> RecordingQueue -> NATS -> sidecar/runtime
-- **Infra plane**: CLI -> Registry -> RecordingQueue -> NATS -> infra worker -> runtime worker
+- **Infra plane**: CLI -> Registry -> RecordingQueue -> NATS -> infra worker (sets intent via AgentState) ... runtime worker (acts on next tick)
 
 Reads go directly to the store (Registry for agents, DagStore for conversation state).
 
@@ -134,6 +134,10 @@ Startup: Secret -> State -> Registry -> Catalog -> Harness -> runtimes -> Infra 
 
 ## Agent Lifecycle
 
+Deploy and delete are two-phase: the infra worker sets intent via `AgentState`, the runtime worker acts on it. They don't communicate directly — the handoff is through the shared database.
+
+**Deploy:**
+
 ```
 vlinder agent deploy
     |
@@ -143,13 +147,16 @@ Registry gRPC -> RecordingQueue -> NATS
                                      v
                               Infra worker
                               (validates manifest, registers agent)
-                              AgentState: Deploying
-                                     |
-                                     v
+                              writes AgentState: Deploying
+                                     .
+                                     . (no direct call — shared DB)
+                                     .
                               Runtime worker (container/Lambda)
-                              (starts pod or creates function)
-                              AgentState: Live (or Failed)
+                              (sees Deploying on next tick, starts pod or creates function)
+                              writes AgentState: Live (or Failed)
 ```
+
+**Delete:**
 
 ```
 vlinder agent delete
@@ -159,12 +166,13 @@ Registry gRPC -> RecordingQueue -> NATS
                                      |
                                      v
                               Infra worker
-                              AgentState: Deleting
-                                     |
-                                     v
+                              writes AgentState: Deleting
+                                     .
+                                     . (no direct call — shared DB)
+                                     .
                               Runtime worker
-                              (stops pod, deletes from registry)
-                              AgentState: Deleted
+                              (sees Deleting on next tick, stops pod, deletes from registry)
+                              writes AgentState: Deleted
 ```
 
 CLI polls `GetAgentState` and prints status transitions as they happen.
