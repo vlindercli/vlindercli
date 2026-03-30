@@ -454,11 +454,18 @@ fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
 
 #[cfg(feature = "lambda")]
 fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
+    use crate::config::dag_db_path;
     use vlinder_core::domain::Runtime;
     use vlinder_nats_lambda_runtime::{LambdaRuntime, LambdaRuntimeConfig};
+    use vlinder_sql_state::SqliteDagStore;
 
     let registry =
         crate::registry_factory::from_config(config).expect("Failed to connect to registry");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
 
     let queue = crate::queue_factory::from_config(config)
         .expect("Failed to create queue for Lambda runtime");
@@ -479,7 +486,7 @@ fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
         vpc_security_group_ids: config.runtime.lambda_vpc_security_group_ids.clone(),
     };
 
-    let mut runtime = LambdaRuntime::new(&lambda_config, registry, queue)
+    let mut runtime = LambdaRuntime::new(&lambda_config, registry, repo, queue)
         .expect("Failed to create Lambda runtime");
 
     tracing::info!(

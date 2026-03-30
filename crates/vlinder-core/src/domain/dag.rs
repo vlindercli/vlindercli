@@ -550,6 +550,7 @@ pub struct InMemoryDagStore {
     nodes: std::sync::Mutex<Vec<DagNode>>,
     branches: std::sync::Mutex<Vec<Branch>>,
     sessions: std::sync::Mutex<Vec<Session>>,
+    agent_states: std::sync::Mutex<Vec<super::AgentState>>,
 }
 
 impl InMemoryDagStore {
@@ -558,6 +559,7 @@ impl InMemoryDagStore {
             nodes: std::sync::Mutex::new(Vec::new()),
             branches: std::sync::Mutex::new(Vec::new()),
             sessions: std::sync::Mutex::new(Vec::new()),
+            agent_states: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -929,6 +931,22 @@ impl super::RegistryRepository for InMemoryDagStore {
     }
     fn agent_exists(&self, _: &str) -> Result<bool, super::RepositoryError> {
         Ok(false)
+    }
+    fn upsert_agent_state(&self, state: &super::AgentState) -> Result<(), super::RepositoryError> {
+        let mut states = self.agent_states.lock().unwrap();
+        if let Some(existing) = states.iter_mut().find(|s| s.agent == state.agent) {
+            *existing = state.clone();
+        } else {
+            states.push(state.clone());
+        }
+        Ok(())
+    }
+    fn get_agent_state(
+        &self,
+        name: &str,
+    ) -> Result<Option<super::AgentState>, super::RepositoryError> {
+        let states = self.agent_states.lock().unwrap();
+        Ok(states.iter().find(|s| s.agent.as_str() == name).cloned())
     }
 }
 
