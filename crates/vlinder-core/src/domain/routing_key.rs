@@ -209,7 +209,7 @@ pub enum DataMessageKind {
 ///
 /// Scoped to a session, not a branch. Session plane operations manage
 /// branches within a session.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SessionRoutingKey {
     pub session: SessionId,
     pub submission: SubmissionId,
@@ -217,7 +217,7 @@ pub struct SessionRoutingKey {
 }
 
 /// Session plane message kinds.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SessionMessageKind {
     Start { agent_name: AgentName },
     Fork { agent_name: AgentName },
@@ -231,14 +231,14 @@ pub enum SessionMessageKind {
 /// Infra plane routing key — provisioning operations.
 ///
 /// Cluster-scoped, not session-scoped. No branch, no session.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct InfraRoutingKey {
     pub submission: SubmissionId,
     pub kind: InfraMessageKind,
 }
 
 /// Infra plane message kinds.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum InfraMessageKind {
     DeployAgent,
     DeleteAgent,
