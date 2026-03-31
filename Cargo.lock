@@ -4393,6 +4393,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vlinder-sqs-lambda-runtime"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-iam",
+ "aws-sdk-lambda",
+ "aws-sdk-sqs",
+ "aws-smithy-types",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "vlinder-core",
+]
+
+[[package]]
 name = "vlinderd"
 version = "0.1.0"
 dependencies = [
@@ -4439,6 +4454,7 @@ dependencies = [
  "vlinder-sqlite-kv",
  "vlinder-sqlite-vec",
  "vlinder-sqs",
+ "vlinder-sqs-lambda-runtime",
  "zerocopy 0.7.35",
 ]
 
