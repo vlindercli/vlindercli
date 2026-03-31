@@ -19,6 +19,13 @@ pub fn from_config(config: &Config) -> Result<Arc<dyn SecretStore>, SecretStoreE
             let store = NatsSecretStore::connect(&config.queue.nats_config())?;
             Ok(Arc::new(store))
         }
+        #[cfg(feature = "sqs")]
+        QueueBackend::Sqs => {
+            // SQS deployments don't have NATS for secrets.
+            // Use in-memory store for now; AWS Secrets Manager integration is future work.
+            use vlinder_core::domain::InMemorySecretStore;
+            Ok(Arc::new(InMemorySecretStore::new()))
+        }
         #[cfg(any(test, feature = "test-support"))]
         QueueBackend::Memory => {
             use vlinder_core::domain::InMemorySecretStore;

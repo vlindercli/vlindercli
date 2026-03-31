@@ -24,6 +24,8 @@ use std::path::PathBuf;
 #[serde(rename_all = "lowercase")]
 pub enum QueueBackend {
     Nats,
+    #[cfg(feature = "sqs")]
+    Sqs,
     #[cfg(any(test, feature = "test-support"))]
     Memory,
 }
@@ -142,6 +144,12 @@ pub struct QueueConfig {
     /// Optional path to a NATS .creds file for authenticated connections (e.g. NGS).
     #[serde(default)]
     pub nats_creds: Option<String>,
+    /// AWS region for SQS (e.g., `"eu-west-1"`).
+    #[serde(default = "default_sqs_region")]
+    pub sqs_region: String,
+    /// SQS queue name prefix (e.g., `"dev-vlinder"`). Defaults to `"vlinder"`.
+    #[serde(default = "default_sqs_queue_prefix")]
+    pub sqs_queue_prefix: String,
 }
 
 impl QueueConfig {
@@ -156,6 +164,23 @@ impl QueueConfig {
             creds_content: None,
         }
     }
+
+    /// Produce the SQS connection config consumed by vlinder-sqs.
+    #[cfg(feature = "sqs")]
+    pub fn sqs_config(&self) -> vlinder_sqs::SqsConfig {
+        vlinder_sqs::SqsConfig {
+            region: self.sqs_region.clone(),
+            queue_prefix: self.sqs_queue_prefix.clone(),
+        }
+    }
+}
+
+fn default_sqs_region() -> String {
+    "eu-west-1".to_string()
+}
+
+fn default_sqs_queue_prefix() -> String {
+    "vlinder".to_string()
 }
 
 fn default_nats_url() -> String {
@@ -462,6 +487,8 @@ impl Config {
                 backend: QueueBackend::Memory,
                 nats_url: "nats://localhost:4222".to_string(),
                 nats_creds: None,
+                sqs_region: "eu-west-1".to_string(),
+                sqs_queue_prefix: "vlinder".to_string(),
             },
             state: StateConfig {
                 backend: StateBackend::Memory,
@@ -503,6 +530,12 @@ impl Config {
         }
         if let Ok(v) = std::env::var("VLINDER_QUEUE_NATS_CREDS") {
             self.queue.nats_creds = Some(v);
+        }
+        if let Ok(v) = std::env::var("VLINDER_QUEUE_SQS_REGION") {
+            self.queue.sqs_region = v;
+        }
+        if let Ok(v) = std::env::var("VLINDER_QUEUE_SQS_QUEUE_PREFIX") {
+            self.queue.sqs_queue_prefix = v;
         }
 
         // State
@@ -617,6 +650,8 @@ impl Config {
 fn parse_queue_backend(s: &str) -> QueueBackend {
     match s {
         "nats" => QueueBackend::Nats,
+        #[cfg(feature = "sqs")]
+        "sqs" => QueueBackend::Sqs,
         #[cfg(any(test, feature = "test-support"))]
         "memory" => QueueBackend::Memory,
         other => {
