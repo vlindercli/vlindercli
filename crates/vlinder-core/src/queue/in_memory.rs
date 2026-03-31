@@ -90,6 +90,7 @@ impl MessageQueue for InMemoryQueue {
         &self,
         submission: &SubmissionId,
         _harness: HarnessType,
+        _agent: &AgentName,
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
         let mut q = self
             .completes
@@ -163,6 +164,7 @@ impl MessageQueue for InMemoryQueue {
     fn receive_response(
         &self,
         submission: &SubmissionId,
+        _agent: &AgentName,
         service: ServiceBackend,
         operation: Operation,
         sequence: Sequence,

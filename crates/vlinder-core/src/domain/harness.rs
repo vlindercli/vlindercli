@@ -276,12 +276,13 @@ impl Harness for CoreHarness {
 
         let harness = self.harness_type();
         let submission = key.submission.clone();
+        let agent = crate::domain::agent_routing_key(agent_id);
         self.queue
             .send_invoke(key, msg)
             .map_err(|e| format!("queue error: {e}"))?;
 
         let result = loop {
-            match self.queue.receive_complete(&submission, harness) {
+            match self.queue.receive_complete(&submission, harness, &agent) {
                 Ok((_key, v2, ack)) => {
                     let _ = ack();
                     break String::from_utf8_lossy(&v2.payload).to_string();

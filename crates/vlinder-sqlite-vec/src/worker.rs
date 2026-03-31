@@ -402,7 +402,13 @@ mod tests {
         queue.send_request(store_key, store_msg).unwrap();
         handler.tick();
         let (_key, store_resp, ack) = queue
-            .receive_response(&submission, service, Operation::Store, Sequence::first())
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Store,
+                Sequence::first(),
+            )
             .unwrap();
         ack().unwrap();
         assert_eq!(
@@ -429,7 +435,13 @@ mod tests {
         queue.send_request(search_key, search_msg).unwrap();
         handler.tick();
         let (_key, search_resp, ack) = queue
-            .receive_response(&submission, service, Operation::Search, Sequence::from(2))
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Search,
+                Sequence::from(2),
+            )
             .unwrap();
         ack().unwrap();
         assert_eq!(
@@ -478,7 +490,13 @@ mod tests {
         queue.send_request(store_key, store_msg).unwrap();
         assert!(handler.tick());
         let (_key, response, ack) = queue
-            .receive_response(&submission, service, Operation::Store, Sequence::first())
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Store,
+                Sequence::first(),
+            )
             .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
         ack().unwrap();
@@ -499,7 +517,13 @@ mod tests {
         queue.send_request(search_key, search_msg).unwrap();
         assert!(handler.tick());
         let (_key, response, ack) = queue
-            .receive_response(&submission, service, Operation::Search, Sequence::from(2))
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Search,
+                Sequence::from(2),
+            )
             .unwrap();
         let results: Vec<serde_json::Value> =
             serde_json::from_slice(response.payload.as_slice()).unwrap();

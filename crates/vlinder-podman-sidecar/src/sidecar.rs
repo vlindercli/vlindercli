@@ -85,6 +85,7 @@ impl Sidecar {
             if let Some(session) = durable_session.take() {
                 match self.dispatch.queue.receive_response(
                     &session.submission,
+                    &agent_id,
                     session.pending_service,
                     session.pending_operation,
                     session.pending_sequence,

@@ -340,8 +340,9 @@ impl MessageQueue for RecordingQueue {
         &self,
         submission: &SubmissionId,
         harness: crate::domain::HarnessType,
+        agent: &crate::domain::AgentName,
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
-        self.inner.receive_complete(submission, harness)
+        self.inner.receive_complete(submission, harness, agent)
     }
 
     fn receive_request(
@@ -362,6 +363,7 @@ impl MessageQueue for RecordingQueue {
     fn receive_response(
         &self,
         submission: &SubmissionId,
+        agent: &crate::domain::AgentName,
         service: crate::domain::ServiceBackend,
         operation: crate::domain::Operation,
         sequence: crate::domain::Sequence,
@@ -374,7 +376,7 @@ impl MessageQueue for RecordingQueue {
         QueueError,
     > {
         self.inner
-            .receive_response(submission, service, operation, sequence)
+            .receive_response(submission, agent, service, operation, sequence)
     }
 
     // -------------------------------------------------------------------------

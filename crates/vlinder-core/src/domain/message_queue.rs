@@ -58,6 +58,7 @@ pub trait MessageQueue {
         &self,
         _submission: &SubmissionId,
         _harness: HarnessType,
+        _agent: &AgentName,
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
     }
@@ -97,6 +98,7 @@ pub trait MessageQueue {
     fn receive_response(
         &self,
         _submission: &SubmissionId,
+        _agent: &AgentName,
         _service: ServiceBackend,
         _operation: Operation,
         _sequence: Sequence,
@@ -183,10 +185,10 @@ pub trait MessageQueue {
         msg: RequestMessage,
     ) -> Result<ResponseMessage, QueueError> {
         let DataMessageKind::Request {
+            ref agent,
             service,
             operation,
             sequence,
-            ..
         } = key.kind
         else {
             return Err(QueueError::SendFailed(
@@ -194,10 +196,11 @@ pub trait MessageQueue {
             ));
         };
         let submission = key.submission.clone();
+        let agent = agent.clone();
         send_and_wait(
             || self.send_request(key, msg),
             || {
-                self.receive_response(&submission, service, operation, sequence)
+                self.receive_response(&submission, &agent, service, operation, sequence)
                     .map(|(_key, msg, ack)| (msg, ack))
             },
         )

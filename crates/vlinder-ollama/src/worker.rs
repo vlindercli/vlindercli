@@ -455,7 +455,9 @@ mod tests {
             send_infer_request(&queue, Operation::Run, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.status_code, 400);
         ack().unwrap();
     }
@@ -477,7 +479,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.state, Some("xyz".to_string()));
         ack().unwrap();
     }
@@ -499,7 +503,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.status_code, 500);
         ack().unwrap();
     }
@@ -515,7 +521,9 @@ mod tests {
             send_infer_request(&queue, Operation::Chat, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.status_code, 400);
         ack().unwrap();
     }
@@ -537,7 +545,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.state, Some("abc".to_string()));
         ack().unwrap();
     }
@@ -559,7 +569,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.status_code, 500);
         ack().unwrap();
     }
@@ -575,7 +587,9 @@ mod tests {
             send_infer_request(&queue, Operation::Generate, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.status_code, 400);
         ack().unwrap();
     }
@@ -597,7 +611,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.state, Some("def".to_string()));
         ack().unwrap();
     }
@@ -619,7 +635,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.status_code, 500);
         ack().unwrap();
     }
@@ -634,7 +652,9 @@ mod tests {
         let (sub, svc, op, seq) = send_embed_request(&queue, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.status_code, 400);
         ack().unwrap();
     }
@@ -655,7 +675,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.state, Some("embed-state".to_string()));
         ack().unwrap();
     }
@@ -673,7 +695,9 @@ mod tests {
             send_embed_request(&queue, serde_json::to_vec(&body).unwrap(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(response.status_code, 500);
         ack().unwrap();
     }

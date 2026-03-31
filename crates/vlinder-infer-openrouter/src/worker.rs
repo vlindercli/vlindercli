@@ -277,7 +277,9 @@ mod tests {
         let (sub, svc, op, seq) = send_request(&queue, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         let (status, body) = unwrap_wire(&response);
         assert_eq!(status, 400);
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -306,7 +308,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         assert_eq!(
             response.state,
             Some("xyz".to_string()),
@@ -331,7 +335,9 @@ mod tests {
         let (sub, svc, op, seq) = send_request(&queue, serde_json::to_vec(&body).unwrap(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue.receive_response(&sub, svc, op, seq).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .unwrap();
         let (status, body) = unwrap_wire(&response);
         assert_eq!(status, 500);
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();

@@ -726,7 +726,7 @@ mod tests {
         runtime.tick();
 
         let (_key, complete, ack) = queue
-            .receive_complete(&submission, HarnessType::Grpc)
+            .receive_complete(&submission, HarnessType::Grpc, &AgentName::new("echo"))
             .expect("should receive error complete from daemon");
         ack().unwrap();
         let payload_str = String::from_utf8_lossy(&complete.payload);

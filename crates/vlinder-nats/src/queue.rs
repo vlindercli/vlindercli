@@ -297,8 +297,9 @@ impl MessageQueue for NatsQueue {
         &self,
         submission: &SubmissionId,
         harness: HarnessType,
+        agent: &AgentName,
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
-        let filter = complete_filter(submission, harness);
+        let filter = complete_filter(submission, agent, harness);
 
         self.inner.runtime.block_on(async {
             let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
@@ -420,11 +421,12 @@ impl MessageQueue for NatsQueue {
     fn receive_response(
         &self,
         submission: &SubmissionId,
+        agent: &AgentName,
         service: ServiceBackend,
         operation: Operation,
         sequence: Sequence,
     ) -> Result<(DataRoutingKey, ResponseMessage, Acknowledgement), QueueError> {
-        let filter = response_filter(submission, service, operation, sequence);
+        let filter = response_filter(submission, agent, service, operation, sequence);
 
         self.inner.runtime.block_on(async {
             let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
@@ -687,11 +689,12 @@ pub fn complete_parse_subject(subject: &str) -> Option<DataRoutingKey> {
     })
 }
 
-/// NATS wildcard filter for receiving complete messages for a specific submission.
-fn complete_filter(submission: &SubmissionId, harness: HarnessType) -> String {
+/// NATS filter for receiving complete messages for a specific submission and agent.
+fn complete_filter(submission: &SubmissionId, agent: &AgentName, harness: HarnessType) -> String {
     format!(
-        "{COMPLETE_PREFIX}.*.*.{}.{COMPLETE_KIND}.*.{}",
+        "{COMPLETE_PREFIX}.*.*.{}.{COMPLETE_KIND}.{}.{}",
         submission.as_str(),
+        agent.as_str(),
         harness.as_str()
     )
 }
@@ -829,13 +832,15 @@ pub fn response_parse_subject(subject: &str) -> Option<DataRoutingKey> {
 /// NATS wildcard filter for receiving response messages for a specific submission+service+operation.
 fn response_filter(
     submission: &SubmissionId,
+    agent: &AgentName,
     service: ServiceBackend,
     operation: Operation,
     sequence: Sequence,
 ) -> String {
     format!(
-        "{RESPONSE_PREFIX}.*.*.{}.{RESPONSE_KIND}.*.{}.{}.{}.{}",
+        "{RESPONSE_PREFIX}.*.*.{}.{RESPONSE_KIND}.{}.{}.{}.{}.{}",
         submission.as_str(),
+        agent.as_str(),
         service.service_type(),
         service.backend_str(),
         operation.as_str(),

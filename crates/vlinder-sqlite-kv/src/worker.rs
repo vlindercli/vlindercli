@@ -701,7 +701,13 @@ mod tests {
         queue.send_request(put_key, put_msg).unwrap();
         assert!(handler.tick());
         let (_key, response, ack) = queue
-            .receive_response(&submission, service, Operation::Put, Sequence::first())
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
             .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
         ack().unwrap();
@@ -721,7 +727,13 @@ mod tests {
         queue.send_request(get_key, get_msg).unwrap();
         assert!(handler.tick());
         let (_key, response, ack) = queue
-            .receive_response(&submission, service, Operation::Get, Sequence::from(2))
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Get,
+                Sequence::from(2),
+            )
             .unwrap();
         assert_eq!(response.payload.as_slice(), b"hello world");
         ack().unwrap();
@@ -770,7 +782,13 @@ mod tests {
         assert!(handler.tick());
 
         let (_key, response, ack) = queue
-            .receive_response(&submission, service, Operation::Put, Sequence::first())
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
             .unwrap();
         ack().unwrap();
 
@@ -819,7 +837,13 @@ mod tests {
         queue.send_request(key1, msg1).unwrap();
         handler.tick();
         let (_key, resp1, ack) = queue
-            .receive_response(&submission, service, Operation::Put, Sequence::first())
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
             .unwrap();
         ack().unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
@@ -842,7 +866,13 @@ mod tests {
         queue.send_request(key2, msg2).unwrap();
         handler.tick();
         let (_key, resp2, ack) = queue
-            .receive_response(&submission, service, Operation::Put, Sequence::from(2))
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::from(2),
+            )
             .unwrap();
         ack().unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
@@ -868,7 +898,13 @@ mod tests {
         queue.send_request(get_key, get_msg).unwrap();
         handler.tick();
         let (_key, resp, ack) = queue
-            .receive_response(&submission, service, Operation::Get, Sequence::from(3))
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Get,
+                Sequence::from(3),
+            )
             .unwrap();
         ack().unwrap();
         assert_eq!(resp.payload.as_slice(), b"aaa");
@@ -911,7 +947,13 @@ mod tests {
         queue.send_request(key1, msg1).unwrap();
         handler.tick();
         let (_key, resp1, ack) = queue
-            .receive_response(&submission, service, Operation::Put, Sequence::first())
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
             .unwrap();
         ack().unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
@@ -933,7 +975,13 @@ mod tests {
         queue.send_request(key2, msg2).unwrap();
         handler.tick();
         let (_key, resp2, ack) = queue
-            .receive_response(&submission, service, Operation::Put, Sequence::from(2))
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::from(2),
+            )
             .unwrap();
         ack().unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
@@ -955,7 +1003,13 @@ mod tests {
         queue.send_request(list_key2, list_msg2).unwrap();
         handler.tick();
         let (_key, resp, ack) = queue
-            .receive_response(&submission, service, Operation::List, Sequence::from(3))
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::List,
+                Sequence::from(3),
+            )
             .unwrap();
         ack().unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
@@ -977,7 +1031,13 @@ mod tests {
         queue.send_request(list_key1, list_msg1).unwrap();
         handler.tick();
         let (_key, resp, ack) = queue
-            .receive_response(&submission, service, Operation::List, Sequence::from(4))
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::List,
+                Sequence::from(4),
+            )
             .unwrap();
         ack().unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
@@ -1019,7 +1079,13 @@ mod tests {
         queue.send_request(put_key, put_msg).unwrap();
         handler.tick();
         let (_key, _resp, ack) = queue
-            .receive_response(&submission, service, Operation::Put, Sequence::first())
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
             .unwrap();
         ack().unwrap();
 
@@ -1040,7 +1106,13 @@ mod tests {
         queue.send_request(get_key, get_msg).unwrap();
         handler.tick();
         let (_key, response, ack) = queue
-            .receive_response(&submission, service, Operation::Get, Sequence::from(2))
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Get,
+                Sequence::from(2),
+            )
             .unwrap();
         ack().unwrap();
 
