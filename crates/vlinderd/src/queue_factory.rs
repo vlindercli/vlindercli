@@ -15,14 +15,13 @@ use vlinder_nats::NatsQueue;
 /// Returns `NatsQueue` in production. In test builds, `Memory` backend
 /// returns an `InMemoryQueue` (no network required).
 pub fn from_config(config: &Config) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
-    match config.queue.backend {
-        QueueBackend::Nats => {
-            let queue = NatsQueue::connect(&config.queue.nats_config())?;
-            Ok(Arc::new(queue))
-        }
+    let queue: Arc<dyn MessageQueue + Send + Sync> = match config.queue.backend {
+        QueueBackend::Nats => Arc::new(NatsQueue::connect(&config.queue.nats_config())?),
         #[cfg(any(test, feature = "test-support"))]
-        QueueBackend::Memory => Ok(Arc::new(vlinder_core::queue::InMemoryQueue::new())),
-    }
+        QueueBackend::Memory => Arc::new(vlinder_core::queue::InMemoryQueue::new()),
+    };
+    queue.on_cluster_start()?;
+    Ok(queue)
 }
 
 /// Create a queue with synchronous DAG recording (transactional outbox).
