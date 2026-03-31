@@ -82,7 +82,7 @@ fn resolve_from_secrets(secret_url: &str) -> Option<NatsConfig> {
 ///
 /// When `secret_url` is provided, attempts to resolve NATS connection details
 /// from the secret store before falling back to `nats_url`.
-pub fn connect_queue(
+pub fn connect_nats_queue(
     nats_url: &str,
     state_url: &str,
     secret_url: Option<&str>,
@@ -92,7 +92,29 @@ pub fn connect_queue(
     let store: Arc<dyn DagStore> = Arc::new(GrpcStateClient::connect(state_url).map_err(|e| {
         QueueError::SendFailed(format!("state service at {state_url} unreachable: {e}"))
     })?);
-    Ok(Arc::new(RecordingQueue::new(inner, store)))
+    let queue = Arc::new(RecordingQueue::new(inner, store));
+    queue.ensure_infrastructure()?;
+    Ok(queue)
+}
+
+/// Connect to SQS and wrap with DAG recording via the State Service.
+#[cfg(feature = "sqs")]
+pub fn connect_sqs_queue(
+    region: &str,
+    queue_prefix: &str,
+    state_url: &str,
+) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
+    let sqs_config = vlinder_sqs::SqsConfig {
+        region: region.to_string(),
+        queue_prefix: queue_prefix.to_string(),
+    };
+    let inner = Arc::new(vlinder_sqs::SqsQueue::connect(&sqs_config)?);
+    let store: Arc<dyn DagStore> = Arc::new(GrpcStateClient::connect(state_url).map_err(|e| {
+        QueueError::SendFailed(format!("state service at {state_url} unreachable: {e}"))
+    })?);
+    let queue = Arc::new(RecordingQueue::new(inner, store));
+    queue.ensure_infrastructure()?;
+    Ok(queue)
 }
 
 /// Connect to the Registry Service via gRPC.

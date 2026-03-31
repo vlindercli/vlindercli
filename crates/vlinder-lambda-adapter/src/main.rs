@@ -62,7 +62,7 @@ fn main() {
     // on event/next forever, keeping the extension alive.
     register_extension(&config.runtime_api);
 
-    let queue = match factory::connect_queue(
+    let queue = match factory::connect_nats_queue(
         &config.nats_url,
         &config.state_url,
         config.secret_url.as_deref(),

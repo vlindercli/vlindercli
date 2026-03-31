@@ -30,7 +30,6 @@ fn main() {
     tracing::info!(
         event = "sidecar.config",
         agent = %config.agent,
-        nats_url = %config.nats_url,
         registry_url = %config.registry_url,
         state_url = %config.state_url,
         container_port = config.container_port,

@@ -28,14 +28,21 @@ pub struct Sidecar {
 impl Sidecar {
     /// Create a new sidecar from env-var configuration.
     ///
-    /// Connects to NATS (with DAG recording) and the Registry Service,
-    /// then fetches the Agent from the registry to determine storage backends.
+    /// Connects to the configured queue backend (with DAG recording) and
+    /// the Registry Service, then fetches the Agent from the registry.
     pub fn new(config: &SidecarConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        let queue = factory::connect_queue(
-            &config.nats_url,
-            &config.state_url,
-            config.secret_url.as_deref(),
-        )?;
+        use crate::config::QueueBackendConfig;
+
+        let queue = match &config.queue {
+            QueueBackendConfig::Nats { url, secret_url } => {
+                factory::connect_nats_queue(url, &config.state_url, secret_url.as_deref())?
+            }
+            #[cfg(feature = "sqs")]
+            QueueBackendConfig::Sqs {
+                region,
+                queue_prefix,
+            } => factory::connect_sqs_queue(region, queue_prefix, &config.state_url)?,
+        };
         let registry = factory::connect_registry(&config.registry_url)?;
         let image_ref = config
             .image_ref

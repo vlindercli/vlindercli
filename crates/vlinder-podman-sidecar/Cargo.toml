@@ -8,6 +8,9 @@ publish = false
 name = "vlinder-podman-sidecar"
 path = "src/main.rs"
 
+[features]
+sqs = ["vlinder-provider-server/sqs"]
+
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
 vlinder-provider-server = { path = "../vlinder-provider-server" }

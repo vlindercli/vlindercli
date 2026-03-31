@@ -361,11 +361,21 @@ fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
         .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
     let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
 
+    let queue_backend = match config.queue.backend {
+        crate::config::QueueBackend::Nats => "nats",
+        #[cfg(feature = "sqs")]
+        crate::config::QueueBackend::Sqs => "sqs",
+        #[cfg(any(test, feature = "test-support"))]
+        crate::config::QueueBackend::Memory => "memory",
+    };
     let podman_config = PodmanRuntimeConfig {
         image_policy: config.runtime.image_policy.clone(),
         podman_socket: config.runtime.podman_socket.clone(),
         sidecar_image: config.runtime.sidecar_image.clone(),
+        queue_backend: queue_backend.to_string(),
         nats_url: config.queue.nats_url.clone(),
+        sqs_region: config.queue.sqs_region.clone(),
+        sqs_queue_prefix: config.queue.sqs_queue_prefix.clone(),
         registry_addr: config.distributed.registry_addr.clone(),
         state_addr: config.distributed.state_addr.clone(),
         secret_addr: config.distributed.secret_addr.clone(),

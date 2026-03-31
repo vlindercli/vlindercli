@@ -10,6 +10,7 @@ ollama = ["dep:vlinder-ollama"]
 openrouter = ["dep:vlinder-infer-openrouter"]
 sqlite-kv = ["dep:vlinder-sqlite-kv"]
 sqlite-vec = ["dep:vlinder-sqlite-vec"]
+sqs = ["dep:vlinder-sqs"]
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
@@ -20,6 +21,7 @@ vlinder-ollama = { path = "../vlinder-ollama", optional = true, default-features
 vlinder-infer-openrouter = { path = "../vlinder-infer-openrouter", optional = true, default-features = false, features = ["routing"] }
 vlinder-sqlite-vec = { path = "../vlinder-sqlite-vec", optional = true, default-features = false, features = ["routing"] }
 vlinder-sqlite-kv = { path = "../vlinder-sqlite-kv", optional = true, default-features = false, features = ["routing"] }
+vlinder-sqs = { path = "../vlinder-sqs", optional = true }
 serde_json = "1"
 tracing = "0.1"
 tiny_http = "0.12"
