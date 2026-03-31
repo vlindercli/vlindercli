@@ -358,6 +358,21 @@ No surprises, sensible defaults. The `aws-sdk-sqs` crate's default credential ch
 - Response routing changes from subject-scoped to agent-scoped (minor semantic shift)
 - Standard SQS has no publish-side dedup (mitigated by DagStore idempotency)
 
+## Open Tension: Push vs Pull Invoke Delivery
+
+Adding SQS surfaced a tension in how invocations reach Lambda runtimes.
+
+Most data plane messaging is **pull**: a consumer polls the queue. This applies to request/response (sidecar polls), complete (harness polls), and invoke for containers (sidecar polls). The queue backend doesn't change this — NATS and SQS both support pull consumers.
+
+The exception is **invoke → Lambda**. Two models exist:
+
+- **Pull** (NATS path): the daemon polls the queue for invokes, then calls the Lambda API to dispatch. The daemon is an intermediary.
+- **Push** (SQS path): an SQS event source mapping triggers Lambda directly. No daemon intermediary, no polling loop. The queue delivers the invoke to Lambda as an event.
+
+This creates a `{queue, runtime}` coupling in the Lambda runtime crate. `vlinder-nats-lambda-runtime` owns the NATS pull dispatch loop. An SQS Lambda runtime would replace that loop with event source mapping setup — but the Lambda lifecycle code (IAM roles, function CRUD) is identical in both.
+
+A clean resolution would represent invoke delivery as a strategy within a single Lambda runtime, not as separate crates. This is deferred — the abstraction should be designed as its own ADR when the cost of duplication becomes concrete.
+
 ## What Changes vs What Doesn't
 
 **Unchanged:**
