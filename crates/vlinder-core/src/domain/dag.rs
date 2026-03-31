@@ -539,6 +539,32 @@ pub trait DagStore: Send + Sync {
 
     /// Look up a session by its friendly name.
     fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String>;
+
+    // -------------------------------------------------------------------------
+    // Idempotency guard (ADR 125)
+    // -------------------------------------------------------------------------
+
+    /// Check whether a node of the given type already exists for this
+    /// submission on this branch.
+    ///
+    /// Enables consumer-side idempotency. Before doing expensive work
+    /// on a received message, check if the expected downstream result
+    /// already exists in the DAG:
+    ///
+    /// - Sidecar receives Invoke  → check for `Complete`
+    /// - Worker receives Request  → check for `Response`
+    ///
+    /// If this returns `true`, the consumer should ack and skip processing.
+    ///
+    /// Default returns `false` (no check). SQL-backed stores query `dag_nodes`.
+    fn exists_in_submission(
+        &self,
+        _submission: &super::SubmissionId,
+        _branch: super::BranchId,
+        _message_type: MessageType,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 // ============================================================================

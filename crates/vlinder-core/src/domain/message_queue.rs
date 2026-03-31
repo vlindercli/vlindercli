@@ -25,6 +25,42 @@ pub type Acknowledgement = Box<dyn FnOnce() -> Result<(), QueueError> + Send>;
 /// A message queue for sending and receiving typed messages (ADR 044).
 pub trait MessageQueue {
     // -------------------------------------------------------------------------
+    // Lifecycle (ADR 125)
+    // -------------------------------------------------------------------------
+
+    /// Called once at daemon startup (ADR 125).
+    ///
+    /// Backends create cluster-level queue resources here.
+    ///
+    /// SQS: creates static queues (deploy, delete, fork, promote) + DLQs.
+    /// NATS: no-op (subjects are implicit, stream created at connect time).
+    fn on_cluster_start(&self) -> Result<(), QueueError> {
+        Ok(())
+    }
+
+    /// Called when a new agent is deployed (ADR 125).
+    ///
+    /// Backends create agent-scoped queue resources here.
+    /// Must be idempotent — calling twice for the same agent is safe.
+    ///
+    /// SQS: creates invoke, complete, and response queues + DLQs.
+    /// NATS: no-op (subjects are implicit).
+    fn on_agent_deployed(&self, _agent: &AgentName) -> Result<(), QueueError> {
+        Ok(())
+    }
+
+    /// Called when an agent is deleted (ADR 125).
+    ///
+    /// Backends tear down agent-scoped queue resources here.
+    /// Must be idempotent — calling on a non-existent agent is safe.
+    ///
+    /// SQS: deletes the agent's invoke, complete, and response queues + DLQs.
+    /// NATS: no-op.
+    fn on_agent_deleted(&self, _agent: &AgentName) -> Result<(), QueueError> {
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
     // Invoke (ADR 121 — data plane)
     // -------------------------------------------------------------------------
 
