@@ -25,6 +25,44 @@ pub type Acknowledgement = Box<dyn FnOnce() -> Result<(), QueueError> + Send>;
 /// A message queue for sending and receiving typed messages (ADR 044).
 pub trait MessageQueue {
     // -------------------------------------------------------------------------
+    // Lifecycle (ADR 125)
+    // -------------------------------------------------------------------------
+
+    /// Ensure cluster-level queue infrastructure exists (ADR 125).
+    ///
+    /// Called once at daemon startup. Creates the foundational queues
+    /// that exist for the lifetime of the cluster.
+    ///
+    /// NATS: creates the VLINDER `JetStream` stream (idempotent).
+    /// SQS:  creates infra, session, and per-service request queues + DLQs.
+    /// `InMemory`: no-op.
+    fn ensure_infrastructure(&self) -> Result<(), QueueError> {
+        Ok(())
+    }
+
+    /// Provision agent-scoped queues (ADR 125).
+    ///
+    /// Called by the infra worker when processing a `DeployAgentMessage`.
+    /// Must be idempotent — calling twice for the same agent is safe.
+    ///
+    /// NATS: no-op (subjects are implicit).
+    /// SQS:  creates invoke, complete, and response queues + DLQs for this agent.
+    fn provision_agent(&self, _agent: &AgentName) -> Result<(), QueueError> {
+        Ok(())
+    }
+
+    /// Deprovision agent-scoped queues (ADR 125).
+    ///
+    /// Called by the infra worker when processing a `DeleteAgentMessage`.
+    /// Must be idempotent — calling on a non-existent agent is safe.
+    ///
+    /// NATS: no-op.
+    /// SQS:  deletes the agent's invoke, complete, and response queues + DLQs.
+    fn deprovision_agent(&self, _agent: &AgentName) -> Result<(), QueueError> {
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
     // Invoke (ADR 121 — data plane)
     // -------------------------------------------------------------------------
 
