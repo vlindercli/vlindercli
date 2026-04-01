@@ -15,6 +15,7 @@ use diesel::sqlite::SqliteConnection;
 use vlinder_core::domain::session::Session;
 use vlinder_core::domain::{
     Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, SessionId, SessionSummary,
+    SubmissionId,
 };
 
 /// SQLite-backed `DagStore`.
@@ -1235,6 +1236,27 @@ impl DagStore for SqliteDagStore {
 
         Ok(row.map(session_row_to_domain))
     }
+
+    fn exists_in_submission(
+        &self,
+        submission: &SubmissionId,
+        branch: BranchId,
+        message_type: MessageType,
+    ) -> Result<bool, String> {
+        use crate::schema::dag_nodes;
+        use diesel::dsl::exists;
+        use diesel::select;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        select(exists(
+            dag_nodes::table
+                .filter(dag_nodes::submission_id.eq(submission.as_str()))
+                .filter(dag_nodes::branch_id.eq(branch.as_i64()))
+                .filter(dag_nodes::message_type.eq(message_type.as_str())),
+        ))
+        .get_result(&mut *conn)
+        .map_err(|e| format!("exists_in_submission failed: {e}"))
+    }
 }
 
 #[cfg(test)]
@@ -1700,5 +1722,70 @@ mod tests {
 
         let node = store.get_node(&dag_id).unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::DeleteAgent);
+    }
+
+    // ========================================================================
+    // Idempotency guard (ADR 125)
+    // ========================================================================
+
+    #[test]
+    fn exists_in_submission_returns_false_when_empty() {
+        let (store, _dir) = test_store();
+        assert!(!store
+            .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
+            .unwrap());
+    }
+
+    #[test]
+    fn exists_in_submission_returns_true_when_matching_node_exists() {
+        let (store, _dir) = test_store();
+
+        let mut node = test_node(b"payload", &DagNodeId::root());
+        node.msg_type = MessageType::Complete;
+        store.insert_node(&node).unwrap();
+
+        assert!(store
+            .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
+            .unwrap());
+    }
+
+    #[test]
+    fn exists_in_submission_returns_false_for_wrong_type() {
+        let (store, _dir) = test_store();
+
+        let mut node = test_node(b"payload", &DagNodeId::root());
+        node.msg_type = MessageType::Invoke;
+        store.insert_node(&node).unwrap();
+
+        assert!(!store
+            .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
+            .unwrap());
+    }
+
+    #[test]
+    fn exists_in_submission_returns_false_for_wrong_branch() {
+        let (store, _dir) = test_store();
+
+        let mut node = test_node(b"payload", &DagNodeId::root());
+        node.msg_type = MessageType::Complete;
+        store.insert_node(&node).unwrap();
+
+        assert!(!store
+            .exists_in_submission(&sub(), BranchId::from(2), MessageType::Complete)
+            .unwrap());
+    }
+
+    #[test]
+    fn exists_in_submission_returns_false_for_wrong_submission() {
+        let (store, _dir) = test_store();
+
+        let mut node = test_node(b"payload", &DagNodeId::root());
+        node.msg_type = MessageType::Complete;
+        store.insert_node(&node).unwrap();
+
+        let other_sub = SubmissionId::from("sub-other".to_string());
+        assert!(!store
+            .exists_in_submission(&other_sub, BranchId::from(1), MessageType::Complete)
+            .unwrap());
     }
 }
