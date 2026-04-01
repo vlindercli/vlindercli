@@ -12,10 +12,10 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use crate::domain::{
-    hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataRoutingKey,
-    DeleteAgentMessage, DeployAgentMessage, ForkMessage, InfraRoutingKey, Instance, InvokeMessage,
-    MessageQueue, MessageType, PromoteMessage, QueueError, SessionMessageKind, SessionRoutingKey,
-    SessionStartMessage, Snapshot, StateHash, SubmissionId,
+    hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataMessageKind,
+    DataRoutingKey, DeleteAgentMessage, DeployAgentMessage, ForkMessage, InfraRoutingKey, Instance,
+    InvokeMessage, MessageQueue, MessageType, PromoteMessage, QueueError, SessionMessageKind,
+    SessionRoutingKey, SessionStartMessage, Snapshot, StateHash, SubmissionId,
 };
 
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
@@ -94,7 +94,17 @@ impl RecordingQueue {
             .store
             .insert_invoke_node(&id, &parent_id, Utc::now(), &state, key, msg)
         {
-            tracing::warn!(error = %id, "Failed to record invoke node: {e}");
+            let DataMessageKind::Invoke { agent, .. } = &key.kind else {
+                unreachable!()
+            };
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                error = %e,
+                "failed to record invoke node — DAG chain may have a gap"
+            );
         }
 
         id
@@ -154,7 +164,14 @@ impl RecordingQueue {
             *harness,
             msg,
         ) {
-            tracing::warn!(error = %id, "Failed to record complete node: {e}");
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                error = %e,
+                "failed to record complete node — DAG chain may have a gap"
+            );
         }
     }
     /// Record a DAG node for a request message (data-plane path).
@@ -219,7 +236,16 @@ impl RecordingQueue {
             *sequence,
             msg,
         ) {
-            tracing::warn!(error = %id, "Failed to record request node: {e}");
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                service = %service.service_type(),
+                operation = %operation.as_str(),
+                error = %e,
+                "failed to record request node — DAG chain may have a gap"
+            );
         }
     }
 
@@ -285,7 +311,16 @@ impl RecordingQueue {
             *sequence,
             msg,
         ) {
-            tracing::warn!(error = %id, "Failed to record response node: {e}");
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                service = %service.service_type(),
+                operation = %operation.as_str(),
+                error = %e,
+                "failed to record response node — DAG chain may have a gap"
+            );
         }
     }
 }
@@ -549,7 +584,14 @@ impl RecordingQueue {
             self.store
                 .insert_fork_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
         {
-            tracing::warn!(error = %id, "Failed to record fork node: {e}");
+            tracing::warn!(
+                dag_id = %id,
+                session = %key.session,
+                submission = %key.submission,
+                fork_point = %msg.fork_point,
+                error = %e,
+                "failed to record fork node — DAG chain may have a gap"
+            );
         }
     }
 
@@ -579,7 +621,14 @@ impl RecordingQueue {
             self.store
                 .insert_promote_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
         {
-            tracing::warn!(error = %id, "Failed to record promote node: {e}");
+            tracing::warn!(
+                dag_id = %id,
+                session = %key.session,
+                submission = %key.submission,
+                branch = msg.branch_id.as_i64(),
+                error = %e,
+                "failed to record promote node — DAG chain may have a gap"
+            );
         }
     }
 
@@ -607,7 +656,13 @@ impl RecordingQueue {
             key,
             msg,
         ) {
-            tracing::warn!(error = %e, "Failed to record deploy-agent node");
+            tracing::warn!(
+                dag_id = %id,
+                agent = %msg.manifest.name,
+                submission = %key.submission,
+                error = %e,
+                "failed to record deploy-agent node — DAG chain may have a gap"
+            );
         }
     }
 
@@ -633,7 +688,13 @@ impl RecordingQueue {
             key,
             msg,
         ) {
-            tracing::warn!(error = %e, "Failed to record delete-agent node");
+            tracing::warn!(
+                dag_id = %id,
+                agent = %msg.agent,
+                submission = %key.submission,
+                error = %e,
+                "failed to record delete-agent node — DAG chain may have a gap"
+            );
         }
     }
 }
