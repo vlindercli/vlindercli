@@ -225,6 +225,64 @@ impl NatsQueue {
 }
 
 impl MessageQueue for NatsQueue {
+    fn on_cluster_start(&self) -> Result<(), QueueError> {
+        // Stream is already created in connect(). Log its state for observability.
+        self.inner.runtime.block_on(async {
+            match self.inner.jetstream.get_stream("VLINDER").await {
+                Ok(mut stream) => {
+                    let info = stream.info().await;
+                    match info {
+                        Ok(info) => {
+                            tracing::info!(
+                                stream = "VLINDER",
+                                messages = info.state.messages,
+                                bytes = info.state.bytes,
+                                consumers = info.state.consumer_count,
+                                "NATS stream ready"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                stream = "VLINDER",
+                                error = %e,
+                                "NATS stream exists but failed to query info"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        stream = "VLINDER",
+                        error = %e,
+                        "NATS stream not found — ensure_stream may have failed at connect time"
+                    );
+                }
+            }
+        });
+        Ok(())
+    }
+
+    fn on_agent_deployed(&self, agent: &AgentName) -> Result<(), QueueError> {
+        // NATS subjects are implicit — no queues to create.
+        // The agent's subjects (invoke, complete, response) will be created
+        // on first publish. Log for traceability.
+        tracing::debug!(
+            agent = %agent,
+            "NATS: agent deployed — subjects will be created on first message"
+        );
+        Ok(())
+    }
+
+    fn on_agent_deleted(&self, agent: &AgentName) -> Result<(), QueueError> {
+        // NATS subjects don't need explicit deletion — messages expire
+        // via stream retention policy (max_age / max_bytes).
+        tracing::debug!(
+            agent = %agent,
+            "NATS: agent deleted — subjects will expire via retention policy"
+        );
+        Ok(())
+    }
+
     fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
         let subject = invoke_subject(&key);
         let payload = serde_json::to_vec(&msg)
