@@ -37,7 +37,7 @@ HOSTNAME constants moved to vlinder-core.
 `ollama`, `openrouter`, `sqlite-kv`, `sqlite-vec`. All on by default.
 
 **vlinderd** — six optional features: four providers plus `container`
-(vlinder-podman-runtime) and `lambda` (vlinder-nats-lambda-runtime).
+(vlinder-podman-runtime) and `lambda` (vlinder-lambda-runtime).
 All on by default.
 
 ## Consequences

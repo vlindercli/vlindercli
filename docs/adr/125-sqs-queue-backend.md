@@ -226,7 +226,7 @@ With SQS, Lambda functions are triggered directly by event source mappings inste
 
 **Current (NATS):**
 ```
-vlinder-nats-lambda-runtime polls NATS for invokes →
+vlinder-lambda-runtime polls NATS for invokes →
 calls Lambda API with payload →
 Lambda starts, adapter connects BACK to NATS (requires VPC) →
 adapter sends Complete to NATS
@@ -242,7 +242,7 @@ Lambda sends Complete to SQS complete queue
 
 This eliminates:
 - The NATS connection from inside Lambda (no VPC networking for queue access)
-- The `vlinder-nats-lambda-runtime` polling loop
+- The `vlinder-lambda-runtime` polling loop
 - Cold-start latency for NATS client initialization inside Lambda
 
 Deploy flow creates an SQS event source mapping (`CreateEventSourceMapping` API) that wires `{prefix}-invoke-{agent}` → Lambda function. Batch size = 1 (each invoke triggers one LLM call).

@@ -13,7 +13,7 @@ default = ["container", "lambda", "ollama", "openrouter", "sqlite-kv", "sqlite-v
 test-support = []
 vendored-openssl = ["openssl/vendored"]
 container = ["dep:vlinder-podman-runtime"]
-lambda = ["dep:vlinder-nats-lambda-runtime"]
+lambda = ["dep:vlinder-lambda-runtime"]
 ollama = ["dep:vlinder-ollama"]
 openrouter = ["dep:vlinder-infer-openrouter"]
 sqlite-kv = ["dep:vlinder-sqlite-kv"]
@@ -28,7 +28,7 @@ vlinder-infer-openrouter = { path = "../vlinder-infer-openrouter", optional = tr
 vlinder-sqlite-vec = { path = "../vlinder-sqlite-vec", optional = true }
 vlinder-sqlite-kv = { path = "../vlinder-sqlite-kv", optional = true }
 vlinder-podman-runtime = { path = "../vlinder-podman-runtime", optional = true }
-vlinder-nats-lambda-runtime = { path = "../vlinder-nats-lambda-runtime", optional = true }
+vlinder-lambda-runtime = { path = "../vlinder-lambda-runtime", optional = true }
 vlinder-catalog = { path = "../vlinder-catalog" }
 vlinder-harness = { path = "../vlinder-harness" }
 vlinder-sql-state = { path = "../vlinder-sql-state" }

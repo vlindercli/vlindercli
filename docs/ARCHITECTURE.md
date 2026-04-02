@@ -111,7 +111,7 @@ gRPC service for CLI agent invocation. Owns data/session plane command ingestion
 | Crate | Runtime | Provisioning |
 |-------|---------|-------------|
 | `vlinder-podman-runtime` | Container (Podman) | Starts/stops pods based on `AgentState` |
-| `vlinder-nats-lambda-runtime` | Lambda (AWS) | Creates/deletes functions based on `AgentState` |
+| `vlinder-lambda-runtime` | Lambda (AWS) | Creates/deletes functions based on `AgentState` |
 
 Both check `AgentState` on each tick: `Deploying` -> provision -> `Live`/`Failed`, `Deleting` -> teardown -> `Deleted`.
 
