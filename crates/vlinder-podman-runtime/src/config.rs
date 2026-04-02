@@ -12,8 +12,8 @@ pub struct PodmanRuntimeConfig {
     pub podman_socket: String,
     /// OCI image ref for the sidecar container
     pub sidecar_image: String,
-    /// NATS URL for sidecar env vars
-    pub nats_url: String,
+    /// Queue backend — determines which env vars to inject into sidecar containers.
+    pub queue: vlinder_core::domain::QueueBackend,
     /// Registry gRPC address for sidecar env vars
     pub registry_addr: String,
     /// State service gRPC address for sidecar env vars
