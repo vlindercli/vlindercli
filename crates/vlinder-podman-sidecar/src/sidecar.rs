@@ -6,9 +6,7 @@
 
 use std::time::Duration;
 
-use vlinder_core::domain::{
-    AgentName, ContainerId, DataMessageKind, HealthWindow, ImageDigest, ImageRef,
-};
+use vlinder_core::domain::{AgentName, ContainerId, HealthWindow, ImageDigest, ImageRef};
 
 use vlinder_provider_server::factory;
 
@@ -80,32 +78,13 @@ impl Sidecar {
 
             if let Ok((key, invoke, ack)) = self.dispatch.queue.receive_invoke(&agent_id) {
                 let _ = ack();
-                let DataMessageKind::Invoke {
-                    harness,
-                    runtime: _,
-                    agent,
-                } = &key.kind
-                else {
-                    continue;
-                };
                 tracing::info!(
                     event = "dispatch.started",
-                    sha = %key.submission,
+                    submission = %key.submission,
                     session = %key.session,
-                    agent = %agent,
                     "Dispatching invoke to container"
                 );
-                dispatch::handle_invoke(
-                    &self.dispatch,
-                    &mut self.health,
-                    key.branch,
-                    key.submission.clone(),
-                    key.session.clone(),
-                    agent.clone(),
-                    *harness,
-                    &invoke.payload,
-                    invoke.state,
-                );
+                dispatch::handle_invoke(&self.dispatch, &mut self.health, &key, &invoke);
             } else {
                 std::thread::sleep(Duration::from_millis(50));
             }
