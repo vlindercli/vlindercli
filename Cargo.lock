@@ -4315,6 +4315,7 @@ dependencies = [
  "vlinder-sql-state",
  "vlinder-sqlite-kv",
  "vlinder-sqlite-vec",
+ "vlinder-sqs",
 ]
 
 [[package]]
