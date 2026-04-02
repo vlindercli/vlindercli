@@ -24,6 +24,7 @@ use std::path::PathBuf;
 #[serde(rename_all = "lowercase")]
 pub enum QueueBackend {
     Nats,
+    Sqs,
     #[cfg(any(test, feature = "test-support"))]
     Memory,
 }
@@ -139,16 +140,15 @@ pub struct QueueConfig {
     pub backend: QueueBackend,
     #[serde(default = "default_nats_url")]
     pub nats_url: String,
-    /// Optional path to a NATS .creds file for authenticated connections (e.g. NGS).
     #[serde(default)]
     pub nats_creds: Option<String>,
+    #[serde(default = "default_sqs_region")]
+    pub sqs_region: String,
+    #[serde(default = "default_sqs_queue_prefix")]
+    pub sqs_queue_prefix: String,
 }
 
 impl QueueConfig {
-    /// Produce the NATS connection config consumed by vlinder-nats.
-    ///
-    /// Single mapping point — factories and workers call this instead
-    /// of reaching into `nats_url/nats_creds` directly.
     pub fn nats_config(&self) -> vlinder_nats::NatsConfig {
         vlinder_nats::NatsConfig {
             url: self.nats_url.clone(),
@@ -157,11 +157,14 @@ impl QueueConfig {
         }
     }
 
-    /// Produce the domain-level `QueueBackend` for this config.
     pub fn queue_backend(&self) -> vlinder_core::domain::QueueBackend {
         match self.backend {
             QueueBackend::Nats => vlinder_core::domain::QueueBackend::Nats {
                 url: self.nats_url.clone(),
+            },
+            QueueBackend::Sqs => vlinder_core::domain::QueueBackend::Sqs {
+                region: self.sqs_region.clone(),
+                queue_prefix: self.sqs_queue_prefix.clone(),
             },
             #[cfg(any(test, feature = "test-support"))]
             QueueBackend::Memory => vlinder_core::domain::QueueBackend::Nats {
@@ -173,6 +176,14 @@ impl QueueConfig {
 
 fn default_nats_url() -> String {
     "nats://localhost:4222".to_string()
+}
+
+fn default_sqs_region() -> String {
+    "eu-west-1".to_string()
+}
+
+fn default_sqs_queue_prefix() -> String {
+    "vlinder".to_string()
 }
 
 fn default_registry_backend() -> RegistryBackend {
@@ -475,6 +486,8 @@ impl Config {
                 backend: QueueBackend::Memory,
                 nats_url: "nats://localhost:4222".to_string(),
                 nats_creds: None,
+                sqs_region: "eu-west-1".to_string(),
+                sqs_queue_prefix: "vlinder".to_string(),
             },
             state: StateConfig {
                 backend: StateBackend::Memory,
@@ -516,6 +529,12 @@ impl Config {
         }
         if let Ok(v) = std::env::var("VLINDER_QUEUE_NATS_CREDS") {
             self.queue.nats_creds = Some(v);
+        }
+        if let Ok(v) = std::env::var("VLINDER_QUEUE_SQS_REGION") {
+            self.queue.sqs_region = v;
+        }
+        if let Ok(v) = std::env::var("VLINDER_QUEUE_SQS_QUEUE_PREFIX") {
+            self.queue.sqs_queue_prefix = v;
         }
 
         // State
@@ -630,6 +649,7 @@ impl Config {
 fn parse_queue_backend(s: &str) -> QueueBackend {
     match s {
         "nats" => QueueBackend::Nats,
+        "sqs" => QueueBackend::Sqs,
         #[cfg(any(test, feature = "test-support"))]
         "memory" => QueueBackend::Memory,
         other => {

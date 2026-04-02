@@ -23,6 +23,7 @@ sqlite-vec = ["dep:vlinder-sqlite-vec"]
 openssl = { version = "0.10", optional = true }
 vlinder-core = { path = "../vlinder-core" }
 vlinder-nats = { path = "../vlinder-nats" }
+vlinder-sqs = { path = "../vlinder-sqs" }
 vlinder-ollama = { path = "../vlinder-ollama", optional = true }
 vlinder-infer-openrouter = { path = "../vlinder-infer-openrouter", optional = true }
 vlinder-sqlite-vec = { path = "../vlinder-sqlite-vec", optional = true }

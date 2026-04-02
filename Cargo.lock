@@ -4441,6 +4441,7 @@ dependencies = [
  "vlinder-sql-state",
  "vlinder-sqlite-kv",
  "vlinder-sqlite-vec",
+ "vlinder-sqs",
  "zerocopy 0.7.35",
 ]
 
