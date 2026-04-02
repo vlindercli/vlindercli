@@ -83,12 +83,17 @@ fn resolve_from_secrets(secret_url: &str) -> Option<NatsConfig> {
 pub enum QueueConfig {
     /// NATS with optional secret-store credential resolution.
     Nats(NatsConfig),
+    /// AWS SQS.
+    #[cfg(feature = "sqs")]
+    Sqs(vlinder_sqs::SqsConfig),
 }
 
 /// Connect to a queue backend.
 pub fn connect(config: &QueueConfig) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
     match config {
         QueueConfig::Nats(nats) => Ok(Arc::new(NatsQueue::connect(nats)?)),
+        #[cfg(feature = "sqs")]
+        QueueConfig::Sqs(sqs) => Ok(Arc::new(vlinder_sqs::SqsQueue::connect(sqs)?)),
     }
 }
 

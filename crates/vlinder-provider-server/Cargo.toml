@@ -10,10 +10,12 @@ ollama = ["dep:vlinder-ollama"]
 openrouter = ["dep:vlinder-infer-openrouter"]
 sqlite-kv = ["dep:vlinder-sqlite-kv"]
 sqlite-vec = ["dep:vlinder-sqlite-vec"]
+sqs = ["dep:vlinder-sqs"]
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
 vlinder-nats = { path = "../vlinder-nats", default-features = false, features = ["queue", "secret-client"] }
+vlinder-sqs = { path = "../vlinder-sqs", optional = true }
 vlinder-sql-registry = { path = "../vlinder-sql-registry", default-features = false, features = ["client"] }
 vlinder-sql-state = { path = "../vlinder-sql-state", default-features = false, features = ["client"] }
 vlinder-ollama = { path = "../vlinder-ollama", optional = true, default-features = false, features = ["routing"] }
