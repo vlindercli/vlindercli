@@ -26,9 +26,6 @@ use std::time::{Duration, Instant};
 use vlinder_core::domain::{MessageQueue, Registry};
 
 use vlinder_provider_server::factory;
-use vlinder_provider_server::handler::InvokeHandler;
-use vlinder_provider_server::hosts::build_hosts;
-use vlinder_provider_server::provider_server::ProviderServer;
 
 use adapter::{build_error_body, build_lambda_diagnostics, deserialize_invoke};
 use config::AdapterConfig;
@@ -207,7 +204,7 @@ fn runtime_api_loop(
             "Received Lambda invocation"
         );
 
-        match handle_invocation(config, http, queue, registry, &request_id, &body) {
+        match handle_invocation(config, queue, registry, &request_id, &body) {
             Ok(output) => {
                 let response_url = format!(
                     "http://{}/2018-06-01/runtime/invocation/{}/response",
@@ -236,104 +233,47 @@ fn runtime_api_loop(
     }
 }
 
-/// Handle a single Lambda invocation.
-///
-/// The invocation body is a JSON-serialized `LambdaInvokePayload` (sent by the daemon).
-/// We deserialize it, start a `ProviderServer`, POST the payload to the agent,
-/// build diagnostics, send complete to NATS, and return the agent's output.
+/// Handle a single Lambda invocation using the shared dispatch.
 fn handle_invocation(
     config: &AdapterConfig,
-    http: &ureq::Agent,
     queue: &Arc<dyn MessageQueue + Send + Sync>,
     registry: &Arc<dyn Registry>,
     request_id: &str,
     body: &[u8],
 ) -> Result<Vec<u8>, String> {
+    use vlinder_provider_server::dispatch as shared;
+
     let payload = deserialize_invoke(body)?;
     let key = payload.key;
     let invoke_msg = payload.msg;
-    let started_at = Instant::now();
 
-    // Extract routing from key
-    let vlinder_core::domain::DataMessageKind::Invoke { agent, harness, .. } = &key.kind else {
+    let vlinder_core::domain::DataMessageKind::Invoke { ref agent, .. } = key.kind else {
         return Err("expected Invoke".into());
     };
-    let agent_name = agent.as_str().to_string();
-    let harness = *harness;
 
-    // Look up agent for provider host table and initial state.
-    let agent = registry
-        .get_agent_by_name(&agent_name)
-        .ok_or_else(|| format!("agent '{agent_name}' not found in registry"))?;
-    let hosts = build_hosts(&agent);
-    let initial_state = if agent.object_storage.is_some() {
-        Some(invoke_msg.state.clone().unwrap_or_default())
-    } else {
-        None
-    };
+    let result = shared::dispatch_invoke(queue, registry, config.agent_port, &key, &invoke_msg)?;
 
-    // Spawn provider server — drops when this function returns.
-    let state = std::sync::Arc::new(std::sync::RwLock::new(initial_state));
-    let handler = InvokeHandler::new(
-        queue.clone(),
-        key.branch,
-        key.submission.clone(),
-        key.session.clone(),
-        vlinder_core::domain::AgentName::new(&agent_name),
-        std::sync::Arc::clone(&state),
-    );
-    let provider_server = ProviderServer::start(handler, hosts, state, 3544);
-
-    // POST payload to agent on localhost.
-    let agent_url = format!("http://127.0.0.1:{}/invoke", config.agent_port);
-    let agent_response = http
-        .post(&agent_url)
-        .send_bytes(&invoke_msg.payload)
-        .map_err(|e| format!("POST to agent failed: {e}"))?;
-
-    let mut output = Vec::new();
-    agent_response
-        .into_reader()
-        .read_to_end(&mut output)
-        .map_err(|e| format!("failed to read agent response: {e}"))?;
-
-    let final_state = provider_server.final_state();
-    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-    // Determine region from env (set by Lambda service).
     let region = std::env::var("AWS_REGION")
         .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
         .unwrap_or_else(|_| "unknown".to_string());
 
-    let diagnostics = build_lambda_diagnostics(&config.agent, &region, duration_ms);
-    let complete_key = vlinder_core::domain::DataRoutingKey {
-        session: key.session.clone(),
-        branch: key.branch,
-        submission: key.submission.clone(),
-        kind: vlinder_core::domain::DataMessageKind::Complete {
-            agent: vlinder_core::domain::AgentName::new(&agent_name),
-            harness,
-        },
-    };
-    let complete = vlinder_core::domain::CompleteMessage {
-        id: vlinder_core::domain::MessageId::new(),
-        dag_id: vlinder_core::domain::DagNodeId::root(),
-        state: final_state,
+    let diagnostics = build_lambda_diagnostics(&config.agent, &region, result.duration_ms);
+    shared::send_complete(
+        queue.as_ref(),
+        &key,
+        agent,
+        result.output.clone(),
+        result.state,
         diagnostics,
-        payload: output.clone(),
-    };
-
-    queue
-        .send_complete(complete_key, complete)
-        .map_err(|e| format!("failed to send complete to NATS: {e}"))?;
+    );
 
     tracing::info!(
         event = "adapter.invocation_complete",
         request_id = %request_id,
-        duration_ms = duration_ms,
-        output_bytes = output.len(),
+        duration_ms = result.duration_ms,
+        output_bytes = result.output.len(),
         "Invocation complete"
     );
 
-    Ok(output)
+    Ok(result.output)
 }
