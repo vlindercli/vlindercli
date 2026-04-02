@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+sqs = ["vlinder-provider-server/sqs", "dep:vlinder-sqs"]
+
 [[bin]]
 name = "vlinder-podman-sidecar"
 path = "src/main.rs"
@@ -11,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
 vlinder-provider-server = { path = "../vlinder-provider-server" }
+vlinder-sqs = { path = "../vlinder-sqs", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
