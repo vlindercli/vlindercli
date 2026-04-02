@@ -362,6 +362,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn vector_search_response_echoes_state() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("vec.db");

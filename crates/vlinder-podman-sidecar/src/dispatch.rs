@@ -31,7 +31,7 @@ pub struct DispatchContext {
 }
 
 /// Handle a single invocation: POST to agent, read response, send complete.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn handle_invoke(
     ctx: &DispatchContext,
     health: &mut HealthWindow,

@@ -164,6 +164,7 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
     });
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
     use crate::config::dag_db_path;
     use vlinder_core::domain::{
