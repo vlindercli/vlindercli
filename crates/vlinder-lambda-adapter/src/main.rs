@@ -62,17 +62,22 @@ fn main() {
     // on event/next forever, keeping the extension alive.
     register_extension(&config.runtime_api);
 
-    let queue = match factory::connect_queue(
-        &config.nats_url,
-        &config.state_url,
-        config.secret_url.as_deref(),
-    ) {
+    let nats_config = factory::resolve_nats_config(config.secret_url.as_deref(), &config.nats_url);
+    let queue = match factory::connect(&factory::QueueConfig::Nats(nats_config)) {
         Ok(q) => q,
         Err(e) => {
-            tracing::error!(error = %e, "Failed to connect to NATS");
+            tracing::error!(error = %e, "Failed to connect to queue");
             std::process::exit(1);
         }
     };
+    let store = match factory::connect_state(&config.state_url) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to connect to state service");
+            std::process::exit(1);
+        }
+    };
+    let queue = factory::with_recording(queue, store);
 
     let registry = match factory::connect_registry(&config.registry_url) {
         Ok(r) => r,

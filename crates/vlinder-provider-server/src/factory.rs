@@ -16,7 +16,8 @@ use vlinder_sql_state::state_service::GrpcStateClient;
 /// Tries `sidecar.nats.url` from the secret store first. If found, optionally
 /// fetches `sidecar.nats.creds` for inline credentials. On any failure or
 /// missing secrets, falls back to the provided `fallback_nats_url`.
-fn resolve_nats_config(secret_url: Option<&str>, fallback_nats_url: &str) -> NatsConfig {
+/// Resolve NATS connection config, optionally fetching credentials from the secret store.
+pub fn resolve_nats_config(secret_url: Option<&str>, fallback_nats_url: &str) -> NatsConfig {
     if let Some(secret_url) = secret_url {
         match resolve_from_secrets(secret_url) {
             Some(config) => return config,
@@ -78,21 +79,32 @@ fn resolve_from_secrets(secret_url: &str) -> Option<NatsConfig> {
     })
 }
 
-/// Connect to NATS and wrap with DAG recording via the State Service.
-///
-/// When `secret_url` is provided, attempts to resolve NATS connection details
-/// from the secret store before falling back to `nats_url`.
-pub fn connect_queue(
-    nats_url: &str,
-    state_url: &str,
-    secret_url: Option<&str>,
-) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
-    let nats_config = resolve_nats_config(secret_url, nats_url);
-    let inner = Arc::new(NatsQueue::connect(&nats_config)?);
-    let store: Arc<dyn DagStore> = Arc::new(GrpcStateClient::connect(state_url).map_err(|e| {
-        QueueError::SendFailed(format!("state service at {state_url} unreachable: {e}"))
-    })?);
-    Ok(Arc::new(RecordingQueue::new(inner, store)))
+/// Queue backend configuration.
+pub enum QueueConfig {
+    /// NATS with optional secret-store credential resolution.
+    Nats(NatsConfig),
+}
+
+/// Connect to a queue backend.
+pub fn connect(config: &QueueConfig) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
+    match config {
+        QueueConfig::Nats(nats) => Ok(Arc::new(NatsQueue::connect(nats)?)),
+    }
+}
+
+/// Wrap a queue with synchronous DAG recording.
+pub fn with_recording(
+    queue: Arc<dyn MessageQueue + Send + Sync>,
+    store: Arc<dyn DagStore>,
+) -> Arc<dyn MessageQueue + Send + Sync> {
+    Arc::new(RecordingQueue::new(queue, store))
+}
+
+/// Connect to the State Service via gRPC.
+pub fn connect_state(state_url: &str) -> Result<Arc<dyn DagStore>, QueueError> {
+    Ok(Arc::new(GrpcStateClient::connect(state_url).map_err(
+        |e| QueueError::SendFailed(format!("state service at {state_url} unreachable: {e}")),
+    )?))
 }
 
 /// Connect to the Registry Service via gRPC.
