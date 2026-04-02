@@ -366,9 +366,7 @@ fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
         image_policy: config.runtime.image_policy.clone(),
         podman_socket: config.runtime.podman_socket.clone(),
         sidecar_image: config.runtime.sidecar_image.clone(),
-        queue: vlinder_core::domain::QueueBackend::Nats {
-            url: config.queue.nats_url.clone(),
-        },
+        queue: config.queue.queue_backend(),
         registry_addr: config.distributed.registry_addr.clone(),
         state_addr: config.distributed.state_addr.clone(),
         secret_addr: config.distributed.secret_addr.clone(),
