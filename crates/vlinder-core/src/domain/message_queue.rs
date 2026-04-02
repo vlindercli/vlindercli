@@ -17,6 +17,22 @@ use super::{
 };
 use std::fmt;
 
+/// Queue backend with connection data.
+///
+/// Domain-level representation of which queue infrastructure to use.
+/// Carries the data needed to construct env vars and connections.
+/// No vendor SDK deps — just config strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueueBackend {
+    Nats {
+        url: String,
+    },
+    Sqs {
+        region: String,
+        queue_prefix: String,
+    },
+}
+
 /// One-shot closure that acknowledges a received message was processed.
 pub type Acknowledgement = Box<dyn FnOnce() -> Result<(), QueueError> + Send>;
 
