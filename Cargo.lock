@@ -4282,6 +4282,7 @@ dependencies = [
  "serde_json",
  "tiny_http",
  "tracing",
+ "ureq 2.12.1",
  "vlinder-core",
  "vlinder-infer-openrouter",
  "vlinder-nats",
