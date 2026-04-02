@@ -18,7 +18,6 @@ use vlinder_provider_server::hosts::build_hosts;
 use vlinder_provider_server::provider_server::ProviderServer;
 
 use crate::health;
-use crate::trace::TraceLog;
 
 /// Everything the dispatch loop needs from the sidecar.
 pub struct DispatchContext {
@@ -30,8 +29,8 @@ pub struct DispatchContext {
     pub image_digest: Option<ImageDigest>,
 }
 
-/// Handle a single invocation: POST to agent, read response, send complete.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+/// Handle a single invocation: dispatch to agent and send complete.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_invoke(
     ctx: &DispatchContext,
     health: &mut HealthWindow,
@@ -44,8 +43,67 @@ pub fn handle_invoke(
     initial_state: Option<String>,
 ) {
     let started_at = Instant::now();
-    let mut trace = TraceLog::new();
 
+    match dispatch_to_agent(
+        ctx,
+        branch,
+        &submission,
+        &session,
+        &agent_id,
+        payload,
+        initial_state,
+    ) {
+        Ok((output, final_state)) => {
+            let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let diagnostics = health::build_diagnostics(
+                health,
+                ctx.container_port,
+                duration_ms,
+                &ctx.container_id,
+                ctx.image_ref.as_ref(),
+                ctx.image_digest.as_ref(),
+            );
+            send_complete(
+                &ctx.queue,
+                branch,
+                submission,
+                session,
+                agent_id,
+                harness,
+                output,
+                final_state,
+                diagnostics,
+            );
+        }
+        Err(error_payload) => {
+            send_complete(
+                &ctx.queue,
+                branch,
+                submission,
+                session,
+                agent_id,
+                harness,
+                error_payload,
+                None,
+                RuntimeDiagnostics::placeholder(0),
+            );
+        }
+    }
+}
+
+/// Set up the provider server, POST to the agent, and return the output.
+///
+/// On success: returns `(output_bytes, final_state)`.
+/// On failure: returns an error payload (bytes) suitable for the complete message.
+fn dispatch_to_agent(
+    ctx: &DispatchContext,
+    branch: BranchId,
+    submission: &SubmissionId,
+    session: &SessionId,
+    agent_id: &AgentName,
+    payload: &[u8],
+    initial_state: Option<String>,
+) -> Result<(Vec<u8>, Option<String>), Vec<u8>> {
     let agent = ctx
         .registry
         .get_agent_by_name(agent_id.as_str())
@@ -71,42 +129,14 @@ pub fn handle_invoke(
     let client = ureq::Agent::new();
     let agent_url = format!("http://127.0.0.1:{}/invoke", ctx.container_port);
 
-    trace.log(format!("POST {} ({} bytes)", agent_url, payload.len()));
-
     match client.post(&agent_url).send_bytes(payload) {
         Ok(response) => {
             let mut output = Vec::new();
             if let Err(e) = response.into_reader().read_to_end(&mut output) {
                 tracing::warn!(error = %e, "Failed to read agent response body");
             }
-            trace.log(format!(
-                "Agent responded ({} bytes, {}ms)",
-                output.len(),
-                started_at.elapsed().as_millis()
-            ));
-
             let final_state = provider_server.final_state();
-            let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let diagnostics = health::build_diagnostics(
-                health,
-                ctx.container_port,
-                duration_ms,
-                &ctx.container_id,
-                ctx.image_ref.as_ref(),
-                ctx.image_digest.as_ref(),
-            );
-            trace.log("Sending complete");
-            send_complete(
-                &ctx.queue,
-                branch,
-                submission,
-                session,
-                agent_id,
-                harness,
-                output,
-                final_state,
-                diagnostics,
-            );
+            Ok((output, final_state))
         }
         Err(ureq::Error::Status(code, response)) => {
             let err_body = response
@@ -119,32 +149,12 @@ pub fn handle_invoke(
                 reason = %err_body,
                 "Agent container returned an error"
             );
-            send_complete(
-                &ctx.queue,
-                branch,
-                submission,
-                session,
-                agent_id,
-                harness,
-                format!("[error] agent container error: {err_body}").into_bytes(),
-                None,
-                RuntimeDiagnostics::placeholder(0),
-            );
+            Err(format!("[error] agent container error: {err_body}").into_bytes())
         }
         Err(e) => {
             let msg = format!("Request to agent failed: {e}");
             tracing::warn!(event = "container.unreachable", error = %msg);
-            send_complete(
-                &ctx.queue,
-                branch,
-                submission,
-                session,
-                agent_id,
-                harness,
-                format!("[error] {msg}").into_bytes(),
-                None,
-                RuntimeDiagnostics::placeholder(0),
-            );
+            Err(format!("[error] {msg}").into_bytes())
         }
     }
 }
