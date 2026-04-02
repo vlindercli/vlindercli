@@ -1,6 +1,6 @@
 # ADR 111: Durable Execution Mode
 
-**Status:** Draft
+**Status:** Superseded by ADR 123 (Agents as Tool Servers) and ADR 124 (Harness-Mediated Delegation)
 
 ## Context
 

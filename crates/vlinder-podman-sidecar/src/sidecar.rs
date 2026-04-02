@@ -6,14 +6,12 @@
 
 use std::time::Duration;
 
-use vlinder_core::domain::{
-    AgentName, ContainerId, DataMessageKind, HealthWindow, ImageDigest, ImageRef,
-};
+use vlinder_core::domain::{AgentName, ContainerId, HealthWindow, ImageDigest, ImageRef};
 
 use vlinder_provider_server::factory;
 
 use crate::config::SidecarConfig;
-use crate::dispatch::{self, DispatchContext, DurableSession, InvokeOutcome};
+use crate::dispatch::{self, DispatchContext};
 use crate::health;
 
 /// The sidecar process — mediates between the platform queue and the agent container.
@@ -65,7 +63,6 @@ impl Sidecar {
     }
 
     /// Main loop: wait for agent, then poll invoke/delegate/response queues.
-    #[allow(clippy::too_many_lines)]
     pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
         health::wait_for_ready(
             &mut self.health,
@@ -76,100 +73,21 @@ impl Sidecar {
 
         tracing::info!(event = "sidecar.started", agent = %self.agent_name, "Sidecar loop started");
 
-        let mut durable_session: Option<DurableSession> = None;
-
         loop {
             let agent_id = AgentName::new(&self.agent_name);
 
-            // Poll for service responses first (durable mode).
-            if let Some(session) = durable_session.take() {
-                match self.dispatch.queue.receive_response(
-                    &session.submission,
-                    &agent_id,
-                    session.pending_service,
-                    session.pending_operation,
-                    session.pending_sequence,
-                ) {
-                    Ok((_key, response, ack)) => {
-                        let _ = ack();
-                        match dispatch::handle_service_response(&self.dispatch, session, &response)
-                        {
-                            Ok(InvokeOutcome::Done) => {}
-                            Ok(InvokeOutcome::Pending(next)) => {
-                                durable_session = Some(*next);
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    event = "durable.handler_error",
-                                    error = %e,
-                                    agent = %self.agent_name,
-                                    "Durable handler failed"
-                                );
-                                break;
-                            }
-                        }
-                    }
-                    Err(vlinder_core::domain::QueueError::Timeout) => {
-                        // No response yet — put session back and continue polling.
-                        durable_session = Some(session);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            event = "durable.response_error",
-                            error = %e,
-                            "Failed to receive service response"
-                        );
-                        break;
-                    }
-                }
-            } else if let Ok((key, invoke, ack)) = self.dispatch.queue.receive_invoke(&agent_id) {
+            if let Ok((key, invoke, ack)) = self.dispatch.queue.receive_invoke(&agent_id) {
                 let _ = ack();
-                let DataMessageKind::Invoke {
-                    harness,
-                    runtime: _,
-                    agent,
-                } = &key.kind
-                else {
-                    continue;
-                };
                 tracing::info!(
                     event = "dispatch.started",
-                    sha = %key.submission,
+                    submission = %key.submission,
                     session = %key.session,
-                    agent = %agent,
                     "Dispatching invoke to container"
                 );
-                match dispatch::handle_invoke(
-                    &self.dispatch,
-                    &mut self.health,
-                    key.branch,
-                    key.submission.clone(),
-                    key.session.clone(),
-                    agent.clone(),
-                    *harness,
-                    invoke.payload,
-                    invoke.state,
-                ) {
-                    Ok(InvokeOutcome::Done) => {}
-                    Ok(InvokeOutcome::Pending(session)) => {
-                        durable_session = Some(*session);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            event = "dispatch.error",
-                            error = %e,
-                            agent = %self.agent_name,
-                            "Dispatch failed"
-                        );
-                        break;
-                    }
-                }
+                dispatch::handle_invoke(&self.dispatch, &mut self.health, &key, &invoke);
             } else {
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
-
-        tracing::info!(event = "sidecar.stopped", agent = %self.agent_name, "Sidecar loop exited");
-        Ok(())
     }
 }

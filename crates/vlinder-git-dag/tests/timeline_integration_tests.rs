@@ -230,6 +230,7 @@ fn fork_creates_independent_branch() {
 
 #[test]
 #[ignore = "requires vlinder daemon and NATS"]
+#[allow(clippy::too_many_lines)]
 fn checkout_then_promote_full_workflow() {
     let vlinder_dir = test_vlinder_dir("checkout_then_promote_full_workflow");
     let conv_dir = conversations_path(&vlinder_dir);

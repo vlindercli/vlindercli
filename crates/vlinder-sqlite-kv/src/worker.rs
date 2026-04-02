@@ -802,6 +802,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn versioned_put_chains_state() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
@@ -911,6 +912,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn versioned_list_reflects_state_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");

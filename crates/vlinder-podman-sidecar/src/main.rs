@@ -8,7 +8,6 @@ mod config;
 mod dispatch;
 mod health;
 mod sidecar;
-mod trace;
 
 use config::SidecarConfig;
 use sidecar::Sidecar;

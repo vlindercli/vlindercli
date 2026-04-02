@@ -860,6 +860,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn dag_store_error_does_not_block_send() {
         // Use a store that always fails on insert
         struct FailStore;
