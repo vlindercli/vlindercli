@@ -31,7 +31,6 @@ use vlinder_provider_server::factory;
 use adapter::build_lambda_diagnostics;
 use config::AdapterConfig;
 
-#[allow(clippy::too_many_lines)]
 fn main() {
     let filter = std::env::var("RUST_LOG")
         .unwrap_or_else(|_| "warn,vlinder_lambda_adapter=info".to_string());
@@ -56,9 +55,6 @@ fn main() {
         "Lambda adapter configuration loaded"
     );
 
-    // Register as a Lambda extension immediately — must happen before
-    // Lambda's init phase timeout (10s). The registration thread blocks
-    // on event/next forever, keeping the extension alive.
     register_extension(&config.runtime_api);
 
     let nats_config = factory::resolve_nats_config(config.secret_url.as_deref(), &config.nats_url);
@@ -87,44 +83,44 @@ fn main() {
     };
 
     let http = ureq::Agent::new();
-
     if let Err(e) = wait_for_agent(&http, config.agent_port) {
         tracing::error!(error = %e, "Agent did not become ready");
         std::process::exit(1);
     }
 
-    // Wrap the real queue with LambdaRuntimeQueue so receive_invoke
-    // reads from the Lambda Runtime API instead of the queue.
     let lambda_queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(
         lambda_runtime_queue::LambdaRuntimeQueue::new(queue, &config.runtime_api),
     );
 
     tracing::info!(event = "adapter.started", agent = %config.agent, "Entering dispatch loop");
+    dispatch_loop(&config.agent, config.agent_port, &lambda_queue, &registry);
+}
 
-    let agent_id = vlinder_core::domain::AgentName::new(&config.agent);
+/// Receive invokes from the Lambda Runtime API, dispatch to agent, send complete.
+fn dispatch_loop(
+    function_name: &str,
+    agent_port: u16,
+    queue: &Arc<dyn MessageQueue + Send + Sync>,
+    registry: &Arc<dyn vlinder_core::domain::Registry>,
+) {
+    let agent_id = vlinder_core::domain::AgentName::new(function_name);
     loop {
-        match lambda_queue.receive_invoke(&agent_id) {
+        match queue.receive_invoke(&agent_id) {
             Ok((key, invoke, _ack)) => {
                 let vlinder_core::domain::DataMessageKind::Invoke { ref agent, .. } = key.kind
                 else {
                     continue;
                 };
 
-                match shared::dispatch_invoke(
-                    &lambda_queue,
-                    &registry,
-                    config.agent_port,
-                    &key,
-                    &invoke,
-                ) {
+                match shared::dispatch_invoke(queue, registry, agent_port, &key, &invoke) {
                     Ok(result) => {
                         let region = std::env::var("AWS_REGION")
                             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
                             .unwrap_or_else(|_| "unknown".to_string());
                         let diagnostics =
-                            build_lambda_diagnostics(&config.agent, &region, result.duration_ms);
+                            build_lambda_diagnostics(function_name, &region, result.duration_ms);
                         shared::send_complete(
-                            lambda_queue.as_ref(),
+                            queue.as_ref(),
                             &key,
                             agent,
                             result.output,
@@ -135,7 +131,7 @@ fn main() {
                     Err(e) => {
                         tracing::error!(error = %e, "Dispatch failed");
                         shared::send_complete(
-                            lambda_queue.as_ref(),
+                            queue.as_ref(),
                             &key,
                             agent,
                             format!("[error] {e}").into_bytes(),
