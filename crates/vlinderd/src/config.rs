@@ -156,6 +156,19 @@ impl QueueConfig {
             creds_content: None,
         }
     }
+
+    /// Produce the domain-level `QueueBackend` for this config.
+    pub fn queue_backend(&self) -> vlinder_core::domain::QueueBackend {
+        match self.backend {
+            QueueBackend::Nats => vlinder_core::domain::QueueBackend::Nats {
+                url: self.nats_url.clone(),
+            },
+            #[cfg(any(test, feature = "test-support"))]
+            QueueBackend::Memory => vlinder_core::domain::QueueBackend::Nats {
+                url: self.nats_url.clone(),
+            },
+        }
+    }
 }
 
 fn default_nats_url() -> String {
