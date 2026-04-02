@@ -23,6 +23,7 @@ vlinder-sqlite-kv = { path = "../vlinder-sqlite-kv", optional = true, default-fe
 serde_json = "1"
 tracing = "0.1"
 tiny_http = "0.12"
+ureq = "2"
 
 [lints]
 workspace = true
