@@ -387,7 +387,7 @@ fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
 fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
     use crate::config::dag_db_path;
     use vlinder_core::domain::Runtime;
-    use vlinder_nats_lambda_runtime::{LambdaRuntime, LambdaRuntimeConfig};
+    use vlinder_lambda_runtime::{LambdaRuntime, LambdaRuntimeConfig};
     use vlinder_sql_state::SqliteDagStore;
 
     let registry =
