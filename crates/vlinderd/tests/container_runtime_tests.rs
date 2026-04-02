@@ -25,7 +25,9 @@ fn container_runtime_executes_echo_agent() {
         image_policy: config.runtime.image_policy.clone(),
         podman_socket: config.runtime.podman_socket.clone(),
         sidecar_image: config.runtime.sidecar_image.clone(),
-        nats_url: config.queue.nats_url.clone(),
+        queue: vlinder_core::domain::QueueBackend::Nats {
+            url: config.queue.nats_url.clone(),
+        },
         registry_addr: config.distributed.registry_addr.clone(),
         state_addr: config.distributed.state_addr.clone(),
         secret_addr: config.distributed.secret_addr.clone(),
