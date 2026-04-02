@@ -4205,6 +4205,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vlinder-lambda-runtime"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-iam",
+ "aws-sdk-lambda",
+ "aws-smithy-types",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "vlinder-core",
+]
+
+[[package]]
 name = "vlinder-nats"
 version = "0.1.0"
 dependencies = [
@@ -4216,20 +4230,6 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
- "tracing",
- "vlinder-core",
-]
-
-[[package]]
-name = "vlinder-nats-lambda-runtime"
-version = "0.1.0"
-dependencies = [
- "aws-config",
- "aws-sdk-iam",
- "aws-sdk-lambda",
- "aws-smithy-types",
- "serde_json",
- "tokio",
  "tracing",
  "vlinder-core",
 ]
@@ -4393,8 +4393,8 @@ dependencies = [
  "vlinder-git-dag",
  "vlinder-harness",
  "vlinder-infer-openrouter",
+ "vlinder-lambda-runtime",
  "vlinder-nats",
- "vlinder-nats-lambda-runtime",
  "vlinder-ollama",
  "vlinder-podman-runtime",
  "vlinder-sql-registry",

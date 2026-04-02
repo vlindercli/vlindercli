@@ -40,7 +40,7 @@ COPY crates/vlinder-podman-sidecar/stubs/vlinder-lambda-adapter.toml crates/vlin
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-harness.toml crates/vlinder-harness/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-catalog.toml crates/vlinder-catalog/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-podman-runtime.toml crates/vlinder-podman-runtime/Cargo.toml
-COPY crates/vlinder-podman-sidecar/stubs/vlinder-nats-lambda-runtime.toml crates/vlinder-nats-lambda-runtime/Cargo.toml
+COPY crates/vlinder-podman-sidecar/stubs/vlinder-lambda-runtime.toml crates/vlinder-lambda-runtime/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-git-dag.toml crates/vlinder-git-dag/Cargo.toml
 
 # Stub out src directories so Cargo can resolve the workspace
@@ -60,7 +60,7 @@ RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs
     mkdir -p crates/vlinder-harness/src && echo "" > crates/vlinder-harness/src/lib.rs && \
     mkdir -p crates/vlinder-catalog/src && echo "" > crates/vlinder-catalog/src/lib.rs && \
     mkdir -p crates/vlinder-podman-runtime/src && echo "" > crates/vlinder-podman-runtime/src/lib.rs && \
-    mkdir -p crates/vlinder-nats-lambda-runtime/src && echo "" > crates/vlinder-nats-lambda-runtime/src/lib.rs && \
+    mkdir -p crates/vlinder-lambda-runtime/src && echo "" > crates/vlinder-lambda-runtime/src/lib.rs && \
     mkdir -p crates/vlinder-git-dag/src && echo "" > crates/vlinder-git-dag/src/lib.rs
 
 # Proto build dependencies (only for dep-chain crates with gRPC)
