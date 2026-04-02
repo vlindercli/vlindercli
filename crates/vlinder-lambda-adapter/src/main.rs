@@ -18,18 +18,20 @@
 
 mod adapter;
 mod config;
+mod lambda_runtime_queue;
 
-use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use vlinder_core::domain::{MessageQueue, Registry};
+use vlinder_core::domain::{MessageQueue, QueueError};
 
+use vlinder_provider_server::dispatch as shared;
 use vlinder_provider_server::factory;
 
-use adapter::{build_error_body, build_lambda_diagnostics, deserialize_invoke};
+use adapter::build_lambda_diagnostics;
 use config::AdapterConfig;
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let filter = std::env::var("RUST_LOG")
         .unwrap_or_else(|_| "warn,vlinder_lambda_adapter=info".to_string());
@@ -91,11 +93,64 @@ fn main() {
         std::process::exit(1);
     }
 
-    tracing::info!(event = "adapter.started", agent = %config.agent, "Entering Runtime API loop");
+    // Wrap the real queue with LambdaRuntimeQueue so receive_invoke
+    // reads from the Lambda Runtime API instead of the queue.
+    let lambda_queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(
+        lambda_runtime_queue::LambdaRuntimeQueue::new(queue, &config.runtime_api),
+    );
 
-    if let Err(e) = runtime_api_loop(&config, &http, &queue, &registry) {
-        tracing::error!(error = %e, "Runtime API loop exited with error");
-        std::process::exit(1);
+    tracing::info!(event = "adapter.started", agent = %config.agent, "Entering dispatch loop");
+
+    let agent_id = vlinder_core::domain::AgentName::new(&config.agent);
+    loop {
+        match lambda_queue.receive_invoke(&agent_id) {
+            Ok((key, invoke, _ack)) => {
+                let vlinder_core::domain::DataMessageKind::Invoke { ref agent, .. } = key.kind
+                else {
+                    continue;
+                };
+
+                match shared::dispatch_invoke(
+                    &lambda_queue,
+                    &registry,
+                    config.agent_port,
+                    &key,
+                    &invoke,
+                ) {
+                    Ok(result) => {
+                        let region = std::env::var("AWS_REGION")
+                            .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+                            .unwrap_or_else(|_| "unknown".to_string());
+                        let diagnostics =
+                            build_lambda_diagnostics(&config.agent, &region, result.duration_ms);
+                        shared::send_complete(
+                            lambda_queue.as_ref(),
+                            &key,
+                            agent,
+                            result.output,
+                            result.state,
+                            diagnostics,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Dispatch failed");
+                        shared::send_complete(
+                            lambda_queue.as_ref(),
+                            &key,
+                            agent,
+                            format!("[error] {e}").into_bytes(),
+                            None,
+                            vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
+                        );
+                    }
+                }
+            }
+            Err(QueueError::Timeout) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "receive_invoke failed");
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -165,115 +220,4 @@ fn wait_for_agent(http: &ureq::Agent, port: u16) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-}
-
-/// Main loop: poll Lambda Runtime API, dispatch to agent, respond.
-fn runtime_api_loop(
-    config: &AdapterConfig,
-    http: &ureq::Agent,
-    queue: &Arc<dyn MessageQueue + Send + Sync>,
-    registry: &Arc<dyn Registry>,
-) -> Result<(), String> {
-    let next_url = format!(
-        "http://{}/2018-06-01/runtime/invocation/next",
-        config.runtime_api,
-    );
-
-    loop {
-        // Block until Lambda dispatches an invocation.
-        let response = http
-            .get(&next_url)
-            .call()
-            .map_err(|e| format!("GET invocation/next failed: {e}"))?;
-
-        let request_id = response
-            .header("Lambda-Runtime-Aws-Request-Id")
-            .unwrap_or("unknown")
-            .to_string();
-
-        let mut body = Vec::new();
-        response
-            .into_reader()
-            .read_to_end(&mut body)
-            .map_err(|e| format!("failed to read invocation body: {e}"))?;
-
-        tracing::info!(
-            event = "adapter.invocation",
-            request_id = %request_id,
-            body_bytes = body.len(),
-            "Received Lambda invocation"
-        );
-
-        match handle_invocation(config, queue, registry, &request_id, &body) {
-            Ok(output) => {
-                let response_url = format!(
-                    "http://{}/2018-06-01/runtime/invocation/{}/response",
-                    config.runtime_api, request_id,
-                );
-                http.post(&response_url)
-                    .send_bytes(&output)
-                    .map_err(|e| format!("POST invocation response failed: {e}"))?;
-            }
-            Err(e) => {
-                tracing::error!(
-                    event = "adapter.invocation_error",
-                    request_id = %request_id,
-                    error = %e,
-                    "Invocation failed"
-                );
-                let error_url = format!(
-                    "http://{}/2018-06-01/runtime/invocation/{}/error",
-                    config.runtime_api, request_id,
-                );
-                let _ = http
-                    .post(&error_url)
-                    .send_bytes(build_error_body(&e).as_bytes());
-            }
-        }
-    }
-}
-
-/// Handle a single Lambda invocation using the shared dispatch.
-fn handle_invocation(
-    config: &AdapterConfig,
-    queue: &Arc<dyn MessageQueue + Send + Sync>,
-    registry: &Arc<dyn Registry>,
-    request_id: &str,
-    body: &[u8],
-) -> Result<Vec<u8>, String> {
-    use vlinder_provider_server::dispatch as shared;
-
-    let payload = deserialize_invoke(body)?;
-    let key = payload.key;
-    let invoke_msg = payload.msg;
-
-    let vlinder_core::domain::DataMessageKind::Invoke { ref agent, .. } = key.kind else {
-        return Err("expected Invoke".into());
-    };
-
-    let result = shared::dispatch_invoke(queue, registry, config.agent_port, &key, &invoke_msg)?;
-
-    let region = std::env::var("AWS_REGION")
-        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-        .unwrap_or_else(|_| "unknown".to_string());
-
-    let diagnostics = build_lambda_diagnostics(&config.agent, &region, result.duration_ms);
-    shared::send_complete(
-        queue.as_ref(),
-        &key,
-        agent,
-        result.output.clone(),
-        result.state,
-        diagnostics,
-    );
-
-    tracing::info!(
-        event = "adapter.invocation_complete",
-        request_id = %request_id,
-        duration_ms = result.duration_ms,
-        output_bytes = result.output.len(),
-        "Invocation complete"
-    );
-
-    Ok(result.output)
 }

@@ -38,15 +38,6 @@ pub fn build_lambda_diagnostics(
     }
 }
 
-/// Build the Lambda Runtime API error body.
-pub fn build_error_body(message: &str) -> String {
-    serde_json::json!({
-        "errorMessage": message,
-        "errorType": "AdapterError",
-    })
-    .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,14 +165,5 @@ mod tests {
         };
 
         assert!(complete.state.is_none());
-    }
-
-    #[test]
-    fn build_error_body_is_valid_json() {
-        let body = build_error_body("something went wrong");
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-
-        assert_eq!(parsed["errorMessage"], "something went wrong");
-        assert_eq!(parsed["errorType"], "AdapterError");
     }
 }
