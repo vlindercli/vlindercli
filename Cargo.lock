@@ -4297,6 +4297,7 @@ dependencies = [
  "ureq 2.12.1",
  "vlinder-core",
  "vlinder-provider-server",
+ "vlinder-sqs",
 ]
 
 [[package]]

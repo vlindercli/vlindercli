@@ -4,18 +4,29 @@
 //! environment variables set by the pool when creating the container.
 //! No config file, no filesystem probing — pure 12-factor.
 
+/// Queue backend configuration for the sidecar.
+pub enum QueueBackendConfig {
+    Nats {
+        url: String,
+        secret_url: Option<String>,
+    },
+    #[cfg(feature = "sqs")]
+    Sqs {
+        region: String,
+        queue_prefix: String,
+    },
+}
+
 /// Sidecar configuration parsed from environment variables.
 pub struct SidecarConfig {
     /// Agent name — used as the queue subscription key.
     pub agent: String,
-    /// NATS server URL (e.g. `nats://host.containers.internal:4222`).
-    pub nats_url: String,
+    /// Queue backend configuration.
+    pub queue: QueueBackendConfig,
     /// Registry gRPC address (e.g. `http://host.containers.internal:9090`).
     pub registry_url: String,
     /// State service gRPC address (e.g. `http://host.containers.internal:9092`).
     pub state_url: String,
-    /// Secret store gRPC address (optional — only needed for remote NATS).
-    pub secret_url: Option<String>,
     /// Agent container port (default 8080, localhost inside the pod).
     pub container_port: u16,
     /// OCI image reference (diagnostics only).
@@ -29,15 +40,27 @@ pub struct SidecarConfig {
 impl SidecarConfig {
     /// Parse configuration from environment variables.
     ///
-    /// Required: `VLINDER_AGENT`, `VLINDER_NATS_URL`, `VLINDER_REGISTRY_URL`, `VLINDER_STATE_URL`.
-    /// Optional: `VLINDER_CONTAINER_PORT` (default 8080), `VLINDER_IMAGE_REF`,
-    /// `VLINDER_IMAGE_DIGEST`, `VLINDER_CONTAINER_ID`.
+    /// Required: `VLINDER_AGENT`, `VLINDER_REGISTRY_URL`, `VLINDER_STATE_URL`.
+    /// Queue backend is determined by `VLINDER_QUEUE_BACKEND` (default: `"nats"`).
+    /// NATS requires: `VLINDER_NATS_URL`.
+    /// SQS requires: `VLINDER_SQS_REGION`, `VLINDER_SQS_QUEUE_PREFIX`.
     pub fn from_env() -> Result<Self, String> {
         let agent = required_env("VLINDER_AGENT")?;
-        let nats_url = required_env("VLINDER_NATS_URL")?;
         let registry_url = required_env("VLINDER_REGISTRY_URL")?;
         let state_url = required_env("VLINDER_STATE_URL")?;
-        let secret_url = std::env::var("VLINDER_SECRET_URL").ok();
+
+        let backend = std::env::var("VLINDER_QUEUE_BACKEND").unwrap_or_else(|_| "nats".to_string());
+        let queue = match backend.as_str() {
+            #[cfg(feature = "sqs")]
+            "sqs" => QueueBackendConfig::Sqs {
+                region: required_env("VLINDER_SQS_REGION")?,
+                queue_prefix: required_env("VLINDER_SQS_QUEUE_PREFIX")?,
+            },
+            _ => QueueBackendConfig::Nats {
+                url: required_env("VLINDER_NATS_URL")?,
+                secret_url: std::env::var("VLINDER_SECRET_URL").ok(),
+            },
+        };
 
         let container_port = std::env::var("VLINDER_CONTAINER_PORT")
             .ok()
@@ -50,10 +73,9 @@ impl SidecarConfig {
 
         Ok(Self {
             agent,
-            nats_url,
+            queue,
             registry_url,
             state_url,
-            secret_url,
             container_port,
             image_ref,
             image_digest,

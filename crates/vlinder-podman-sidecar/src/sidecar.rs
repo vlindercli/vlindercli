@@ -29,9 +29,23 @@ impl Sidecar {
     /// Connects to NATS (with DAG recording) and the Registry Service,
     /// then fetches the Agent from the registry to determine storage backends.
     pub fn new(config: &SidecarConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        let nats_config =
-            factory::resolve_nats_config(config.secret_url.as_deref(), &config.nats_url);
-        let queue = factory::connect(&factory::QueueConfig::Nats(nats_config))?;
+        use crate::config::QueueBackendConfig;
+
+        let queue_config = match &config.queue {
+            QueueBackendConfig::Nats { url, secret_url } => {
+                let nats = factory::resolve_nats_config(secret_url.as_deref(), url);
+                factory::QueueConfig::Nats(nats)
+            }
+            #[cfg(feature = "sqs")]
+            QueueBackendConfig::Sqs {
+                region,
+                queue_prefix,
+            } => factory::QueueConfig::Sqs(vlinder_sqs::SqsConfig {
+                region: region.clone(),
+                queue_prefix: queue_prefix.clone(),
+            }),
+        };
+        let queue = factory::connect(&queue_config)?;
         let store = factory::connect_state(&config.state_url)?;
         let queue = factory::with_recording(queue, store);
         let registry = factory::connect_registry(&config.registry_url)?;
