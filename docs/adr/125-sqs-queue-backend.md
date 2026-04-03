@@ -377,3 +377,9 @@ No surprises, sensible defaults. The `aws-sdk-sqs` crate's default credential ch
 - `provider-server/factory.rs` feature-gates NATS/SQS
 - Infra worker calls `provision_agent` / `deprovision_agent`
 - Lambda runtime: SQS variant uses event source mapping
+
+## Future: Per-Worker Queue Creation
+
+Service request queues (e.g., `dev-vlinder-request-kv-sqlite`) are currently hardcoded in `on_cluster_start` with all known backends. This couples SQS infrastructure to service worker configuration — adding a new backend requires updating `on_cluster_start`.
+
+Cleaner: each service worker creates its own request queue at startup via a new trait method like `on_worker_start(service: ServiceBackend)`. The worker knows which backend it handles. NATS no-ops it. SQS creates the queue + DLQ. Adding a backend means adding a worker, not editing queue infrastructure code.
