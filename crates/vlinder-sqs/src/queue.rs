@@ -7,10 +7,10 @@ use tokio::runtime::Runtime;
 
 use vlinder_core::domain::{
     Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataRoutingKey,
-    DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey,
-    InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError, RequestMessage,
-    ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessage,
-    SubmissionId,
+    DeleteAgentMessage, DeployAgentMessage, EmbeddingBackendType, ForkMessage, HarnessType,
+    InferenceBackendType, InfraRoutingKey, InvokeMessage, MessageQueue, ObjectStorageType,
+    Operation, PromoteMessage, QueueError, RequestMessage, ResponseMessage, Sequence,
+    ServiceBackend, SessionRoutingKey, SessionStartMessage, SubmissionId, VectorStorageType,
 };
 
 use crate::envelope::{self, Envelope};
@@ -287,6 +287,16 @@ impl MessageQueue for SqsQueue {
         self.create_queue_with_dlq(&routing::delete_queue(&self.inner.prefix))?;
         self.create_queue_with_dlq(&routing::fork_queue(&self.inner.prefix))?;
         self.create_queue_with_dlq(&routing::promote_queue(&self.inner.prefix))?;
+        // Service request queues — one per known backend
+        for backend in [
+            ServiceBackend::Kv(ObjectStorageType::Sqlite),
+            ServiceBackend::Vec(VectorStorageType::SqliteVec),
+            ServiceBackend::Infer(InferenceBackendType::Ollama),
+            ServiceBackend::Infer(InferenceBackendType::OpenRouter),
+            ServiceBackend::Embed(EmbeddingBackendType::Ollama),
+        ] {
+            self.create_queue_with_dlq(&routing::request_queue(&self.inner.prefix, backend))?;
+        }
         tracing::info!(prefix = %self.inner.prefix, "SQS static queues ready");
         Ok(())
     }
@@ -356,8 +366,6 @@ impl MessageQueue for SqsQueue {
             return Err(QueueError::SendFailed("expected Request key".into()));
         };
         let queue = routing::request_queue(&self.inner.prefix, *service);
-        // Lazily ensure the request queue exists
-        self.create_queue_with_dlq(&queue)?;
         self.send_to(&queue, &Envelope { key, msg }.to_json()?)
     }
 
