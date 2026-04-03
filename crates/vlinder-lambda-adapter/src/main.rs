@@ -30,6 +30,7 @@ use vlinder_provider_server::factory;
 
 use adapter::build_lambda_diagnostics;
 use config::AdapterConfig;
+use config::QueueBackendConfig;
 
 fn main() {
     let filter = std::env::var("RUST_LOG")
@@ -48,7 +49,6 @@ fn main() {
         event = "adapter.config",
         agent = %config.agent,
         runtime_api = %config.runtime_api,
-        nats_url = %config.nats_url,
         registry_url = %config.registry_url,
         state_url = %config.state_url,
         agent_port = config.agent_port,
@@ -57,8 +57,21 @@ fn main() {
 
     register_extension(&config.runtime_api);
 
-    let nats_config = factory::resolve_nats_config(config.secret_url.as_deref(), &config.nats_url);
-    let queue = match factory::connect(&factory::QueueConfig::Nats(nats_config)) {
+    let queue_config = match &config.queue {
+        QueueBackendConfig::Nats { url, secret_url } => {
+            let nats = factory::resolve_nats_config(secret_url.as_deref(), url);
+            factory::QueueConfig::Nats(nats)
+        }
+        #[cfg(feature = "sqs")]
+        QueueBackendConfig::Sqs {
+            region,
+            queue_prefix,
+        } => factory::QueueConfig::Sqs(vlinder_sqs::SqsConfig {
+            region: region.clone(),
+            queue_prefix: queue_prefix.clone(),
+        }),
+    };
+    let queue = match factory::connect(&queue_config) {
         Ok(q) => q,
         Err(e) => {
             tracing::error!(error = %e, "Failed to connect to queue");
