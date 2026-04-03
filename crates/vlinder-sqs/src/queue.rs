@@ -1,6 +1,7 @@
 //! SQS-backed `MessageQueue` implementation (ADR 125).
 
 use std::collections::HashMap;
+use std::error::Error;
 use std::sync::{Arc, Mutex};
 
 use tokio::runtime::Runtime;
@@ -15,6 +16,18 @@ use vlinder_core::domain::{
 
 use crate::envelope::{self, Envelope};
 use crate::routing;
+
+/// Walk the error source chain to get a useful message.
+/// The AWS SDK's `Display` often just says "service error".
+fn format_sdk_error(err: &dyn Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(e) = source {
+        parts.push(e.to_string());
+        source = e.source();
+    }
+    parts.join(": ")
+}
 
 const MAX_RECEIVE_COUNT: &str = "3";
 const LONG_POLL_SECONDS: i32 = 1;
@@ -85,7 +98,12 @@ impl SqsQueue {
                 .queue_name(queue_name)
                 .send()
                 .await
-                .map_err(|e| QueueError::SendFailed(format!("get_queue_url({queue_name}): {e}")))?
+                .map_err(|e| {
+                    QueueError::SendFailed(format!(
+                        "get_queue_url({queue_name}): {}",
+                        format_sdk_error(&e)
+                    ))
+                })?
                 .queue_url
                 .ok_or_else(|| QueueError::SendFailed(format!("queue {queue_name} has no URL")))
         })?;
@@ -108,7 +126,12 @@ impl SqsQueue {
                 .queue_name(&dlq_name)
                 .send()
                 .await
-                .map_err(|e| QueueError::SendFailed(format!("create DLQ {dlq_name}: {e}")))?;
+                .map_err(|e| {
+                    QueueError::SendFailed(format!(
+                        "create DLQ {dlq_name}: {}",
+                        format_sdk_error(&e)
+                    ))
+                })?;
 
             let dlq_url = dlq_result.queue_url.ok_or_else(|| {
                 QueueError::SendFailed(format!("DLQ {dlq_name} created but no URL"))
@@ -122,7 +145,9 @@ impl SqsQueue {
                 .attribute_names(aws_sdk_sqs::types::QueueAttributeName::QueueArn)
                 .send()
                 .await
-                .map_err(|e| QueueError::SendFailed(format!("get DLQ ARN: {e}")))?;
+                .map_err(|e| {
+                    QueueError::SendFailed(format!("get DLQ ARN: {}", format_sdk_error(&e)))
+                })?;
 
             let dlq_arn = dlq_attrs
                 .attributes()
@@ -148,7 +173,12 @@ impl SqsQueue {
                 )
                 .send()
                 .await
-                .map_err(|e| QueueError::SendFailed(format!("create queue {queue_name}: {e}")))?;
+                .map_err(|e| {
+                    QueueError::SendFailed(format!(
+                        "create queue {queue_name}: {}",
+                        format_sdk_error(&e)
+                    ))
+                })?;
 
             if let Some(url) = result.queue_url {
                 self.inner
@@ -197,7 +227,12 @@ impl SqsQueue {
             .queue_name(queue_name)
             .send()
             .await
-            .map_err(|e| QueueError::SendFailed(format!("get_queue_url({queue_name}): {e}")))?
+            .map_err(|e| {
+                QueueError::SendFailed(format!(
+                    "get_queue_url({queue_name}): {}",
+                    format_sdk_error(&e)
+                ))
+            })?
             .queue_url
             .ok_or_else(|| QueueError::SendFailed(format!("queue {queue_name} has no URL")))
     }
@@ -212,7 +247,12 @@ impl SqsQueue {
                 .message_body(body)
                 .send()
                 .await
-                .map_err(|e| QueueError::SendFailed(format!("send to {queue_name}: {e}")))?;
+                .map_err(|e| {
+                    QueueError::SendFailed(format!(
+                        "send to {queue_name}: {}",
+                        format_sdk_error(&e)
+                    ))
+                })?;
             Ok(())
         })
     }
@@ -230,7 +270,10 @@ impl SqsQueue {
                 .send()
                 .await
                 .map_err(|e| {
-                    QueueError::ReceiveFailed(format!("receive from {queue_name}: {e}"))
+                    QueueError::ReceiveFailed(format!(
+                        "receive from {queue_name}: {}",
+                        format_sdk_error(&e)
+                    ))
                 })?;
 
             let msg = result
