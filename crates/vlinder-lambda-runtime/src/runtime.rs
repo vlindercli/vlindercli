@@ -197,6 +197,10 @@ impl LambdaRuntime {
             vpc_security_group_ids: &self.config.vpc_security_group_ids,
         })?;
 
+        // Wait for the function to become Active — Lambda needs time to
+        // download the container image from ECR.
+        self.client.wait_for_active(&function_name)?;
+
         self.functions.insert(
             name.to_string(),
             DeployedFunction {
@@ -383,6 +387,7 @@ mod tests {
                     function_arn: format!(
                         "arn:aws:lambda:us-east-1:123456789012:function:{function_name}"
                     ),
+                    state: "Active".to_string(),
                 }))
             } else {
                 Ok(None)
@@ -432,6 +437,7 @@ mod tests {
                 function_arn: format!(
                     "arn:aws:lambda:us-east-1:123456789012:function:{function_name}"
                 ),
+                state: "Active".to_string(),
             }))
         }
 
@@ -775,6 +781,7 @@ mod tests {
                     function_arn: format!(
                         "arn:aws:lambda:us-east-1:123456789012:function:{function_name}"
                     ),
+                    state: "Active".to_string(),
                 }))
             }
             fn delete_function(&self, _: &str) {}
