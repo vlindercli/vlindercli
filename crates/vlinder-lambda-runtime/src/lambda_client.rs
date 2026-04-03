@@ -28,6 +28,7 @@ impl fmt::Display for LambdaError {
 #[derive(Debug, Clone)]
 pub(crate) struct FunctionInfo {
     pub function_arn: String,
+    pub state: String,
 }
 
 // ── Request types ───────────────────────────────────────────────────
@@ -74,6 +75,34 @@ pub(crate) trait LambdaClient: Send {
     /// Invoke a Lambda function synchronously (`RequestResponse`).
     /// Returns the function's output payload.
     fn invoke_function(&self, function_name: &str, payload: &[u8]) -> Result<Vec<u8>, LambdaError>;
+
+    /// Wait until the function state is `Active`. Polls every 2s, up to 120s.
+    fn wait_for_active(&self, function_name: &str) -> Result<(), LambdaError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err(LambdaError::Aws(format!(
+                    "function {function_name} did not become Active within 120s"
+                )));
+            }
+            match self.get_function(function_name)? {
+                Some(info) if info.state == "Active" => return Ok(()),
+                Some(info) => {
+                    tracing::debug!(
+                        function = function_name,
+                        state = %info.state,
+                        "Waiting for function to become Active"
+                    );
+                }
+                None => {
+                    return Err(LambdaError::Aws(format!(
+                        "function {function_name} not found while waiting"
+                    )));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }
 }
 
 // ── AWS SDK implementation ──────────────────────────────────────────
@@ -342,12 +371,18 @@ impl AwsLambdaClient {
             .await
         {
             Ok(output) => {
-                let arn = output
-                    .configuration()
+                let config = output.configuration();
+                let arn = config
                     .and_then(|c| c.function_arn())
                     .unwrap_or_default()
                     .to_string();
-                Ok(Some(FunctionInfo { function_arn: arn }))
+                let state = config
+                    .and_then(|c| c.state())
+                    .map_or_else(|| "Unknown".to_string(), |s| s.as_str().to_string());
+                Ok(Some(FunctionInfo {
+                    function_arn: arn,
+                    state,
+                }))
             }
             Err(sdk_err) => {
                 if is_resource_not_found(&sdk_err) {
