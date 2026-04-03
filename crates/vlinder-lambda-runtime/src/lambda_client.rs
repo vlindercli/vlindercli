@@ -76,13 +76,13 @@ pub(crate) trait LambdaClient: Send {
     /// Returns the function's output payload.
     fn invoke_function(&self, function_name: &str, payload: &[u8]) -> Result<Vec<u8>, LambdaError>;
 
-    /// Wait until the function state is `Active`. Polls every 2s, up to 120s.
+    /// Wait until the function state is `Active`. Polls every 5s, up to 15 min.
     fn wait_for_active(&self, function_name: &str) -> Result<(), LambdaError> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
         loop {
             if std::time::Instant::now() > deadline {
                 return Err(LambdaError::Aws(format!(
-                    "function {function_name} did not become Active within 120s"
+                    "function {function_name} did not become Active within 15 min"
                 )));
             }
             match self.get_function(function_name)? {
@@ -100,7 +100,7 @@ pub(crate) trait LambdaClient: Send {
                     )));
                 }
             }
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            std::thread::sleep(std::time::Duration::from_secs(5));
         }
     }
 }
