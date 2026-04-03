@@ -213,7 +213,15 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                     Ok(_agent) => {
                         let name = AgentName::new(&agent_name);
                         if let Err(e) = queue.on_agent_deployed(&name) {
-                            tracing::warn!(agent = %agent_name, error = %e, "Failed to provision agent queues");
+                            tracing::error!(agent = %agent_name, error = %e, "Failed to provision agent queues");
+                            let failed = AgentState::registered(name).transition(
+                                AgentStatus::Failed,
+                                Some(format!("queue provisioning failed: {e}")),
+                            );
+                            if let Err(e2) = repo.append_agent_state(&failed) {
+                                tracing::warn!(error = %e2, "Failed to set Failed state");
+                            }
+                            continue;
                         }
                         let deploying =
                             AgentState::registered(name).transition(AgentStatus::Deploying, None);
