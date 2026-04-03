@@ -178,12 +178,27 @@ impl LambdaRuntime {
 
         let mut env_vars: Vec<(&str, &str)> = vec![
             ("VLINDER_AGENT", &agent.name),
-            ("VLINDER_NATS_URL", &self.config.nats_url),
             ("VLINDER_REGISTRY_URL", &self.config.registry_addr),
             ("VLINDER_STATE_URL", &self.config.state_url),
         ];
-        if let Some(ref secret_url) = self.config.secret_url {
-            env_vars.push(("VLINDER_SECRET_URL", secret_url));
+        let sqs_prefix;
+        match &self.config.queue {
+            vlinder_core::domain::QueueBackend::Nats { url } => {
+                env_vars.push(("VLINDER_QUEUE_BACKEND", "nats"));
+                env_vars.push(("VLINDER_NATS_URL", url));
+                if let Some(ref secret_url) = self.config.secret_url {
+                    env_vars.push(("VLINDER_SECRET_URL", secret_url));
+                }
+            }
+            vlinder_core::domain::QueueBackend::Sqs {
+                region,
+                queue_prefix,
+            } => {
+                sqs_prefix = queue_prefix.clone();
+                env_vars.push(("VLINDER_QUEUE_BACKEND", "sqs"));
+                env_vars.push(("VLINDER_SQS_REGION", region));
+                env_vars.push(("VLINDER_SQS_QUEUE_PREFIX", &sqs_prefix));
+            }
         }
 
         let function_arn = self.client.create_function(&CreateFunctionRequest {
@@ -460,7 +475,9 @@ mod tests {
             region: "us-east-1".to_string(),
             memory_mb: 512,
             timeout_secs: 300,
-            nats_url: "nats://localhost:4222".to_string(),
+            queue: vlinder_core::domain::QueueBackend::Nats {
+                url: "nats://localhost:4222".to_string(),
+            },
             state_url: "http://127.0.0.1:9092".to_string(),
             secret_url: None,
             vpc_subnet_ids: vec![],
