@@ -90,7 +90,7 @@ jobs:
               source "$HOME/.cargo/env" &&
               curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-aarch_64.zip &&
               unzip protoc-28.3-linux-aarch_64.zip -d /usr/local &&
-              cargo build --release -p vlinder -p vlinderd --features vlinderd/vendored-openssl -p vlinder-lambda-adapter
+              cargo build --release -p vlinder -p vlinderd --features vlinderd/vendored-openssl -p vlinder-lambda-adapter --features vlinder-lambda-adapter/sqs
             '
       - name: Upload binaries to S3
         if: vars.UPLOAD_S3 == 'true'
