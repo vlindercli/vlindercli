@@ -327,6 +327,22 @@ impl RecordingQueue {
 
 impl MessageQueue for RecordingQueue {
     // -------------------------------------------------------------------------
+    // Lifecycle — delegate to inner
+    // -------------------------------------------------------------------------
+
+    fn on_cluster_start(&self) -> Result<(), QueueError> {
+        self.inner.on_cluster_start()
+    }
+
+    fn on_agent_deployed(&self, agent: &crate::domain::AgentName) -> Result<(), QueueError> {
+        self.inner.on_agent_deployed(agent)
+    }
+
+    fn on_agent_deleted(&self, agent: &crate::domain::AgentName) -> Result<(), QueueError> {
+        self.inner.on_agent_deleted(agent)
+    }
+
+    // -------------------------------------------------------------------------
     // Send methods — record DAG node, then forward
     // -------------------------------------------------------------------------
 
