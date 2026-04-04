@@ -378,6 +378,77 @@ No surprises, sensible defaults. The `aws-sdk-sqs` crate's default credential ch
 - Infra worker calls `provision_agent` / `deprovision_agent`
 - Lambda runtime: SQS variant uses event source mapping
 
+## Known Bugs (discovered during E2E testing 2026-04-03)
+
+Three compounding bugs cause the system to return stale responses and accumulate thousands of unprocessed messages in SQS queues.
+
+### Bug 1: Lambda Adapter Never Acks Invoke (refactor/03-lambda-runtime-queue, #55)
+
+The lambda adapter's `dispatch_loop` in `main.rs` receives `(key, invoke, _ack)` from `receive_invoke` but never calls `_ack`. For `LambdaRuntimeQueue`, the ack closure POSTs the invocation response to the Lambda Runtime API (`/invocation/{request_id}/response`). Without it, the Lambda runtime thinks the invocation timed out and retries — each retry produces another complete message. This is a **redelivery amplifier**.
+
+With NATS, the sidecar's `receive_invoke` ack deletes the message from the JetStream consumer. The lambda adapter historically didn't need it because the Lambda Runtime API itself managed delivery. But `LambdaRuntimeQueue` wraps the Runtime API behind `receive_invoke`, making ack semantically required.
+
+The podman sidecar (`sidecar.rs:94`) correctly calls `let _ = ack();` immediately after receiving the invoke.
+
+**Fix**: Call `ack()` after `send_complete` in the lambda adapter's dispatch loop.
+
+### Bug 2: `receive_complete` Ignores Submission Filter (sqs/03-sqs-crate, #60)
+
+```rust
+fn receive_complete(
+    &self,
+    _submission: &SubmissionId,  // IGNORED
+    _harness: HarnessType,       // IGNORED
+    agent: &AgentName,
+) -> Result<...> {
+    let queue = routing::complete_queue(&self.inner.prefix, agent);
+    let (body, ack) = self.receive_one(&queue)?;
+    // returns whatever message is next — no filtering
+}
+```
+
+The harness calls `receive_complete(&submission, harness, &agent)` in a busy-loop, expecting to receive the completion for its specific submission. With NATS, subject-based routing (`VLINDER.data.complete.{submission}.{agent}`) provides server-side filtering. With SQS, the per-agent complete queue contains completions for ALL submissions. The SQS implementation returns whichever message arrives first.
+
+**Consequence**: The harness receives a stale complete from a previous submission (e.g., the first "buy milk" response) instead of the current one. It acks and returns it — so the user sees the same response every time. The correct complete for the current submission remains in the queue, unconsumed.
+
+**Fix options**:
+1. **Client-side filter + requeue**: After `receive_one`, check if the envelope's `key.submission` matches. If not, let the visibility timeout expire (don't ack) so the message reappears for a future consumer. Continue polling. Risk: messages cycle through visibility timeouts repeatedly.
+2. **Client-side filter + ack stale**: After `receive_one`, if submission doesn't match, ack and discard (the submitter is gone). This loses the message if a slow consumer is still waiting. Only safe if the system guarantees one consumer per submission.
+3. **SQS message group + receive with filter**: Use message attributes on send, and `MessageAttributeName` filtering on receive. SQS doesn't support server-side content-based filtering on `ReceiveMessage`, so this doesn't work.
+
+Likely correct approach: option 2 (ack stale), since `receive_complete` is called by the harness which owns the submission lifecycle. If the submission's harness isn't polling, the complete is orphaned anyway.
+
+### Bug 3: `receive_response` Ignores All Filters (sqs/03-sqs-crate, #60)
+
+```rust
+fn receive_response(
+    &self,
+    _submission: &SubmissionId,  // IGNORED
+    agent: &AgentName,
+    _service: ServiceBackend,    // IGNORED
+    _operation: Operation,       // IGNORED
+    _sequence: Sequence,         // IGNORED
+) -> Result<...> {
+    let queue = routing::response_queue(&self.inner.prefix, agent);
+    let (body, ack) = self.receive_one(&queue)?;
+    // returns whatever message is next — no filtering
+}
+```
+
+During `call_service`, the sidecar/adapter sends a request and then busy-loops on `receive_response` expecting a response matching `(submission, service, operation, sequence)`. With NATS, subject routing provides exact-match delivery. With SQS, the per-agent response queue has responses from all submissions and service calls mixed together.
+
+**Consequence**: `send_and_wait` receives a response from a previous invocation or different service call, acks it, and returns the wrong data to the agent. The correct response sits in the queue and becomes invisible for the 300s visibility timeout. Observed: 2419 messages in-flight on the response queue.
+
+**Fix**: Same pattern as Bug 2 — client-side filter after `receive_one`. For responses, the filter must match `(submission, service, operation, sequence)` from the envelope's routing key. Non-matching messages should NOT be acked (let visibility timeout expire and redeliver to a future poll). Unlike completions, responses are actively waited on by a specific `call_service` invocation, so discarding non-matching ones would break other concurrent calls.
+
+### Cascade
+
+Bug 1 is the amplifier — Lambda retries produce duplicate invocations, each generating more completions and service call responses. Bug 2 causes the harness to consume stale completions. Bug 3 corrupts service call data during agent execution. Together, they explain the observed behavior: every user message returns "buy milk" (the first-ever completion), while queues accumulate hundreds of orphaned messages.
+
+### RecordingQueue Delegation (also discovered 2026-04-03)
+
+`RecordingQueue` inherited the default no-op implementations of `on_cluster_start`, `on_agent_deployed`, and `on_agent_deleted`. Since the infra worker holds a `RecordingQueue` wrapping the real queue, SQS lifecycle calls never reached the inner `SqsQueue` — agent queues were never created. Fixed by delegating lifecycle methods through `RecordingQueue` to `self.inner`.
+
 ## Future: Per-Worker Queue Creation
 
 Service request queues (e.g., `dev-vlinder-request-kv-sqlite`) are currently hardcoded in `on_cluster_start` with all known backends. This couples SQS infrastructure to service worker configuration — adding a new backend requires updating `on_cluster_start`.
