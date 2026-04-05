@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use super::{
     BranchId, HarnessType, ObjectStorageType, Operation, RuntimeType, Sequence, ServiceType,
-    SessionId, SubmissionId, VectorStorageType,
+    SessionId, SqlStorageType, SubmissionId, VectorStorageType,
 };
 
 /// Agent identity within the routing bounded context.
@@ -98,6 +98,7 @@ pub enum ServiceBackend {
     Vec(VectorStorageType),
     Infer(InferenceBackendType),
     Embed(EmbeddingBackendType),
+    Sql(SqlStorageType),
 }
 
 impl ServiceBackend {
@@ -108,6 +109,7 @@ impl ServiceBackend {
             ServiceBackend::Vec(_) => ServiceType::Vec,
             ServiceBackend::Infer(_) => ServiceType::Infer,
             ServiceBackend::Embed(_) => ServiceType::Embed,
+            ServiceBackend::Sql(_) => ServiceType::Sql,
         }
     }
 
@@ -118,6 +120,7 @@ impl ServiceBackend {
             ServiceBackend::Vec(b) => b.as_str(),
             ServiceBackend::Infer(b) => b.as_str(),
             ServiceBackend::Embed(b) => b.as_str(),
+            ServiceBackend::Sql(b) => b.as_str(),
         }
     }
 
@@ -140,6 +143,10 @@ impl ServiceBackend {
             ServiceType::Embed => EmbeddingBackendType::from_str(backend)
                 .ok()
                 .map(Self::Embed),
+            ServiceType::Sql => match backend {
+                "doltgres" => Some(Self::Sql(SqlStorageType::Doltgres)),
+                _ => None,
+            },
         }
     }
 }

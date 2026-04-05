@@ -73,18 +73,20 @@ impl Sidecar {
 
         tracing::info!(event = "sidecar.started", agent = %self.agent_name, "Sidecar loop started");
 
+        let mut postgres_proxy: Option<dispatch::PostgresProxy> = None;
+
         loop {
             let agent_id = AgentName::new(&self.agent_name);
 
             if let Ok((key, invoke, ack)) = self.dispatch.queue.receive_invoke(&agent_id) {
                 let _ = ack();
-                tracing::info!(
-                    event = "dispatch.started",
-                    submission = %key.submission,
-                    session = %key.session,
-                    "Dispatching invoke to container"
+                dispatch::handle_invoke(
+                    &self.dispatch,
+                    &mut self.health,
+                    &key,
+                    &invoke,
+                    &mut postgres_proxy,
                 );
-                dispatch::handle_invoke(&self.dispatch, &mut self.health, &key, &invoke);
             } else {
                 std::thread::sleep(Duration::from_millis(50));
             }

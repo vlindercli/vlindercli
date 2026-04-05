@@ -1,7 +1,7 @@
 # Multi-stage build for vlinder-podman-sidecar.
 # Build context: workspace root (sidecar depends on sibling crates).
 #
-# Only the 10 crates in the sidecar's dependency chain get real Cargo.toml
+# Only the 11 crates in the sidecar's dependency chain get real Cargo.toml
 # files. The remaining 8 workspace members get minimal stubs (no deps) so
 # Cargo can resolve the workspace without triggering feature unification
 # on shared dependencies like tonic.
@@ -20,10 +20,11 @@ WORKDIR /build
 # Copy workspace manifest
 COPY Cargo.toml ./
 
-# Copy real Cargo.toml for the 10 crates in the sidecar's dep chain
+# Copy real Cargo.toml for the 11 crates in the sidecar's dep chain
 COPY crates/vlinder-podman-sidecar/Cargo.toml crates/vlinder-podman-sidecar/
 COPY crates/vlinder-provider-server/Cargo.toml crates/vlinder-provider-server/
 COPY crates/vlinder-core/Cargo.toml crates/vlinder-core/
+COPY crates/vlinder-dolt/Cargo.toml crates/vlinder-dolt/
 COPY crates/vlinder-nats/Cargo.toml crates/vlinder-nats/
 COPY crates/vlinder-sql-registry/Cargo.toml crates/vlinder-sql-registry/
 COPY crates/vlinder-sql-state/Cargo.toml crates/vlinder-sql-state/
@@ -61,7 +62,8 @@ RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs
     mkdir -p crates/vlinder-catalog/src && echo "" > crates/vlinder-catalog/src/lib.rs && \
     mkdir -p crates/vlinder-podman-runtime/src && echo "" > crates/vlinder-podman-runtime/src/lib.rs && \
     mkdir -p crates/vlinder-lambda-runtime/src && echo "" > crates/vlinder-lambda-runtime/src/lib.rs && \
-    mkdir -p crates/vlinder-git-dag/src && echo "" > crates/vlinder-git-dag/src/lib.rs
+    mkdir -p crates/vlinder-git-dag/src && echo "" > crates/vlinder-git-dag/src/lib.rs && \
+    mkdir -p crates/vlinder-dolt/src && echo "" > crates/vlinder-dolt/src/lib.rs
 
 # Proto build dependencies (only for dep-chain crates with gRPC)
 COPY crates/vlinder-nats/build.rs crates/vlinder-nats/
@@ -74,8 +76,9 @@ COPY crates/vlinder-sql-registry/proto crates/vlinder-sql-registry/proto
 # Pre-build dependencies (this layer is cached unless Cargo.toml changes)
 RUN cargo build --release -p vlinder-podman-sidecar 2>/dev/null || true
 
-# Copy actual source code (only the 10 dep-chain crates)
+# Copy actual source code (only the 11 dep-chain crates)
 COPY crates/vlinder-core/src crates/vlinder-core/src
+COPY crates/vlinder-dolt/src crates/vlinder-dolt/src
 COPY crates/vlinder-ollama/src crates/vlinder-ollama/src
 COPY crates/vlinder-infer-openrouter/src crates/vlinder-infer-openrouter/src
 COPY crates/vlinder-sqlite-vec/src crates/vlinder-sqlite-vec/src
@@ -88,6 +91,7 @@ COPY crates/vlinder-podman-sidecar/src crates/vlinder-podman-sidecar/src
 
 # Touch source files to invalidate the cache for actual compilation
 RUN touch crates/vlinder-core/src/lib.rs \
+          crates/vlinder-dolt/src/lib.rs \
           crates/vlinder-ollama/src/lib.rs \
           crates/vlinder-infer-openrouter/src/lib.rs \
           crates/vlinder-sqlite-vec/src/lib.rs \

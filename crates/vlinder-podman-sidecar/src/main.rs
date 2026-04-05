@@ -15,7 +15,7 @@ use sidecar::Sidecar;
 fn main() {
     // Tracing — filter external crates to warn, show sidecar at info+
     let filter = std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| "warn,vlinder_podman_sidecar=info".to_string());
+        .unwrap_or_else(|_| "warn,vlinder_podman_sidecar=info,vlinder_dolt=info".to_string());
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let config = match SidecarConfig::from_env() {

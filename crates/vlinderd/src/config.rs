@@ -103,6 +103,8 @@ pub struct Config {
     pub ollama: OllamaConfig,
     #[serde(default)]
     pub openrouter: OpenRouterConfig,
+    #[serde(default)]
+    pub dolt: DoltConfig,
     pub queue: QueueConfig,
     pub state: StateConfig,
     #[serde(default)]
@@ -249,6 +251,8 @@ pub struct StorageWorkerCounts {
     pub object: ObjectStorageWorkerCounts,
     /// Vector storage workers
     pub vector: VectorStorageWorkerCounts,
+    /// SQL storage workers
+    pub sql: SqlStorageWorkerCounts,
 }
 
 /// Object storage worker counts by backend.
@@ -265,6 +269,25 @@ pub struct ObjectStorageWorkerCounts {
 pub struct VectorStorageWorkerCounts {
     /// SQLite-vec vector storage workers
     pub sqlite: u32,
+}
+
+/// SQL storage worker counts by backend.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SqlStorageWorkerCounts {
+    /// Doltgres SQL storage workers
+    pub dolt: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DoltConfig {
+    /// Doltgres server address (host:port)
+    pub addr: String,
+    /// Postgres user for Doltgres connections
+    pub user: String,
+    /// Database name on the Doltgres instance
+    pub database: String,
 }
 
 // ============================================================================
@@ -397,6 +420,16 @@ impl Default for VectorStorageWorkerCounts {
     }
 }
 
+impl Default for DoltConfig {
+    fn default() -> Self {
+        Self {
+            addr: "localhost:5433".to_string(),
+            user: "postgres".to_string(),
+            database: "postgres".to_string(),
+        }
+    }
+}
+
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
@@ -470,6 +503,7 @@ impl Config {
                 registry_backend: RegistryBackend::Memory,
                 ..DistributedConfig::default()
             },
+            dolt: DoltConfig::default(),
             runtime: RuntimeConfig::default(),
         }
     }
@@ -492,6 +526,17 @@ impl Config {
         }
         if let Ok(v) = std::env::var("VLINDER_OPENROUTER_API_KEY") {
             self.openrouter.api_key = v;
+        }
+
+        // Dolt
+        if let Ok(v) = std::env::var("VLINDER_DOLT_ADDR") {
+            self.dolt.addr = v;
+        }
+        if let Ok(v) = std::env::var("VLINDER_DOLT_USER") {
+            self.dolt.user = v;
+        }
+        if let Ok(v) = std::env::var("VLINDER_DOLT_DATABASE") {
+            self.dolt.database = v;
         }
 
         // Queue
@@ -554,6 +599,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("VLINDER_WORKERS_STORAGE_VECTOR_SQLITE") {
             self.distributed.workers.storage.vector.sqlite = v.parse().unwrap_or(1);
+        }
+        if let Ok(v) = std::env::var("VLINDER_WORKERS_STORAGE_SQL_DOLT") {
+            self.distributed.workers.storage.sql.dolt = v.parse().unwrap_or(0);
         }
         if let Ok(v) = std::env::var("VLINDER_WORKERS_INFRA") {
             self.distributed.workers.infra = v.parse().unwrap_or(1);

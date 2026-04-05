@@ -9,7 +9,7 @@ name = "vlinderd"
 path = "src/main.rs"
 
 [features]
-default = ["container", "lambda", "ollama", "openrouter", "sqlite-kv", "sqlite-vec"]
+default = ["container", "lambda", "ollama", "openrouter", "sqlite-kv", "sqlite-vec", "dolt"]
 test-support = []
 vendored-openssl = ["openssl/vendored"]
 container = ["dep:vlinder-podman-runtime"]
@@ -18,6 +18,7 @@ ollama = ["dep:vlinder-ollama"]
 openrouter = ["dep:vlinder-infer-openrouter"]
 sqlite-kv = ["dep:vlinder-sqlite-kv"]
 sqlite-vec = ["dep:vlinder-sqlite-vec"]
+dolt = ["dep:vlinder-dolt"]
 
 [dependencies]
 openssl = { version = "0.10", optional = true }
@@ -27,6 +28,7 @@ vlinder-ollama = { path = "../vlinder-ollama", optional = true }
 vlinder-infer-openrouter = { path = "../vlinder-infer-openrouter", optional = true }
 vlinder-sqlite-vec = { path = "../vlinder-sqlite-vec", optional = true }
 vlinder-sqlite-kv = { path = "../vlinder-sqlite-kv", optional = true }
+vlinder-dolt = { path = "../vlinder-dolt", optional = true }
 vlinder-podman-runtime = { path = "../vlinder-podman-runtime", optional = true }
 vlinder-lambda-runtime = { path = "../vlinder-lambda-runtime", optional = true }
 vlinder-catalog = { path = "../vlinder-catalog" }

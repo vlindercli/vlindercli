@@ -54,9 +54,9 @@ test-podman-runtime:
 # the Dockerfile itself). The hash is stored in target/.sidecar-hash.
 # If the hash matches AND the image exists, we skip the build.
 #
-# The 10 crates in the sidecar's dependency chain:
+# The 11 crates in the sidecar's dependency chain:
 #   vlinder-podman-sidecar, vlinder-provider-server, vlinder-core,
-#   vlinder-nats, vlinder-sql-registry, vlinder-sql-state,
+#   vlinder-dolt, vlinder-nats, vlinder-sql-registry, vlinder-sql-state,
 #   vlinder-ollama, vlinder-infer-openrouter, vlinder-sqlite-kv,
 #   vlinder-sqlite-vec
 #
@@ -82,6 +82,8 @@ build-sidecar:
         crates/vlinder-provider-server/src \
         crates/vlinder-core/Cargo.toml \
         crates/vlinder-core/src \
+        crates/vlinder-dolt/Cargo.toml \
+        crates/vlinder-dolt/src \
         crates/vlinder-nats/Cargo.toml \
         crates/vlinder-nats/src \
         crates/vlinder-nats/build.rs \
@@ -185,15 +187,18 @@ clean:
     podman volume prune -f 2>/dev/null || true
     echo "  ✓ Podman clean (sidecar + base images preserved)"
 
-    # 3. NATS JetStream streams
+    # 3. NATS JetStream — always wipe the on-disk store so stale messages
+    #    cannot be replayed when NATS restarts. Also purge live streams
+    #    if the server happens to be reachable.
+    echo "  Cleaning NATS JetStream data..."
+    rm -rf /tmp/nats/jetstream
     if command -v nats >/dev/null 2>&1 && nc -z localhost 4222 2>/dev/null; then
-        echo "  Cleaning NATS streams..."
         for stream in $(nats stream ls --names 2>/dev/null || true); do
             nats stream rm -f "$stream" 2>/dev/null || true
         done
-        echo "  ✓ NATS streams purged"
+        echo "  ✓ NATS streams purged + JetStream data wiped"
     else
-        echo "  - NATS not reachable, skipping stream cleanup"
+        echo "  ✓ JetStream data wiped (NATS not running — no live streams to purge)"
     fi
 
     # 4. ~/.vlinder data plane (preserve config.toml and nats.conf)
@@ -356,6 +361,45 @@ s3-seed:
     aws --endpoint-url http://localhost:4566 s3 sync crates/vlinder-core/src/ s3://vlinder-support/v0.1.0/src/
     echo "Seeded s3://vlinder-support/v0.1.0/"
     aws --endpoint-url http://localhost:4566 s3 ls s3://vlinder-support/v0.1.0/ --recursive | head -20 || true
+
+# Start a Doltgres container for SQL time-travel storage.
+# Uses user=postgres password=password (Doltgres defaults when user section is in config).
+# The config binds to 0.0.0.0 so the host can reach it on port 5433.
+doltgres:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if podman ps --filter name=^vlinder-doltgres$ --quiet 2>/dev/null | grep -q .; then
+        echo "  ✓ Doltgres already running"
+    else
+        podman rm -f vlinder-doltgres 2>/dev/null || true
+        cfg_dir=$(mktemp -d)
+        cat > "$cfg_dir/config.yaml" << 'YAML'
+    log_level: info
+    behavior:
+      read_only: false
+      dolt_transaction_commit: false
+    user:
+      name: postgres
+      password: password
+    listener:
+      host: 0.0.0.0
+      port: 5432
+      read_timeout_millis: 28800000
+      write_timeout_millis: 28800000
+    data_dir: /var/lib/doltgres/
+    cfg_dir: .doltcfg
+    privilege_file: .doltcfg/privileges.db
+    branch_control_file: .doltcfg/branch_control.db
+    YAML
+        podman run -d --name vlinder-doltgres -p 5433:5432 \
+            -v "$cfg_dir:/etc/doltgres/servercfg.d:ro" \
+            docker.io/dolthub/doltgresql:latest
+        echo "  Doltgres running on localhost:5433 (user=postgres password=password)"
+    fi
+
+# Stop and remove Doltgres container
+doltgres-stop:
+    podman rm -f vlinder-doltgres 2>/dev/null || true
 
 # =============================================================================
 # Integration Tests (ADR 082)

@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
+vlinder-dolt = { path = "../vlinder-dolt" }
 vlinder-provider-server = { path = "../vlinder-provider-server" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

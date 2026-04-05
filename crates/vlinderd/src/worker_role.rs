@@ -37,6 +37,9 @@ pub enum WorkerRole {
     /// SQLite-vec vector storage service
     #[cfg(feature = "sqlite-vec")]
     StorageVectorSqlite,
+    /// Doltgres SQL storage service
+    #[cfg(feature = "dolt")]
+    StorageSqlDolt,
     /// Secret store service — gRPC interface to the `SecretStore`
     Secret,
     /// State service — gRPC interface to the `DagStore` (ADR 079)
@@ -79,6 +82,8 @@ impl WorkerRole {
             WorkerRole::StorageObjectSqlite => "storage-object-sqlite",
             #[cfg(feature = "sqlite-vec")]
             WorkerRole::StorageVectorSqlite => "storage-vector-sqlite",
+            #[cfg(feature = "dolt")]
+            WorkerRole::StorageSqlDolt => "storage-sql-dolt",
             WorkerRole::Secret => "secret",
             WorkerRole::State => "state",
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
@@ -106,6 +111,8 @@ impl WorkerRole {
             WorkerRole::StorageObjectSqlite => "SQLite object storage",
             #[cfg(feature = "sqlite-vec")]
             WorkerRole::StorageVectorSqlite => "SQLite-vec vector storage",
+            #[cfg(feature = "dolt")]
+            WorkerRole::StorageSqlDolt => "Doltgres SQL storage",
             WorkerRole::Secret => "Secret store service",
             WorkerRole::State => "State service",
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
@@ -142,6 +149,8 @@ impl FromStr for WorkerRole {
             "storage-object-sqlite" => Ok(WorkerRole::StorageObjectSqlite),
             #[cfg(feature = "sqlite-vec")]
             "storage-vector-sqlite" => Ok(WorkerRole::StorageVectorSqlite),
+            #[cfg(feature = "dolt")]
+            "storage-sql-dolt" => Ok(WorkerRole::StorageSqlDolt),
             "secret" => Ok(WorkerRole::Secret),
             "state" => Ok(WorkerRole::State),
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
@@ -204,6 +213,11 @@ mod tests {
             "storage-vector-sqlite".parse::<WorkerRole>().unwrap(),
             WorkerRole::StorageVectorSqlite
         );
+        #[cfg(feature = "dolt")]
+        assert_eq!(
+            "storage-sql-dolt".parse::<WorkerRole>().unwrap(),
+            WorkerRole::StorageSqlDolt
+        );
         assert_eq!("secret".parse::<WorkerRole>().unwrap(), WorkerRole::Secret);
         assert_eq!("state".parse::<WorkerRole>().unwrap(), WorkerRole::State);
         #[cfg(any(feature = "ollama", feature = "openrouter"))]
@@ -245,6 +259,8 @@ mod tests {
             WorkerRole::StorageObjectSqlite,
             #[cfg(feature = "sqlite-vec")]
             WorkerRole::StorageVectorSqlite,
+            #[cfg(feature = "dolt")]
+            WorkerRole::StorageSqlDolt,
             WorkerRole::Secret,
             WorkerRole::State,
             #[cfg(any(feature = "ollama", feature = "openrouter"))]

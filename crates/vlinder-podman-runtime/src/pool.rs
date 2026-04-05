@@ -137,9 +137,14 @@ impl ContainerRuntime {
             "openrouter.vlinder.local:127.0.0.1".to_string(),
             "sqlite-vec.vlinder.local:127.0.0.1".to_string(),
             "sqlite-kv.vlinder.local:127.0.0.1".to_string(),
+            "postgres.vlinder.local:127.0.0.1".to_string(),
         ];
 
         let pod_name = format!("vlinder-{name}");
+
+        // Remove any stale pod left over from a previous daemon run.
+        self.podman.pod_stop_and_remove(&PodId::new(&pod_name), 0);
+
         let pod_id = self
             .podman
             .pod_create(&pod_name, &host_aliases)

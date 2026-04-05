@@ -22,6 +22,8 @@ pub enum ServiceType {
     Infer,
     /// Text embedding.
     Embed,
+    /// SQL storage (e.g. Doltgres).
+    Sql,
 }
 
 impl ServiceType {
@@ -31,6 +33,7 @@ impl ServiceType {
             ServiceType::Vec => "vec",
             ServiceType::Infer => "infer",
             ServiceType::Embed => "embed",
+            ServiceType::Sql => "sql",
         }
     }
 }
@@ -44,6 +47,7 @@ impl FromStr for ServiceType {
             "vec" => Ok(ServiceType::Vec),
             "infer" => Ok(ServiceType::Infer),
             "embed" => Ok(ServiceType::Embed),
+            "sql" => Ok(ServiceType::Sql),
             _ => Err(format!("unknown service type: {s}")),
         }
     }

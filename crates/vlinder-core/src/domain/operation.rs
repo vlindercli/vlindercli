@@ -24,6 +24,7 @@ pub enum Operation {
     Run,
     Chat,
     Generate,
+    Execute,
 }
 
 impl Operation {
@@ -38,6 +39,7 @@ impl Operation {
             Operation::Run => "run",
             Operation::Chat => "chat",
             Operation::Generate => "generate",
+            Operation::Execute => "execute",
         }
     }
 }
@@ -56,6 +58,7 @@ impl FromStr for Operation {
             "run" => Ok(Operation::Run),
             "chat" => Ok(Operation::Chat),
             "generate" => Ok(Operation::Generate),
+            "execute" => Ok(Operation::Execute),
             _ => Err(format!("unknown operation: {s}")),
         }
     }

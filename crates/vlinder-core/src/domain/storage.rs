@@ -74,3 +74,22 @@ impl VectorStorageType {
         }
     }
 }
+
+// ============================================================================
+// SqlStorageType (available implementations)
+// ============================================================================
+
+/// Available SQL storage implementations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, Deserialize)]
+pub enum SqlStorageType {
+    Doltgres,
+}
+
+impl SqlStorageType {
+    /// String representation for queue routing.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SqlStorageType::Doltgres => "doltgres",
+        }
+    }
+}

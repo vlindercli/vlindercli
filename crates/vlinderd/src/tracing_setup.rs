@@ -29,7 +29,9 @@ pub fn init_tracing(config: &Config) {
         .with_target(true)
         .with_current_span(true)
         .with_span_list(true)
-        .with_filter(EnvFilter::new("vlinderd=trace,warn"));
+        .with_filter(EnvFilter::new(
+            "vlinderd=trace,vlinder_core=info,vlinder_dolt=info,warn",
+        ));
 
     tracing_subscriber::registry()
         .with(stderr_layer)

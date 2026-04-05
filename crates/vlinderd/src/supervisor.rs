@@ -194,6 +194,12 @@ impl Supervisor {
             WorkerRole::StorageVectorSqlite,
             counts.storage.vector.sqlite,
         );
+        #[cfg(feature = "dolt")]
+        spawn_n(
+            &mut workers,
+            WorkerRole::StorageSqlDolt,
+            counts.storage.sql.dolt,
+        );
 
         // Infra plane worker
         spawn_n(&mut workers, WorkerRole::Infra, counts.infra);

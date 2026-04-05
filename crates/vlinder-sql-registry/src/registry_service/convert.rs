@@ -379,6 +379,7 @@ impl From<ServiceType> for proto::ServiceType {
             ServiceType::Embed => proto::ServiceType::Embed,
             ServiceType::Kv => proto::ServiceType::Kv,
             ServiceType::Vec => proto::ServiceType::Vec,
+            ServiceType::Sql => proto::ServiceType::Sql,
         }
     }
 }
@@ -392,6 +393,7 @@ impl TryFrom<proto::ServiceType> for ServiceType {
             proto::ServiceType::Embed => Ok(ServiceType::Embed),
             proto::ServiceType::Kv => Ok(ServiceType::Kv),
             proto::ServiceType::Vec => Ok(ServiceType::Vec),
+            proto::ServiceType::Sql => Ok(ServiceType::Sql),
             proto::ServiceType::Unspecified => Err("unspecified service type".into()),
         }
     }

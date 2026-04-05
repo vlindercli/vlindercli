@@ -53,6 +53,8 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
         WorkerRole::StorageObjectSqlite => run_storage_object_sqlite_worker(&config, shutdown),
         #[cfg(feature = "sqlite-vec")]
         WorkerRole::StorageVectorSqlite => run_storage_vector_sqlite_worker(&config, shutdown),
+        #[cfg(feature = "dolt")]
+        WorkerRole::StorageSqlDolt => run_storage_sql_dolt_worker(&config, shutdown),
         WorkerRole::Secret => run_secret_worker(&config, shutdown),
         WorkerRole::State => run_state_worker(&config, shutdown),
         #[cfg(any(feature = "ollama", feature = "openrouter"))]
@@ -537,6 +539,33 @@ fn run_storage_vector_sqlite_worker(config: &Config, shutdown: &AtomicBool) {
     );
 
     tracing::info!(registry = %registry_addr, "SQLite-vec vector storage worker ready");
+
+    while !shutdown.load(Ordering::Relaxed) {
+        worker.tick();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[cfg(feature = "dolt")]
+fn run_storage_sql_dolt_worker(config: &Config, shutdown: &AtomicBool) {
+    use vlinder_dolt::{DoltWorker, TcpConnectionFactory};
+
+    let queue =
+        crate::queue_factory::recording_from_config(config).expect("Failed to create queue");
+
+    let factory = Arc::new(TcpConnectionFactory::new(
+        &config.dolt.addr,
+        &config.dolt.user,
+        &config.dolt.database,
+    ));
+
+    let worker = DoltWorker::new(queue, factory);
+
+    tracing::info!(
+        addr = %config.dolt.addr,
+        database = %config.dolt.database,
+        "Doltgres SQL storage worker ready"
+    );
 
     while !shutdown.load(Ordering::Relaxed) {
         worker.tick();
