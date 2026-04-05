@@ -70,6 +70,20 @@ jobs:
       - name: Check advisories via cargo-deny
         run: cargo install cargo-deny --locked && cargo deny check advisories
 
+  kani:
+    name: Kani proofs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install Kani
+        run: cargo install --locked kani-verifier && cargo kani setup
+      - name: Run proofs
+        run: cargo kani -p vlinder-core
+
   build-arm:
     name: Build ARM Linux (AL2023)
     needs: [lint, test]
@@ -92,16 +106,35 @@ jobs:
               unzip protoc-28.3-linux-aarch_64.zip -d /usr/local &&
               cargo build --release -p vlinder -p vlinderd --features vlinderd/vendored-openssl -p vlinder-lambda-adapter
             '
-      - name: Upload binaries to S3
-        if: vars.UPLOAD_S3 == 'true'
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-binaries
+          path: |
+            target/release/vlinder
+            target/release/vlinderd
+            target/release/vlinder-lambda-adapter
+
+  upload-s3:
+    name: Upload to S3
+    needs: [build-arm]
+    if: vars.UPLOAD_S3 == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: arm-binaries
+          path: binaries
+      - name: Upload to S3
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.CI_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: eu-west-1
         run: |
-          aws s3 cp target/release/vlinder "s3://${{ secrets.ARTIFACTS_BUCKET }}/${{ github.sha }}/vlinder"
-          aws s3 cp target/release/vlinder "s3://${{ secrets.ARTIFACTS_BUCKET }}/latest/vlinder"
-          aws s3 cp target/release/vlinderd "s3://${{ secrets.ARTIFACTS_BUCKET }}/${{ github.sha }}/vlinderd"
-          aws s3 cp target/release/vlinderd "s3://${{ secrets.ARTIFACTS_BUCKET }}/latest/vlinderd"
-          aws s3 cp target/release/vlinder-lambda-adapter "s3://${{ secrets.ARTIFACTS_BUCKET }}/${{ github.sha }}/vlinder-lambda-adapter"
-          aws s3 cp target/release/vlinder-lambda-adapter "s3://${{ secrets.ARTIFACTS_BUCKET }}/latest/vlinder-lambda-adapter"
+          aws s3 cp binaries/vlinder "s3://${{ secrets.ARTIFACTS_BUCKET }}/${{ github.sha }}/vlinder"
+          aws s3 cp binaries/vlinder "s3://${{ secrets.ARTIFACTS_BUCKET }}/latest/vlinder"
+          aws s3 cp binaries/vlinderd "s3://${{ secrets.ARTIFACTS_BUCKET }}/${{ github.sha }}/vlinderd"
+          aws s3 cp binaries/vlinderd "s3://${{ secrets.ARTIFACTS_BUCKET }}/latest/vlinderd"
+          aws s3 cp binaries/vlinder-lambda-adapter "s3://${{ secrets.ARTIFACTS_BUCKET }}/${{ github.sha }}/vlinder-lambda-adapter"
+          aws s3 cp binaries/vlinder-lambda-adapter "s3://${{ secrets.ARTIFACTS_BUCKET }}/latest/vlinder-lambda-adapter"
