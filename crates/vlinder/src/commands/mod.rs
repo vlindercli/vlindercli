@@ -1,6 +1,7 @@
 mod agent;
 pub(crate) mod branch;
 mod connect;
+mod context;
 mod fleet;
 mod help;
 mod model;
@@ -59,6 +60,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: turn::TurnCommand,
     },
+    /// Switch between deployment targets (local, aws, etc.)
+    Context {
+        #[command(subcommand)]
+        cmd: context::ContextCommand,
+    },
 }
 
 pub fn run() {
@@ -73,6 +79,7 @@ pub fn run() {
         Command::Session { cmd } => session::execute(cmd),
         Command::Branch { cmd } => branch::execute(cmd),
         Command::Turn { cmd } => turn::execute(cmd),
+        Command::Context { cmd } => context::execute(cmd),
     }
 }
 
