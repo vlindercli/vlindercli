@@ -644,6 +644,15 @@ impl MessageQueue for NatsQueue {
             Ok((key, msg, ack_fn))
         })
     }
+
+    fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+        let filter = "vlinder.>";
+
+        self.inner.runtime.block_on(async {
+            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+            Ok((js_msg.subject.to_string(), js_msg.payload.to_vec(), ack_fn))
+        })
+    }
 }
 
 // ============================================================================

@@ -206,6 +206,19 @@ pub trait MessageQueue {
     }
 
     // -------------------------------------------------------------------------
+    // Fan-in observer (DAG git worker, diagnostics)
+    // -------------------------------------------------------------------------
+
+    /// Receive any message from any plane, returning the routing key string
+    /// and raw payload. Used by fan-in observers (e.g., DAG git worker) that
+    /// watch all traffic for projection.
+    ///
+    /// NATS: subscribes to `vlinder.>`. AMQP: binds to `vlinder.#`.
+    fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+        Err(QueueError::Timeout)
+    }
+
+    // -------------------------------------------------------------------------
     // Request-reply facades (ADR 092)
     // -------------------------------------------------------------------------
 

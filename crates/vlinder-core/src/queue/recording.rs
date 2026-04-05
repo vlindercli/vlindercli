@@ -570,6 +570,10 @@ impl MessageQueue for RecordingQueue {
     ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
         self.inner.receive_delete_agent()
     }
+
+    fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+        self.inner.receive_any()
+    }
 }
 
 impl RecordingQueue {

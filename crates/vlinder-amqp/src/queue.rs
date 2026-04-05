@@ -345,6 +345,12 @@ impl MessageQueue for AmqpQueue {
         Ok((key, msg, ack))
     }
 
+    fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+        let binding = "vlinder.#";
+        let (rk, payload, ack) = self.fetch_one(binding)?;
+        Ok((rk, payload, ack))
+    }
+
     fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
         let DataMessageKind::Complete {
             ref agent, harness, ..

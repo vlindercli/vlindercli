@@ -643,15 +643,16 @@ fn run_catalog_worker(config: &Config, shutdown: &AtomicBool) {
 #[allow(clippy::too_many_lines)]
 fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
     use crate::config::conversations_dir;
-    use vlinder_core::domain::DagWorker;
+    use vlinder_core::domain::{DagWorker, QueueError};
     use vlinder_git_dag::GitDagWorker;
     use vlinder_nats::{
         complete_parse_subject, delete_agent_parse_subject, deploy_agent_parse_subject,
         fork_parse_subject, invoke_parse_subject, promote_parse_subject, request_parse_subject,
-        response_parse_subject, NatsQueue,
+        response_parse_subject,
     };
 
-    let nats = NatsQueue::connect(&config.queue.nats_config()).expect("Failed to connect to NATS");
+    let queue = crate::queue_factory::from_config(config)
+        .expect("Failed to create queue for DAG git worker");
 
     let repo_path = conversations_dir();
     let mut git_worker = GitDagWorker::open(&repo_path, &config.distributed.registry_addr, None)
@@ -659,59 +660,10 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
 
     tracing::info!(git = %repo_path.display(), "DAG git worker ready");
 
-    let js = nats.jetstream().clone();
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-
-    let consumer = rt.block_on(async {
-        let stream = js
-            .get_stream("VLINDER")
-            .await
-            .expect("Failed to get VLINDER stream");
-
-        stream
-            .create_consumer(async_nats::jetstream::consumer::pull::Config {
-                name: Some("dag-git".to_string()),
-                filter_subject: "vlinder.>".to_string(),
-                ack_wait: std::time::Duration::from_secs(300),
-                inactive_threshold: std::time::Duration::from_secs(300),
-                ..Default::default()
-            })
-            .await
-            .expect("Failed to create dag-git consumer")
-    });
-
     while !shutdown.load(Ordering::Relaxed) {
-        let msg_result = rt.block_on(async {
-            use futures::StreamExt;
-            let mut messages = consumer
-                .fetch()
-                .max_messages(1)
-                .expires(std::time::Duration::from_millis(100))
-                .messages()
-                .await
-                .map_err(|e| format!("fetch failed: {e}"))?;
-
-            match messages.next().await {
-                Some(Ok(msg)) => Ok(Some(msg)),
-                Some(Err(e)) => Err(format!("message error: {e}")),
-                None => Ok(None),
-            }
-        });
-
-        match msg_result {
-            Ok(Some(msg)) => {
-                let subject = msg.subject.to_string();
-                let payload = msg.payload.to_vec();
-
-                let info = msg.info().ok();
-                let num_delivered = info.as_ref().map(|i| i.delivered);
-                let stream_seq = info.as_ref().map(|i| i.stream_sequence);
-                tracing::debug!(
-                    subject = subject.as_str(),
-                    stream_seq = ?stream_seq,
-                    num_delivered = ?num_delivered,
-                    "DAG git received NATS message",
-                );
+        match queue.receive_any() {
+            Ok((subject, payload, ack)) => {
+                tracing::debug!(subject = subject.as_str(), "DAG git received message",);
 
                 // Try data-plane subject first, fall back to legacy pipeline.
                 let created_at = chrono::Utc::now();
@@ -793,9 +745,9 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
                     );
                 }
 
-                let _ = rt.block_on(async { msg.ack().await });
+                let _ = ack();
             }
-            Ok(None) => {
+            Err(QueueError::Timeout) => {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             Err(e) => {
