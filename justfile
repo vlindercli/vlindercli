@@ -540,3 +540,8 @@ debug-integration-test path:
     find "$TEST_DIR" -maxdepth 4 -type f | head -50
     echo ""
     echo "=== End Diagnostic ==="
+
+# Subscribe to all vlinder messages on a local AMQP broker (LavinMQ/RabbitMQ).
+# Equivalent of `nats sub "vlinder.>"` for AMQP. Requires: pip3 install pika
+amqp-sub:
+    python3 scripts/amqp-sub.py
