@@ -17,6 +17,10 @@ use vlinder_nats::NatsQueue;
 pub fn from_config(config: &Config) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
     let queue: Arc<dyn MessageQueue + Send + Sync> = match config.queue.backend {
         QueueBackend::Nats => Arc::new(NatsQueue::connect(&config.queue.nats_config())?),
+        #[cfg(feature = "amqp")]
+        QueueBackend::Amqp => Arc::new(vlinder_amqp::AmqpQueue::connect(
+            &config.queue.amqp_config(),
+        )?),
         #[cfg(any(test, feature = "test-support"))]
         QueueBackend::Memory => Arc::new(vlinder_core::queue::InMemoryQueue::new()),
     };

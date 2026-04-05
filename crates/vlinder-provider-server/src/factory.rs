@@ -83,12 +83,17 @@ fn resolve_from_secrets(secret_url: &str) -> Option<NatsConfig> {
 pub enum QueueConfig {
     /// NATS with optional secret-store credential resolution.
     Nats(NatsConfig),
+    /// AMQP 0-9-1 (LavinMQ, RabbitMQ, Amazon MQ).
+    #[cfg(feature = "amqp")]
+    Amqp(vlinder_amqp::AmqpConfig),
 }
 
 /// Connect to a queue backend.
 pub fn connect(config: &QueueConfig) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
     match config {
         QueueConfig::Nats(nats) => Ok(Arc::new(NatsQueue::connect(nats)?)),
+        #[cfg(feature = "amqp")]
+        QueueConfig::Amqp(amqp) => Ok(Arc::new(vlinder_amqp::AmqpQueue::connect(amqp)?)),
     }
 }
 

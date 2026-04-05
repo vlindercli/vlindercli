@@ -24,6 +24,8 @@ use std::path::PathBuf;
 #[serde(rename_all = "lowercase")]
 pub enum QueueBackend {
     Nats,
+    #[cfg(feature = "amqp")]
+    Amqp,
     #[cfg(any(test, feature = "test-support"))]
     Memory,
 }
@@ -142,6 +144,9 @@ pub struct QueueConfig {
     /// Optional path to a NATS .creds file for authenticated connections (e.g. NGS).
     #[serde(default)]
     pub nats_creds: Option<String>,
+    /// AMQP connection URL (e.g. `amqp://guest:guest@localhost:5672/%2f`).
+    #[serde(default = "default_amqp_url")]
+    pub amqp_url: String,
 }
 
 impl QueueConfig {
@@ -156,10 +161,21 @@ impl QueueConfig {
             creds_content: None,
         }
     }
+
+    #[cfg(feature = "amqp")]
+    pub fn amqp_config(&self) -> vlinder_amqp::AmqpConfig {
+        vlinder_amqp::AmqpConfig {
+            url: self.amqp_url.clone(),
+        }
+    }
 }
 
 fn default_nats_url() -> String {
     "nats://localhost:4222".to_string()
+}
+
+fn default_amqp_url() -> String {
+    "amqp://guest:guest@localhost:5672/%2f".to_string()
 }
 
 fn default_registry_backend() -> RegistryBackend {
@@ -462,6 +478,7 @@ impl Config {
                 backend: QueueBackend::Memory,
                 nats_url: "nats://localhost:4222".to_string(),
                 nats_creds: None,
+                amqp_url: default_amqp_url(),
             },
             state: StateConfig {
                 backend: StateBackend::Memory,
@@ -503,6 +520,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("VLINDER_QUEUE_NATS_CREDS") {
             self.queue.nats_creds = Some(v);
+        }
+        if let Ok(v) = std::env::var("VLINDER_QUEUE_AMQP_URL") {
+            self.queue.amqp_url = v;
         }
 
         // State
@@ -617,6 +637,8 @@ impl Config {
 fn parse_queue_backend(s: &str) -> QueueBackend {
     match s {
         "nats" => QueueBackend::Nats,
+        #[cfg(feature = "amqp")]
+        "amqp" => QueueBackend::Amqp,
         #[cfg(any(test, feature = "test-support"))]
         "memory" => QueueBackend::Memory,
         other => {
