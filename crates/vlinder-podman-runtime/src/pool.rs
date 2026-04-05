@@ -208,10 +208,6 @@ impl ContainerRuntime {
         });
         let sidecar_target = RunTarget::Ref(&sidecar_image_ref);
 
-        let nats_url = format!(
-            "nats://host.containers.internal:{}",
-            extract_port(&self.config.nats_url, 4222)
-        );
         let registry_url = format!(
             "http://host.containers.internal:{}",
             extract_port(&self.config.registry_addr, 9090)
@@ -231,9 +227,9 @@ impl ContainerRuntime {
             .map(String::from)
             .unwrap_or_default();
 
-        let env_vars: Vec<(&str, String)> = vec![
+        let mut env_vars: Vec<(&str, String)> = vec![
             ("VLINDER_AGENT", name.to_string()),
-            ("VLINDER_NATS_URL", nats_url),
+            ("VLINDER_QUEUE_BACKEND", self.config.queue_backend.clone()),
             ("VLINDER_REGISTRY_URL", registry_url),
             ("VLINDER_STATE_URL", state_url),
             ("VLINDER_SECRET_URL", secret_url),
@@ -241,6 +237,16 @@ impl ContainerRuntime {
             ("VLINDER_IMAGE_REF", image_ref.as_str().to_string()),
             ("VLINDER_IMAGE_DIGEST", image_digest_str),
         ];
+
+        if self.config.queue_backend == "amqp" {
+            env_vars.push(("VLINDER_AMQP_URL", self.config.amqp_url.clone()));
+        } else {
+            let nats_url = format!(
+                "nats://host.containers.internal:{}",
+                extract_port(&self.config.nats_url, 4222)
+            );
+            env_vars.push(("VLINDER_NATS_URL", nats_url));
+        }
         let env_refs: Vec<(&str, &str)> = env_vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
         // 5. Add sidecar container (no volumes — sidecar doesn't need file mounts)
@@ -546,7 +552,9 @@ mod tests {
             image_policy: "mutable".to_string(),
             podman_socket: "disabled".to_string(),
             sidecar_image: "localhost/vlinder-podman-sidecar:latest".to_string(),
+            queue_backend: "nats".to_string(),
             nats_url: "nats://localhost:4222".to_string(),
+            amqp_url: "amqp://guest:guest@localhost:5672/%2f".to_string(),
             registry_addr: "http://127.0.0.1:9090".to_string(),
             state_addr: "http://127.0.0.1:9092".to_string(),
             secret_addr: "http://127.0.0.1:9093".to_string(),

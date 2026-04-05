@@ -4,17 +4,23 @@
 //! environment variables set by the pool when creating the container.
 //! No config file, no filesystem probing — pure 12-factor.
 
+/// Queue backend for the sidecar.
+pub enum QueueBackendConfig {
+    Nats { url: String },
+    Amqp { url: String },
+}
+
 /// Sidecar configuration parsed from environment variables.
 pub struct SidecarConfig {
     /// Agent name — used as the queue subscription key.
     pub agent: String,
-    /// NATS server URL (e.g. `nats://host.containers.internal:4222`).
-    pub nats_url: String,
+    /// Queue backend configuration.
+    pub queue: QueueBackendConfig,
     /// Registry gRPC address (e.g. `http://host.containers.internal:9090`).
     pub registry_url: String,
     /// State service gRPC address (e.g. `http://host.containers.internal:9092`).
     pub state_url: String,
-    /// Secret store gRPC address (optional — only needed for remote NATS).
+    /// Secret store gRPC address (optional).
     pub secret_url: Option<String>,
     /// Agent container port (default 8080, localhost inside the pod).
     pub container_port: u16,
@@ -34,10 +40,19 @@ impl SidecarConfig {
     /// `VLINDER_IMAGE_DIGEST`, `VLINDER_CONTAINER_ID`.
     pub fn from_env() -> Result<Self, String> {
         let agent = required_env("VLINDER_AGENT")?;
-        let nats_url = required_env("VLINDER_NATS_URL")?;
         let registry_url = required_env("VLINDER_REGISTRY_URL")?;
         let state_url = required_env("VLINDER_STATE_URL")?;
         let secret_url = std::env::var("VLINDER_SECRET_URL").ok();
+
+        let backend = std::env::var("VLINDER_QUEUE_BACKEND").unwrap_or_else(|_| "nats".to_string());
+        let queue = match backend.as_str() {
+            "amqp" => QueueBackendConfig::Amqp {
+                url: required_env("VLINDER_AMQP_URL")?,
+            },
+            _ => QueueBackendConfig::Nats {
+                url: required_env("VLINDER_NATS_URL")?,
+            },
+        };
 
         let container_port = std::env::var("VLINDER_CONTAINER_PORT")
             .ok()
@@ -50,7 +65,7 @@ impl SidecarConfig {
 
         Ok(Self {
             agent,
-            nats_url,
+            queue,
             registry_url,
             state_url,
             secret_url,

@@ -12,8 +12,12 @@ pub struct PodmanRuntimeConfig {
     pub podman_socket: String,
     /// OCI image ref for the sidecar container
     pub sidecar_image: String,
-    /// NATS URL for sidecar env vars
+    /// Queue backend: "nats" or "amqp"
+    pub queue_backend: String,
+    /// NATS URL for sidecar env vars (when backend = "nats")
     pub nats_url: String,
+    /// AMQP URL for sidecar env vars (when backend = "amqp")
+    pub amqp_url: String,
     /// Registry gRPC address for sidecar env vars
     pub registry_addr: String,
     /// State service gRPC address for sidecar env vars

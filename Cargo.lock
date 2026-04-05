@@ -5065,6 +5065,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq 2.12.1",
+ "vlinder-amqp",
  "vlinder-core",
  "vlinder-provider-server",
 ]
