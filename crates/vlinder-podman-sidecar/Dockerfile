@@ -20,11 +20,12 @@ WORKDIR /build
 # Copy workspace manifest
 COPY Cargo.toml ./
 
-# Copy real Cargo.toml for the 10 crates in the sidecar's dep chain
+# Copy real Cargo.toml for the 11 crates in the sidecar's dep chain
 COPY crates/vlinder-podman-sidecar/Cargo.toml crates/vlinder-podman-sidecar/
 COPY crates/vlinder-provider-server/Cargo.toml crates/vlinder-provider-server/
 COPY crates/vlinder-core/Cargo.toml crates/vlinder-core/
 COPY crates/vlinder-nats/Cargo.toml crates/vlinder-nats/
+COPY crates/vlinder-amqp/Cargo.toml crates/vlinder-amqp/
 COPY crates/vlinder-sql-registry/Cargo.toml crates/vlinder-sql-registry/
 COPY crates/vlinder-sql-state/Cargo.toml crates/vlinder-sql-state/
 COPY crates/vlinder-ollama/Cargo.toml crates/vlinder-ollama/
@@ -49,6 +50,7 @@ RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs
     mkdir -p crates/vlinder-infer-openrouter/src && echo "" > crates/vlinder-infer-openrouter/src/lib.rs && \
     mkdir -p crates/vlinder-sqlite-vec/src && echo "" > crates/vlinder-sqlite-vec/src/lib.rs && \
     mkdir -p crates/vlinder-sqlite-kv/src && echo "" > crates/vlinder-sqlite-kv/src/lib.rs && \
+    mkdir -p crates/vlinder-amqp/src && echo "" > crates/vlinder-amqp/src/lib.rs && \
     mkdir -p crates/vlinder-nats/src && echo "" > crates/vlinder-nats/src/lib.rs && \
     mkdir -p crates/vlinder-sql-state/src && echo "" > crates/vlinder-sql-state/src/lib.rs && \
     mkdir -p crates/vlinder-sql-registry/src && echo "" > crates/vlinder-sql-registry/src/lib.rs && \
@@ -81,6 +83,7 @@ COPY crates/vlinder-infer-openrouter/src crates/vlinder-infer-openrouter/src
 COPY crates/vlinder-sqlite-vec/src crates/vlinder-sqlite-vec/src
 COPY crates/vlinder-sqlite-kv/src crates/vlinder-sqlite-kv/src
 COPY crates/vlinder-nats/src crates/vlinder-nats/src
+COPY crates/vlinder-amqp/src crates/vlinder-amqp/src
 COPY crates/vlinder-sql-state/src crates/vlinder-sql-state/src
 COPY crates/vlinder-sql-registry/src crates/vlinder-sql-registry/src
 COPY crates/vlinder-provider-server/src crates/vlinder-provider-server/src
@@ -92,6 +95,7 @@ RUN touch crates/vlinder-core/src/lib.rs \
           crates/vlinder-infer-openrouter/src/lib.rs \
           crates/vlinder-sqlite-vec/src/lib.rs \
           crates/vlinder-sqlite-kv/src/lib.rs \
+          crates/vlinder-amqp/src/lib.rs \
           crates/vlinder-nats/src/lib.rs \
           crates/vlinder-sql-state/src/lib.rs \
           crates/vlinder-sql-registry/src/lib.rs \

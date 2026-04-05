@@ -83,7 +83,7 @@ fn resolve_from_secrets(secret_url: &str) -> Option<NatsConfig> {
 pub enum QueueConfig {
     /// NATS with optional secret-store credential resolution.
     Nats(NatsConfig),
-    /// AMQP 0-9-1 (LavinMQ, RabbitMQ, Amazon MQ).
+    /// AMQP 0-9-1 (`LavinMQ`, `RabbitMQ`, Amazon MQ).
     #[cfg(feature = "amqp")]
     Amqp(vlinder_amqp::AmqpConfig),
 }

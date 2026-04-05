@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
-vlinder-provider-server = { path = "../vlinder-provider-server" }
+vlinder-provider-server = { path = "../vlinder-provider-server", features = ["amqp"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

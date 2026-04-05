@@ -9,7 +9,7 @@ name = "vlinderd"
 path = "src/main.rs"
 
 [features]
-default = ["container", "lambda", "ollama", "openrouter", "sqlite-kv", "sqlite-vec"]
+default = ["container", "lambda", "ollama", "openrouter", "sqlite-kv", "sqlite-vec", "amqp"]
 amqp = ["dep:vlinder-amqp"]
 test-support = []
 vendored-openssl = ["openssl/vendored"]
