@@ -4,7 +4,9 @@
 //! Compatible with any AMQP 0-9-1 broker (`LavinMQ`, `RabbitMQ`, Amazon MQ).
 
 mod connect;
-#[allow(dead_code)]
+mod queue;
+#[allow(dead_code)] // parse/binding functions used by tests and receive path (step 3)
 mod routing;
 
 pub use connect::AmqpConfig;
+pub use queue::AmqpQueue;
