@@ -178,10 +178,15 @@ impl LambdaRuntime {
 
         let mut env_vars: Vec<(&str, &str)> = vec![
             ("VLINDER_AGENT", &agent.name),
-            ("VLINDER_NATS_URL", &self.config.nats_url),
+            ("VLINDER_QUEUE_BACKEND", &self.config.queue_backend),
             ("VLINDER_REGISTRY_URL", &self.config.registry_addr),
             ("VLINDER_STATE_URL", &self.config.state_url),
         ];
+        if self.config.queue_backend == "amqp" {
+            env_vars.push(("VLINDER_AMQP_URL", &self.config.amqp_url));
+        } else {
+            env_vars.push(("VLINDER_NATS_URL", &self.config.nats_url));
+        }
         if let Some(ref secret_url) = self.config.secret_url {
             env_vars.push(("VLINDER_SECRET_URL", secret_url));
         }
@@ -460,7 +465,9 @@ mod tests {
             region: "us-east-1".to_string(),
             memory_mb: 512,
             timeout_secs: 300,
+            queue_backend: "nats".to_string(),
             nats_url: "nats://localhost:4222".to_string(),
+            amqp_url: "amqp://guest:guest@localhost:5672/%2f".to_string(),
             state_url: "http://127.0.0.1:9092".to_string(),
             secret_url: None,
             vpc_subnet_ids: vec![],

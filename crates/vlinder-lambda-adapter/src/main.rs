@@ -48,7 +48,6 @@ fn main() {
         event = "adapter.config",
         agent = %config.agent,
         runtime_api = %config.runtime_api,
-        nats_url = %config.nats_url,
         registry_url = %config.registry_url,
         state_url = %config.state_url,
         agent_port = config.agent_port,
@@ -57,8 +56,17 @@ fn main() {
 
     register_extension(&config.runtime_api);
 
-    let nats_config = factory::resolve_nats_config(config.secret_url.as_deref(), &config.nats_url);
-    let queue = match factory::connect(&factory::QueueConfig::Nats(nats_config)) {
+    let queue = match &config.queue {
+        config::QueueBackendConfig::Nats { url } => {
+            let nats_config = factory::resolve_nats_config(config.secret_url.as_deref(), url);
+            factory::connect(&factory::QueueConfig::Nats(nats_config))
+        }
+        config::QueueBackendConfig::Amqp { url } => {
+            let amqp_config = vlinder_amqp::AmqpConfig { url: url.clone() };
+            factory::connect(&factory::QueueConfig::Amqp(amqp_config))
+        }
+    };
+    let queue = match queue {
         Ok(q) => q,
         Err(e) => {
             tracing::error!(error = %e, "Failed to connect to queue");

@@ -429,12 +429,22 @@ fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
     let queue = crate::queue_factory::from_config(config)
         .expect("Failed to create queue for Lambda runtime");
 
+    let queue_backend = match config.queue.backend {
+        crate::config::QueueBackend::Nats => "nats",
+        #[cfg(feature = "amqp")]
+        crate::config::QueueBackend::Amqp => "amqp",
+        #[cfg(any(test, feature = "test-support"))]
+        crate::config::QueueBackend::Memory => "nats",
+    };
+
     let lambda_config = LambdaRuntimeConfig {
         registry_addr: config.distributed.registry_addr.clone(),
         region: config.runtime.lambda_region.clone(),
         memory_mb: config.runtime.lambda_memory_mb,
         timeout_secs: config.runtime.lambda_timeout_secs,
+        queue_backend: queue_backend.to_string(),
         nats_url: config.queue.nats_url.clone(),
+        amqp_url: config.queue.amqp_url.clone(),
         state_url: config.distributed.state_addr.clone(),
         secret_url: if config.distributed.secret_addr.is_empty() {
             None

@@ -18,8 +18,12 @@ pub struct LambdaRuntimeConfig {
     pub memory_mb: i32,
     /// Execution timeout for Lambda functions in seconds.
     pub timeout_secs: i32,
-    /// NATS URL for the lambda adapter to connect back to the platform.
+    /// Queue backend: "nats" or "amqp"
+    pub queue_backend: String,
+    /// NATS URL for the lambda adapter (when backend = "nats").
     pub nats_url: String,
+    /// AMQP URL for the lambda adapter (when backend = "amqp").
+    pub amqp_url: String,
     /// State service gRPC address for the lambda adapter.
     pub state_url: String,
     /// Secret store gRPC address (optional) for the lambda adapter.

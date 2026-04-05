@@ -4,14 +4,20 @@
 //! `/opt/extensions/`. All configuration comes from environment variables
 //! set by the daemon when creating the Lambda function.
 
+/// Queue backend for the adapter.
+pub enum QueueBackendConfig {
+    Nats { url: String },
+    Amqp { url: String },
+}
+
 /// Adapter configuration parsed from environment variables.
 pub struct AdapterConfig {
     /// Lambda Runtime API endpoint (set by Lambda service, e.g. `127.0.0.1:9001`).
     pub runtime_api: String,
     /// Agent name — used for queue subscription and registry lookup.
     pub agent: String,
-    /// NATS server URL.
-    pub nats_url: String,
+    /// Queue backend configuration.
+    pub queue: QueueBackendConfig,
     /// Registry gRPC address.
     pub registry_url: String,
     /// State service gRPC address.
@@ -30,10 +36,19 @@ impl AdapterConfig {
     pub fn from_env() -> Result<Self, String> {
         let runtime_api = required_env("AWS_LAMBDA_RUNTIME_API")?;
         let agent = required_env("VLINDER_AGENT")?;
-        let nats_url = required_env("VLINDER_NATS_URL")?;
         let registry_url = required_env("VLINDER_REGISTRY_URL")?;
         let state_url = required_env("VLINDER_STATE_URL")?;
         let secret_url = std::env::var("VLINDER_SECRET_URL").ok();
+
+        let backend = std::env::var("VLINDER_QUEUE_BACKEND").unwrap_or_else(|_| "nats".to_string());
+        let queue = match backend.as_str() {
+            "amqp" => QueueBackendConfig::Amqp {
+                url: required_env("VLINDER_AMQP_URL")?,
+            },
+            _ => QueueBackendConfig::Nats {
+                url: required_env("VLINDER_NATS_URL")?,
+            },
+        };
 
         let agent_port = std::env::var("VLINDER_AGENT_PORT")
             .ok()
@@ -43,7 +58,7 @@ impl AdapterConfig {
         Ok(Self {
             runtime_api,
             agent,
-            nats_url,
+            queue,
             registry_url,
             state_url,
             secret_url,
