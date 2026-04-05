@@ -362,14 +362,19 @@ pub fn agent_routing_key(agent_id: &ResourceId) -> AgentName {
     AgentName::new(name)
 }
 
-// --- Kani proofs: routing contract verification (ADR 125) ---
+// --- Kani proofs: routing contract verification (ADR 125, ADR 126) ---
 //
 // These proofs verify that the MessageQueue routing contract — receive methods
 // must return only messages matching the requested filter parameters — is:
-//   1. Satisfiable by subject-routed backends (NATS-like)
+//   1. Satisfiable by subject-routed backends (NATS subjects, AMQP topic exchanges)
 //   2. Violated by unfiltered backends (SQS-like)
 //
-// This is the formal evidence for ruling out Amazon SQS as a queue backend.
+// NATS and AMQP 0-9-1 topic exchanges both provide server-side filtering on
+// routing keys/subjects. The FilteredQueue model covers both — they are the
+// same class of backend from the routing contract's perspective.
+//
+// This is the formal evidence for ruling out SQS (ADR 125) and selecting
+// AMQP 0-9-1 as the managed alternative (ADR 126).
 
 #[cfg(kani)]
 mod routing_contract_proofs {
@@ -401,8 +406,8 @@ mod routing_contract_proofs {
         }
     }
 
-    /// Model: subject-routed queue (NATS-like).
-    /// Server-side filtering — only returns messages matching the subscription.
+    /// Model: subject-routed queue (NATS subjects, AMQP topic exchanges).
+    /// Server-side filtering — only returns messages matching the routing key.
     struct FilteredQueue {
         keys: [DataRoutingKey; 2],
         msgs: [CompleteMessage; 2],
@@ -526,7 +531,7 @@ mod routing_contract_proofs {
         }
     }
 
-    /// PROOF: A subject-routed queue always satisfies the routing contract.
+    /// PROOF: A subject-routed queue (NATS or AMQP topic exchange) satisfies the contract.
     #[kani::proof]
     fn filtered_queue_satisfies_routing_contract() {
         let q = FilteredQueue {
