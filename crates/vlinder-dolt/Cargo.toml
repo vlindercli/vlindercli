@@ -1,0 +1,19 @@
+[package]
+name = "vlinder-dolt"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+vlinder-core = { path = "../vlinder-core" }
+bytes = "1"
+fallible-iterator = "0.2"
+postgres-protocol = "0.6"
+scram = "0.6"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+vlinder-nats = { path = "../vlinder-nats" }
+bytes = "1"
+postgres-protocol = "0.6"

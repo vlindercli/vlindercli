@@ -99,7 +99,7 @@ pub use provider::{
 // Storage (config types only — implementations in provider crates)
 // ============================================================================
 
-pub use storage::{ObjectStorageType, VectorStorageType};
+pub use storage::{ObjectStorageType, SqlStorageType, VectorStorageType};
 
 // ============================================================================
 // Resource ID (registry key)

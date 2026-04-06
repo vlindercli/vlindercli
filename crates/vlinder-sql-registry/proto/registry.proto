@@ -108,6 +108,7 @@ enum ServiceType {
   SERVICE_TYPE_EMBED = 2;
   SERVICE_TYPE_KV = 3;
   SERVICE_TYPE_VEC = 4;
+  SERVICE_TYPE_SQL = 5;
 }
 
 enum Provider {
