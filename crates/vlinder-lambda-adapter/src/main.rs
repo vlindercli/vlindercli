@@ -32,6 +32,9 @@ use adapter::build_lambda_diagnostics;
 use config::AdapterConfig;
 
 fn main() {
+    // Install rustls crypto provider before any TLS connection (AMQPS).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let filter = std::env::var("RUST_LOG")
         .unwrap_or_else(|_| "warn,vlinder_lambda_adapter=info".to_string());
     tracing_subscriber::fmt().with_env_filter(filter).init();
