@@ -239,7 +239,8 @@ impl ContainerRuntime {
         ];
 
         if self.config.queue_backend == "amqp" {
-            env_vars.push(("VLINDER_AMQP_URL", self.config.amqp_url.clone()));
+            let amqp_url = rewrite_host_for_container(&self.config.amqp_url);
+            env_vars.push(("VLINDER_AMQP_URL", amqp_url));
         } else {
             let nats_url = format!(
                 "nats://host.containers.internal:{}",
@@ -535,6 +536,13 @@ impl Runtime for ContainerRuntime {
 }
 
 /// Extract port number from a URL string, with a default fallback.
+/// Rewrite localhost/127.0.0.1 in a URL to host.containers.internal
+/// so containers inside a pod can reach host services.
+fn rewrite_host_for_container(url: &str) -> String {
+    url.replace("localhost", "host.containers.internal")
+        .replace("127.0.0.1", "host.containers.internal")
+}
+
 fn extract_port(url: &str, default: u16) -> u16 {
     url.rsplit(':')
         .next()
