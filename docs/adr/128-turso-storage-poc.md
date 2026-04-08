@@ -61,7 +61,16 @@ Neither workaround addresses the actual gap. We followed up referencing the blog
 
 ### Self-hosting libsql-server
 
-- Not an option at the project's current stage. Operating a database server (durability, monitoring, backup, restart handling) is too much ongoing work for the value.
+Operating a database server (durability, monitoring, backup, restart handling, per-session lifecycle) is too much ongoing work at the project's current stage. The deferral reason is operational burden, not technical impossibility — the technical path is concrete:
+
+- Run `libsql-server` with bottomless replication enabled (`--enable-bottomless-replication`). Bottomless handles continuous WAL shipping to S3 and organizes archived frames by generation, with the addressing exposed via `bottomless-cli` (list/restore/remove generations). No replication code to write.
+- Vlinder would build the integration glue:
+  - A sidecar Hrana HTTP proxy at `sqlite.vlinder.local` that forwards requests across the queue
+  - A worker that talks to a local `libsql-server`, captures `replication_index` from each Hrana execute response, and returns it with the response message
+  - Per-session lifecycle for `libsql-server` (one process per branch, or one process with multiple namespaces)
+  - Fork command integration: use bottomless restore to materialize a historical state at a captured `(generation, frame_no)`, then point a new `libsql-server` instance at the restored file
+
+This is "use libsql-server and bottomless as components, write the Vlinder integration on top." Not rewriting any storage layer, not hand-rolling WAL shipping. The cost is owning the operational footprint of running databases — which is what makes the deferral right at this stage, not the technical path itself.
 
 ## Why deferred
 
