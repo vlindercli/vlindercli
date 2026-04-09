@@ -2,158 +2,153 @@
 
 **Status:** Draft
 
-Originally scoped as a content-addressed S3 storage worker (Phase 2 of ADR 127). The design was implemented and validated end-to-end, then superseded by a fundamentally simpler approach discovered during the PoC: S3 Files + S3 versioning.
+Originally scoped as a content-addressed S3 storage worker (Phase 2 of ADR 127). Evolved through three phases of PoC validation. The current direction is S3 Files with per-branch access points — no custom storage protocol, no content addressing, no sidecar-driven copy.
 
 ## Context
 
 Vlinder's object storage today is `vlinder-sqlite-kv`. Each session has its own pair of SQLite files: `objects.db` (flat KV for current state) and `state.db` (content-addressed values/snapshots/state_commits for time travel, per ADR 055). The DAG, fork, and promote semantics work today and are exercised end-to-end by the todoapp test script.
 
-This ADR tracks the evolution of the S3-backed production storage design through three phases: the original content-addressed worker, its implementation and e2e validation, and the S3 Files discovery that superseded it.
+This ADR tracks the evolution of the S3-backed production storage design through three phases.
 
 ## Phase 1: Content-addressed S3 worker (implemented, superseded)
 
 A `vlinder-s3` crate implementing a git-like content-addressed model: blobs, trees, commits, with SHA-256 hashing. The agent talked HTTP to `s3.vlinder.local`, the storage worker resolved requests through a commit chain, and state traveled on the message envelope (`msg.state`).
 
-**What was built** (12 stacked-diff branches, `s3/01-skeleton` through `s3/12-vlinderd-aws-wiring`):
+**What was built** (12 stacked-diff branches, `s3/01-skeleton` through `s3/12-vlinderd-aws-wiring`). E2e validated against real S3 with the todoapp. Fork worked via envelope-based state. 147 unit tests.
 
-- Object model: `Blob`, `Tree`, `Commit`, `ObjectHash` types with deterministic serialization
-- `S3Client` trait + `InMemoryS3Client` test fake + `AwsS3Client` backed by `aws-sdk-s3`
-- `S3ClientFactory` for per-agent-per-bucket client caching
-- `ObjectStore` and `S3Storage` with per-agent key prefixes parsed from `object_storage` URI
-- `S3Worker` consuming the queue with `Registry` lookup per request
-- `WireResponse` envelope (ADR 118) matching the ollama/openrouter pattern
-- Provider-server host registration with dispatch fix for the `ObjectStorageType::S3` variant
-- vlinderd supervisor wiring with `WorkerRole::StorageObjectS3`
-- Sidecar hostname injection (`s3.vlinder.local`)
+**Why superseded:** The agent needed Vlinder-specific HTTP client code. Every read/write was a queue round-trip. The content-addressed layer duplicated what S3 versioning already provides.
 
-**What was validated:**
+## Phase 2: S3 versioning + boto3 copy (validated, superseded)
 
-- E2e against real S3 (todoapp: add items, list, read back) ✓
-- Fork via envelope-based state (`msg.state` carries the commit hash) ✓
-- Per-agent bucket isolation via `object_storage = "s3://bucket/prefix"` ✓
-- 147 unit tests across the crate ✓
+Discovered during the S3 Files PoC: S3 versioning (required by S3 Files) returns a `VersionId` on every `put_object`. This IS the per-invocation identifier — the same thing we spent days chasing through Turso's `replication_index` (ADR 128).
 
-**Why it was superseded:**
+The model: sidecar does `put_object` (commit) and `download_file(VersionId)` (checkout) around each invocation. Agent writes to `/tmp` or a mount. Manifest tracks multi-file state.
 
-The content-addressed HTTP worker added a custom storage protocol between the agent and the platform. The agent had to use `s3.vlinder.local` HTTP endpoints with specific request/response shapes. This meant:
+**What was validated** (s3-files-poc repo):
 
-- Agent authors needed Vlinder-specific client code (`kv_get`, `kv_put`)
-- Every read/write was an HTTP round-trip through the queue
-- The content-addressed layer (blobs, trees, commits) duplicated what S3 versioning already provides
-- Fork required envelope-based state threading — correct but complex
+1. **SQLite (OLTP):** seed, read, write, checkpoint, commit/checkout via VersionId. Time travel and fork work.
+2. **S3 versioning as commit hash:** Single key, many versions. `VersionId` is the commit hash. No snapshot prefix needed.
+3. **DuckDB (OLAP):** Aggregation queries, inserts, checkpoint, commit/checkout. Time travel validated.
+4. **Multi-file workspace:** Manifest model — walk workspace, `put_object` each file, collect `(path, VersionId)` into manifest. Manifest's `VersionId` is the commit hash.
 
-## Phase 2: S3 Files + S3 versioning (validated, current direction)
+**Why superseded:** The sidecar copied files on every commit/checkout. For small files this was fine; for large files it scaled linearly with size. Branching required content addressing for deduplication, which reintroduced the complexity we were trying to avoid. And S3 Files was already syncing the files to S3 — the sidecar was reimplementing what the mount does for free.
 
-AWS announced S3 Files (April 2026): NFS mounts backed by S3 buckets, available on Lambda/EC2/ECS/EKS. This changes the storage model fundamentally.
+## Phase 3: S3 Files with per-branch access points (current direction)
 
 ### The insight
 
-S3 Files requires bucket versioning. Every `put_object` returns a `VersionId`. The `VersionId` IS the per-invocation identifier — the same thing we spent days chasing through Turso's `replication_index` (ADR 128) and bottomless's `(generation, frame_number)`. AWS hands it to you as a response header on every PUT.
+S3 Files access points have a configurable `root_directory`. Lambda's `file-system-configs` can be updated via `update-function-configuration`. Switching an access point takes ~7 seconds.
+
+This means each branch can be a separate S3 prefix, each with its own access point. The mount always shows the active branch's files. Branch switching = access point switch. No file copy needed for checkout.
 
 ### How it works
 
-**Agent side:** The agent mounts its storage as a local directory. It opens SQLite, reads JSON, writes files — normal file I/O. No SDK, no HTTP client, no Vlinder-specific code.
-
-**Sidecar side (commit/checkout around each invocation):**
-
+**S3 layout:**
 ```
-Invoke arrives (msg.state = parent VersionId)
-    │
-    ▼ CHECKOUT: s3.download_file(key, mount_path, VersionId=parent)
-    │
-    ▼ DISPATCH: POST /invoke to agent container
-    │
-    ▼ Agent runs, reads/writes files on the mount
-    │
-    ▼ COMMIT: s3.put_object(key, mount_path) → new VersionId
-    │
-Complete (response.state = new VersionId)
+s3://bucket/agent-prefix/
+    branches/
+        main/                 ← access point A, root=/branches/main
+            state.db
+            config.json
+        fork-1/               ← access point B, root=/branches/fork-1
+            state.db
+            config.json
 ```
 
-**Fork:** `checkout(fork_point_version_id)` before the forked invocation. The agent doesn't know a fork happened.
+**Same branch (common case, zero overhead):**
+1. Invoke arrives
+2. Agent reads/writes on mount — files are at `/mnt/s3files/state.db`
+3. S3 Files auto-syncs writes to `branches/main/state.db` in S3
+4. Complete. No sidecar work for commit — S3 Files IS the commit.
 
-### What was validated (s3-files-poc repo)
+**Branch switch (fork, ~7 seconds):**
+1. `CopyObject` files from `branches/main/*` to `branches/fork-1/*` (server-side, same bucket)
+2. Create access point for `fork-1` with `root_directory=/branches/fork-1`
+3. `update-function-configuration` to point at the new access point (~7s)
+4. Next invocation sees fork-1's files on the mount
 
-Four rounds of validation on Lambda with an S3 Files mount in eu-west-1:
+**Agent side:** Opens `/mnt/s3files/state.db`. Doesn't know which branch is mounted.
 
-1. **SQLite (OLTP):** `sqlite3.connect("/mnt/s3files/workspace/state.db")` — seed, read, write, checkpoint, commit via `put_object`, checkout via `download_file(VersionId)`. Time travel and fork both work.
+### S3 Files sync characteristics (measured)
 
-2. **S3 versioning as commit hash:** Single key, many versions. `VersionId` from `put_object` is the commit hash. No snapshot prefix, no copy operations. Checkout downloads a specific version.
+- **Sync direction:** Mount → S3 is "within minutes" (AWS documentation). Measured ~65 seconds in eu-west-1.
+- **Sync delay is constant:** 1KB and 10MB both sync in ~65 seconds. Not proportional to file size. It's a fixed-interval background job.
+- **Not triggered by close/fsync:** `close()`, `fsync()`, `fsync(dir)` — none trigger immediate sync. The sync runs on its own schedule.
+- **NFS close-to-open consistency:** Writes by one Lambda invocation are visible to subsequent invocations on the same mount immediately. The ~65s delay is only for the mount-to-S3-API sync.
+- **S3 Files creates new versions:** Auto-synced files appear as new S3 object versions. Delete markers for deleted files. Versioning is built in.
 
-3. **DuckDB (OLAP):** Single-file analytical database on the same mount. Aggregation queries (`GROUP BY`, `SUM`), inserts, checkpoint, commit/checkout all work. Time travel validated.
+### Why this is the right model
 
-4. **Multi-file workspace:** Manifest model for directories of files. Commit walks the workspace, `put_object` each file, collects `(path, VersionId)` pairs into a manifest. Manifest's `VersionId` is the commit hash. Checkout restores exact state including file additions and deletions across timelines.
+| Concern | Phase 1 (HTTP worker) | Phase 2 (boto3 copy) | Phase 3 (S3 Files + access points) |
+|---|---|---|---|
+| Agent persistence API | HTTP to `s3.vlinder.local` | File I/O + sidecar copies | File I/O, no sidecar involvement |
+| Agent SDK | Required | None | None |
+| Commit mechanism | Commit chain (blobs/trees) | boto3 `put_object` → VersionId | S3 Files auto-sync (~65s) |
+| Checkout mechanism | Envelope state threading | boto3 `download_file(VersionId)` | Access point switch (~7s) |
+| Fork | Envelope state threading | Copy + new VersionId | `CopyObject` + new access point |
+| Per-write overhead | HTTP round-trip + 4 S3 PUTs | Direct file I/O | Direct file I/O |
+| Commit overhead | None (inline) | boto3 upload per file | None (auto-sync) |
+| Branch switch cost | None (envelope carries state) | boto3 download per file | ~7s access point switch |
+| Storage deduplication | Content-addressed (SHA-256) | None (VersionId per PUT) | None (copy per branch) |
+| Supported formats | Opaque bytes via HTTP | Any file | Any file |
+| Infra | Storage worker process | `/tmp` only | S3 Files (VPC, mount target, access points) |
 
-### Key findings
-
-- **S3 Files sync is not instant (~1 min).** Commit/checkout must happen inside the Lambda via boto3, not from an external process via `aws s3 cp`. The sidecar is the natural place for this.
-- **Lambda in VPC needs an S3 gateway endpoint.** Without it, boto3 calls to S3 hang.
-- **SQLite defaults to `journal_mode=delete` on S3 Files.** Fine for single-writer agent workloads.
-- **DuckDB requires bundling in the Lambda zip (~38MB).** Runtime pip install too slow over VPC.
-
-## Decision
-
-The production S3 storage backend for Vlinder will use S3 Files + S3 versioning, not the content-addressed HTTP worker.
-
-### What this means
-
-| Concern | Content-addressed worker (Phase 1) | S3 Files (Phase 2) |
-|---|---|---|
-| Agent persistence API | HTTP to `s3.vlinder.local` | Normal file I/O on mounted directory |
-| Agent SDK requirement | Yes (kv_get/kv_put) | None |
-| Time travel mechanism | Commit chain (blobs/trees/commits) | S3 `VersionId` |
-| Fork mechanism | Envelope state threading | `checkout(VersionId)` before invocation |
-| Storage worker | `S3Worker` consuming queue | None — sidecar does commit/checkout |
-| Per-write overhead | HTTP round-trip + hash + 4 S3 PUTs | Direct file I/O (NFS) |
-| Supported formats | Opaque bytes via HTTP API | Any file: SQLite, DuckDB, Parquet, JSON, anything |
-| Content addressing | Custom (SHA-256 blobs/trees) | S3 versioning (AWS-managed) |
-| Deduplication | Automatic via content addressing | S3 versioning (per-version storage) |
-
-### What stays from Phase 1
+### What stays
 
 - Per-agent storage URI: `object_storage = "s3://bucket/prefix"` in the agent manifest
-- The DAG tracking which state (now `VersionId` instead of commit hash) to restore from
+- The DAG tracking state per invocation
 - `vlinder-sqlite-kv` as the local/offline backend
-- Session-plane fork/promote semantics (unchanged — just the state identifier format changes)
-- The `ObjectStorageType::S3` variant and the provider-server dispatch fix
+- Session-plane fork/promote semantics
+- Agent code writes `sqlite3.connect("/mnt/storage/state.db")` and gets persistence, time travel, and fork
 
 ### What's removed
 
-- The `vlinder-s3` crate (blobs, trees, commits, ObjectStore, RefStore, S3Storage, S3Worker, S3ClientFactory, AwsS3Client)
-- The `s3.vlinder.local` provider hostname and WireResponse storage envelope
-- The storage worker process (`WorkerRole::StorageObjectS3`)
-- The `http` dep, `sha2`/`hex` for content addressing, `md-5` for ETag computation
-
-The `s3/01-skeleton` through `s3/12-vlinderd-aws-wiring` branches remain unmerged as reference for the wire path design decisions.
+- The `vlinder-s3` crate (blobs, trees, commits, ObjectStore, S3Worker, etc.)
+- The `s3.vlinder.local` provider hostname
+- The storage worker process
+- Sidecar-driven commit/checkout (the sidecar doesn't copy files anymore)
+- Manifest model (no manifests — the branch folder IS the state)
 
 ### What's new (to be implemented)
 
-- S3 Files mount configuration in the Lambda adapter and Podman runtime
-- Sidecar commit/checkout logic (~20 lines: checkpoint + `put_object` / `download_file`)
-- `VersionId` as the state identifier on DAG nodes (replaces the commit hash string)
-- Manifest model for agents with multiple files
+- Per-branch S3 prefix layout under the agent's storage path
+- Per-branch S3 Files access point creation
+- Lambda `update-function-configuration` for branch switching
+- `CopyObject` for fork (copy branch prefix to new prefix)
+- S3 Files infrastructure in the Lambda runtime (VPC, mount target, security group, S3 gateway endpoint)
 
 ## Agent-author burden vs platform internals
 
 | Agent author must know | Platform concern (hidden) |
 |---|---|
-| Their files live at a mount path | S3 Files mount setup |
-| Any file-based storage works (SQLite, DuckDB, JSON, etc.) | Commit/checkout lifecycle |
-| Invocation structure controls fork granularity | `VersionId` tracking on the DAG |
-| | S3 versioning, lifecycle policies |
-| | Mount target provisioning, VPC endpoints |
-| | Checkpoint before commit (for databases) |
-
-The agent author writes `sqlite3.connect("/mnt/storage/state.db")` and gets persistence, time travel, and fork — without knowing any of it exists.
+| Their files live at a mount path | S3 Files mount, access points |
+| Any file-based storage works (SQLite, DuckDB, JSON, etc.) | Per-branch prefixes in S3 |
+| Invocation structure controls fork granularity | Access point switching on branch change |
+| | `CopyObject` for fork |
+| | VPC, mount targets, security groups |
 
 ## Local development
 
-- **Lambda (production):** S3 Files mount, real S3, sidecar does commit/checkout
-- **Podman (local):** `vlinder-sqlite-kv` continues to serve this role. The agent code is the same — it opens files at a mount path. The difference is what provides the mount: S3 Files in production, a local directory volume in Podman.
+- **Lambda (production):** S3 Files mount with per-branch access points
+- **Podman (local):** `vlinder-sqlite-kv` continues to serve this role. Agent code is identical — it opens files at a mount path.
+
+## Storage cost
+
+Each branch has a full copy of every file. A 100MB database across 5 branches = 500MB. At $0.023/GB/month = $0.01/month. S3 storage is cheap enough that per-branch duplication is acceptable without content addressing.
+
+For agents with very large state (GB+) and many branches, S3 lifecycle policies can expire old branch prefixes. The DAG knows which branches are reachable.
+
+## Open questions
+
+- **Access point creation latency.** Creating an access point takes a few seconds. For fork operations, this is a one-time cost. Need to measure in production.
+- **Access point limits.** How many access points per file system? If there's a limit, branches need to be cleaned up.
+- **Sync timing variability.** We measured ~65s in eu-west-1. Does this vary by region, file size pattern, or bucket activity? AWS documents "within minutes."
+- **Cold start with mount.** Lambda cold starts with VPC + S3 Files mount take several seconds. Warm invocations are fast. Acceptable for agent workloads gated by LLM latency.
+- **S3 Express One Zone.** Faster latency but doesn't support versioning. Not compatible with this model. Revisit if Express adds versioning.
+- **Cloud portability.** Phase 2 (boto3 copy + VersionId) works on any cloud with versioned object storage. Phase 3 (S3 Files + access points) is AWS-specific. Phase 2 remains the portable fallback.
 
 ## What's NOT in this ADR (deferred)
 
 - **S3 Vectors**: vector storage is its own concern
-- **Incremental snapshots**: for agents with large databases that change few rows per invocation, uploading the full `.db` on every commit is wasteful. WAL-level shipping (like bottomless) or rsync-style diffs could help. Deferred until workload data shows it's needed.
-- **Multi-region**: S3 Cross-Region Replication + S3 Files mount targets per region. The architecture supports it; implementation is separate.
-- **Version lifecycle**: S3 lifecycle policies for expiring unreachable versions. The DAG knows which versions are reachable.
+- **Multi-region**: S3 Cross-Region Replication + mount targets per region. Architecture supports it; implementation is separate.
+- **Version lifecycle**: S3 lifecycle policies for expiring unreachable branches.
