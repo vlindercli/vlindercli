@@ -187,12 +187,50 @@ For invocations that didn't change any files (read-only): the sidecar stat-diffs
 
 Each branch has a full copy of every file. S3 versioning retains synced versions within each branch. At $0.023/GB/month, per-branch duplication is cheap for typical agent workloads (KB–MB databases). S3 lifecycle policies can expire old branches and old versions within branches.
 
+## Scale characteristics
+
+### AWS limits (from documentation)
+
+| Resource | Limit | Notes |
+|---|---|---|
+| Access points per file system | 10,000 (soft, increasable) | One per branch across all sessions |
+| Mount targets per AZ | 1 | Shared across all Lambdas in that AZ |
+| Concurrent Lambda mounts | Thousands | Each session's Lambda mounts independently |
+| File system write throughput | 5 GiB/s | Shared across all sessions on the file system |
+| File system read IOPS | 250K | Shared |
+| File system write IOPS | 50K | Shared |
+| S3 API rate | 5,500 GET/s, 3,500 PUT/s per prefix | Each branch prefix gets its own rate allocation |
+
+### Scaling model
+
+Sessions are independent — each session runs on its own Lambda invocation, mounts its own branch via an access point, and doesn't share files with other sessions. 1000 concurrent users = 1000 concurrent Lambda invocations = zero contention at the application level.
+
+Vlinder's model is one invocation at a time per session per branch. Concurrent scaling is across sessions, not within a session.
+
+### Natural sharding: one file system per agent
+
+All sessions of the same agent share a file system. Different agents get different file systems. This gives each agent its own throughput budget and its own 10,000 access point pool.
+
+At that granularity: 100 agents × 10 sessions × 5 branches = 5,000 access points per agent. Well within the 10,000 limit.
+
+### Throughput
+
+For typical agent workloads (small SQLite writes gated by LLM latency of hundreds of milliseconds), the 5 GiB/s write throughput is orders of magnitude more than needed. For data-heavy agents processing large datasets concurrently across many sessions, throughput could become a bottleneck — addressable by spreading across multiple file systems.
+
+### Serialization point
+
+`update-function-configuration` on branch switch (~7s) is per-Lambda-function. If one Lambda function serves multiple sessions (current model: one Lambda per agent), branch switches on different sessions of the same agent need sequencing. Alternative: one Lambda per session (more isolation, more functions). This is a deployment model decision — deferred until load testing shows whether it matters.
+
+### Validation plan
+
+Build the integration, then benchmark with ab or locust. Pound the setup with concurrent sessions to validate throughput, access point switching under load, and NFS consistency across concurrent Lambda instances.
+
 ## Open questions
 
-- **Access point limits.** How many per file system? Branches need cleanup if capped.
 - **Manifest capture timing.** The ~65s sync wait between invocations. For conversational agents (messages minutes apart), invisible. For rapid-fire automation, could be a bottleneck. Measure in real workloads.
-- **Cold start with mount.** Lambda cold starts with VPC + S3 Files mount. Acceptable for LLM-gated workloads.
+- **Cold start with mount.** Lambda cold starts with VPC + S3 Files mount. Acceptable for LLM-gated workloads. Measure.
 - **Cloud portability.** S3 Files + access points is AWS-specific. Phase 2 (boto3 copy + VersionId) remains the portable fallback for Azure/GCP.
+- **One Lambda per agent vs per session.** Affects branch switch serialization. Deferred until load testing.
 
 ## What's NOT in this ADR (deferred)
 
@@ -200,3 +238,4 @@ Each branch has a full copy of every file. S3 versioning retains synced versions
 - **Multi-region**: S3 Cross-Region Replication + mount targets per region
 - **Version lifecycle**: S3 lifecycle policies for expiring unreachable branches and old versions
 - **Content-addressed deduplication**: for agents with many branches sharing identical large files. Deferred until storage cost data shows it's needed.
+- **Load testing**: benchmark with concurrent sessions to validate throughput and access point switching under load.
