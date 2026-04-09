@@ -79,8 +79,13 @@ Fork command targets invocation N
     ▼  Read manifest from invocation N's DAG node
     │  (has {state.db: "ver-abc", config.json: "ver-def"})
     │
+    ▼  Create directory markers with POSIX metadata:
+    │    PUT branches/fork-1/workspace/  (empty, metadata below)
+    │
     ▼  CopyObject each file at its historical VersionId
     │  from branches/main/ to branches/fork-1/
+    │  with POSIX metadata: file-owner=1000, file-group=1000,
+    │                        file-permissions=0100644
     │  (server-side copy, same bucket)
     │
     ▼  Create access point for fork-1
@@ -97,6 +102,51 @@ Fork command targets invocation N
 **Branch switch (resume a different existing branch):**
 
 `update-function-configuration` to the target branch's access point (~7s). No file copies — the mount shows the target branch's files directly.
+
+### POSIX metadata requirement (validated the hard way)
+
+S3 Files maps POSIX file permissions from S3 object metadata. When creating files or directories in S3 that need to be writable on the mount, the following metadata headers MUST be set:
+
+**Directories** (S3 keys ending with `/`):
+```
+file-owner: 1000
+file-group: 1000
+file-permissions: 040755
+```
+
+**Files:**
+```
+file-owner: 1000
+file-group: 1000
+file-permissions: 0100644
+```
+
+The `1000:1000` uid/gid must match the access point's `posixUser` configuration. The metadata key names are `file-owner`, `file-group`, `file-permissions` — stored as S3 object metadata (x-amz-meta headers).
+
+**What happens without POSIX metadata:** Files and directories imported by S3 Files from S3 objects that lack these headers are mounted as read-only. SQLite fails with "attempt to write a readonly database" and direct file writes fail with "Permission denied."
+
+**What happens with correct metadata:** Files are writable. SQLite opens, reads, writes, checkpoints, and closes correctly. The Lambda can create journal files alongside the database.
+
+Files created through the NFS mount (by the Lambda during normal invocations) automatically get correct POSIX metadata — S3 Files sets it based on the access point's `posixUser` and standard NFS semantics. The metadata requirement only applies to files created via the S3 API (`PutObject`, `CopyObject`) that will be accessed through the mount.
+
+### Full Phase 3 loop (validated)
+
+End-to-end test with real S3, real Lambda, real S3 Files, real access point switching:
+
+| Step | Operation | Result |
+|---|---|---|
+| Seed | Create table + insert milk/eggs/bread via mount | ✓ |
+| Write | Insert beer via mount | ✓ |
+| Commit | boto3 `put_object` → VersionId V1 | ✓ |
+| Write | Insert pizza via mount | ✓ |
+| Commit | boto3 `put_object` → VersionId V2 | ✓ |
+| Fork setup | Create dir + CopyObject at V1 with POSIX metadata | ✓ |
+| Fork setup | Create access point for fork-1 | ✓ |
+| **Access point switch** | `update-function-configuration` (~7s) | **✓** |
+| **Read on fork** | **4 rows: milk/eggs/bread/beer. NO pizza.** | **✓** |
+| **Write on fork** | **Insert wine → 5 rows. NO pizza.** | **✓** |
+| Switch back to main | `update-function-configuration` (~7s) | ✓ |
+| Read on main | pizza present (main timeline intact) | ✓ |
 
 ### S3 Files sync characteristics (measured, eu-west-1)
 
@@ -162,10 +212,11 @@ For invocations that didn't change any files (read-only): the sidecar stat-diffs
 - S3 Files infrastructure provisioning (file system, mount target, VPC, access points)
 - Per-branch S3 prefix layout under the agent's storage path
 - Per-branch access point creation and Lambda config switching
-- Manifest capture after invocation (wait for sync, list-object-versions, record on DAG)
+- Manifest capture after invocation (wait for sync or boto3 upload, record VersionIds on DAG)
 - Stat-diff before/after invocation to detect changes (skip manifest capture on read-only invocations)
-- `CopyObject` at historical VersionIds for fork
+- `CopyObject` at historical VersionIds for fork, with POSIX metadata on directories and files
 - Promote mechanics (copy or swap branch prefix)
+- POSIX metadata helper: ensure all S3 API-created objects destined for the mount carry `file-owner`, `file-group`, `file-permissions`
 
 ## Agent-author burden vs platform internals
 
