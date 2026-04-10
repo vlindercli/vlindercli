@@ -12,8 +12,8 @@ use crate::RegistryConfig;
 use vlinder_core::domain::InMemoryRegistry;
 use vlinder_core::domain::{
     Agent, AgentName, AgentState, AgentStatus, Fleet, Job, JobId, JobStatus, Model,
-    ObjectStorageType, Provider, RegistrationError, Registry, RegistryRepository, ResourceId,
-    RuntimeType, SecretStore, SubmissionId, VectorStorageType,
+    ObjectStorageType, Provider, ReadinessCheck, RegistrationError, Registry, RegistryRepository,
+    ResourceId, RuntimeType, SecretStore, SubmissionId, VectorStorageType,
 };
 
 /// Registry with write-through persistence.
@@ -93,6 +93,24 @@ impl Registry for PersistentRegistry {
             .transition(AgentStatus::Deploying, None);
         if let Err(e) = self.repo.append_agent_state(&state) {
             tracing::warn!(error = %e, agent = agent.name.as_str(), "Failed to set Deploying state");
+        }
+
+        // Create readiness checks based on validated capabilities (dual write)
+        let agent_name = AgentName::new(&agent.name);
+
+        // Runtime — always needed
+        let check = ReadinessCheck::pending(agent_name.clone(), agent.runtime.as_str());
+        if let Err(e) = self.repo.append_readiness_check(&check) {
+            tracing::warn!(error = %e, "Failed to create compute readiness check");
+        }
+        // Object storage — if declared
+        if let Some(ref uri) = agent.object_storage {
+            if let Some(storage_type) = ObjectStorageType::from_scheme(uri.scheme()) {
+                let check = ReadinessCheck::pending(agent_name.clone(), storage_type.as_str());
+                if let Err(e) = self.repo.append_readiness_check(&check) {
+                    tracing::warn!(error = %e, "Failed to create storage readiness check");
+                }
+            }
         }
 
         Ok(())

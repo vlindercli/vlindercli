@@ -6,10 +6,11 @@
 use diesel::prelude::*;
 
 use crate::dag_store::SqliteDagStore;
-use crate::models::{AgentRow, ModelRow, NewAgent, NewModel};
-use crate::schema::{agent_states, agents, models};
+use crate::models::{AgentRow, ModelRow, NewAgent, NewModel, NewReadinessCheck};
+use crate::schema::{agent_states, agents, models, readiness_checks};
 use vlinder_core::domain::{
-    Agent, Model, RegistryRepository, RepositoryError, StoredAgent, StoredModel,
+    Agent, Model, ReadinessCheck, ReadinessStatus, RegistryRepository, RepositoryError,
+    StoredAgent, StoredModel,
 };
 
 impl RegistryRepository for SqliteDagStore {
@@ -212,6 +213,59 @@ impl RegistryRepository for SqliteDagStore {
                 }))
             }
         }
+    }
+
+    fn append_readiness_check(&self, check: &ReadinessCheck) -> Result<(), RepositoryError> {
+        let updated_at = check.updated_at.to_rfc3339();
+        let row = NewReadinessCheck {
+            agent_name: check.agent.as_str(),
+            worker: &check.worker,
+            status: check.status.as_str(),
+            updated_at: &updated_at,
+            error: check.error.as_deref(),
+        };
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        diesel::insert_into(readiness_checks::table)
+            .values(&row)
+            .execute(&mut *conn)
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn all_checks_ready(&self, agent_name: &str) -> Result<bool, RepositoryError> {
+        use crate::schema::readiness_checks;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        // Get distinct workers for this agent
+        let workers: Vec<String> = readiness_checks::table
+            .filter(readiness_checks::agent_name.eq(agent_name))
+            .select(readiness_checks::worker)
+            .distinct()
+            .load(&mut *conn)
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        if workers.is_empty() {
+            return Ok(false);
+        }
+
+        // Check that every worker's latest status is "ready"
+        for worker in &workers {
+            let latest: Option<String> = readiness_checks::table
+                .filter(readiness_checks::agent_name.eq(agent_name))
+                .filter(readiness_checks::worker.eq(worker))
+                .order(readiness_checks::updated_at.desc())
+                .select(readiness_checks::status)
+                .first(&mut *conn)
+                .optional()
+                .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+            if latest.as_deref() != Some(ReadinessStatus::Ready.as_str()) {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 }
 

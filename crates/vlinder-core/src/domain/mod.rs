@@ -28,6 +28,7 @@ mod operation;
 mod path;
 mod pod_id;
 mod provider;
+mod readiness;
 mod registry;
 pub mod registry_memory;
 mod registry_repository;
@@ -52,6 +53,7 @@ pub use image_digest::ImageDigest;
 pub use image_ref::ImageRef;
 pub use operation::Operation;
 pub use pod_id::PodId;
+pub use readiness::{ReadinessCheck, ReadinessStatus};
 pub use service_type::ServiceType;
 
 // ============================================================================

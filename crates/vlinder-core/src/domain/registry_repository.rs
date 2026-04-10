@@ -49,6 +49,22 @@ pub trait RegistryRepository: Send + Sync {
     fn get_agent_state(&self, _name: &str) -> Result<Option<super::AgentState>, RepositoryError> {
         Ok(None)
     }
+
+    /// Append a readiness check for an agent worker.
+    fn append_readiness_check(
+        &self,
+        _check: &super::ReadinessCheck,
+    ) -> Result<(), RepositoryError> {
+        Err(RepositoryError::Database(
+            "append_readiness_check not implemented".to_string(),
+        ))
+    }
+
+    /// Check if all readiness checks for an agent are ready.
+    /// Returns true if every worker's latest check has status "ready".
+    fn all_checks_ready(&self, _agent_name: &str) -> Result<bool, RepositoryError> {
+        Ok(false)
+    }
 }
 
 #[derive(Debug)]
