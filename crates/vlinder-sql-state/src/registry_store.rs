@@ -7,7 +7,7 @@ use diesel::prelude::*;
 
 use crate::dag_store::SqliteDagStore;
 use crate::models::{AgentRow, ModelRow, NewAgent, NewModel};
-use crate::schema::{agents, models};
+use crate::schema::{agent_states, agents, models};
 use vlinder_core::domain::{
     Agent, Model, RegistryRepository, RepositoryError, StoredAgent, StoredModel,
 };
@@ -137,6 +137,10 @@ impl RegistryRepository for SqliteDagStore {
 
     fn delete_agent(&self, name: &str) -> Result<bool, RepositoryError> {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        // Delete agent_states first (FK references agents.name)
+        diesel::delete(agent_states::table.filter(agent_states::agent_name.eq(name)))
+            .execute(&mut *conn)
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
         let affected = diesel::delete(agents::table.filter(agents::name.eq(name)))
             .execute(&mut *conn)
             .map_err(|e| RepositoryError::Database(e.to_string()))?;

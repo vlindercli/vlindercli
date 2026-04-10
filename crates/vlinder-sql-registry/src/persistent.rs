@@ -11,9 +11,9 @@ use std::sync::Arc;
 use crate::RegistryConfig;
 use vlinder_core::domain::InMemoryRegistry;
 use vlinder_core::domain::{
-    Agent, Fleet, Job, JobId, JobStatus, Model, ObjectStorageType, Provider, RegistrationError,
-    Registry, RegistryRepository, ResourceId, RuntimeType, SecretStore, SubmissionId,
-    VectorStorageType,
+    Agent, AgentName, AgentState, AgentStatus, Fleet, Job, JobId, JobStatus, Model,
+    ObjectStorageType, Provider, RegistrationError, Registry, RegistryRepository, ResourceId,
+    RuntimeType, SecretStore, SubmissionId, VectorStorageType,
 };
 
 /// Registry with write-through persistence.
@@ -87,6 +87,13 @@ impl Registry for PersistentRegistry {
         self.repo
             .save_agent(&agent)
             .map_err(|e| RegistrationError::Persistence(e.to_string()))?;
+
+        // Transition to Deploying — the runtime will pick this up and create compute
+        let state = AgentState::registered(AgentName::new(&agent.name))
+            .transition(AgentStatus::Deploying, None);
+        if let Err(e) = self.repo.append_agent_state(&state) {
+            tracing::warn!(error = %e, agent = agent.name.as_str(), "Failed to set Deploying state");
+        }
 
         Ok(())
     }

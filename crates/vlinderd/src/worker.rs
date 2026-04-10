@@ -215,11 +215,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                         if let Err(e) = queue.on_agent_deployed(&name) {
                             tracing::warn!(agent = %agent_name, error = %e, "Failed to provision agent queues");
                         }
-                        let deploying =
-                            AgentState::registered(name).transition(AgentStatus::Deploying, None);
-                        if let Err(e) = repo.append_agent_state(&deploying) {
-                            tracing::warn!(error = %e, "Failed to set Deploying state");
-                        }
+                        // Deploying state is now set by register_agent
                         tracing::info!(agent = %agent_name, "Agent registered, awaiting runtime provisioning");
                     }
                     Err(e) => {
