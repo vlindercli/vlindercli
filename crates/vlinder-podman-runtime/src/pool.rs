@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    Agent, AgentName, AgentState, AgentStatus, ImageRef, PodId, ReadinessCheck, Registry,
-    RegistryRepository, ResourceId, Runtime, RuntimeType,
+    Agent, AgentName, AgentStatus, ImageRef, PodId, ReadinessCheck, Registry, RegistryRepository,
+    ResourceId, Runtime, RuntimeType,
 };
 
 use crate::config::PodmanRuntimeConfig;
@@ -452,11 +452,6 @@ impl ContainerRuntime {
                 Some(AgentStatus::Deploying) => match self.start(&agent.name, agent) {
                     Ok(()) => {
                         let agent_name = AgentName::new(&agent.name);
-                        let live = AgentState::registered(agent_name.clone())
-                            .transition(AgentStatus::Live, None);
-                        if let Err(e) = self.repo.append_agent_state(&live) {
-                            tracing::warn!(error = %e, "Failed to set Live state");
-                        }
                         let check =
                             ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
                                 .ready();
@@ -469,11 +464,6 @@ impl ContainerRuntime {
                     }
                     Err(e) => {
                         let agent_name = AgentName::new(&agent.name);
-                        let failed = AgentState::registered(agent_name.clone())
-                            .transition(AgentStatus::Failed, Some(e.clone()));
-                        if let Err(e2) = self.repo.append_agent_state(&failed) {
-                            tracing::warn!(error = %e2, "Failed to set Failed state");
-                        }
                         let check =
                             ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
                                 .failed(e.clone());
@@ -487,19 +477,13 @@ impl ContainerRuntime {
                     }
                 },
 
-                // Deleting: tear down pod, delete from registry, transition to Deleted
+                // Deleting: tear down pod
                 Some(AgentStatus::Deleting) => {
                     let agent_name = AgentName::new(&agent.name);
                     if let Some(pod) = self.pods.remove(&agent.name) {
                         tracing::info!(event = "pod.teardown", agent = %agent.name, "Tearing down pod");
                         self.podman.pod_stop_and_remove(&pod.pod_id, 5);
                         self.cleanup_mount_volumes(&pod.mount_volumes);
-                    }
-                    // Soft delete: agent row stays in registry, state says Deleted
-                    let deleted = AgentState::registered(agent_name.clone())
-                        .transition(AgentStatus::Deleted, None);
-                    if let Err(e) = self.repo.append_agent_state(&deleted) {
-                        tracing::warn!(error = %e, "Failed to set Deleted state");
                     }
                     let check =
                         ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
@@ -720,9 +704,7 @@ mod tests {
         assert_eq!(name, "vlinder-mount-support-knowledge");
     }
 
-    use vlinder_core::domain::{
-        AgentManifest, AgentName, AgentState, AgentStatus, RequirementsConfig,
-    };
+    use vlinder_core::domain::{AgentManifest, AgentName, AgentStatus, RequirementsConfig};
 
     fn register_test_agent(runtime: &mut ContainerRuntime, name: &str) {
         let manifest = AgentManifest {
@@ -747,9 +729,22 @@ mod tests {
         runtime.repo.append_readiness_check(&check).unwrap();
     }
 
-    fn set_agent_status(runtime: &ContainerRuntime, name: &str, status: AgentStatus) {
-        let state = AgentState::registered(AgentName::new(name)).transition(status, None);
-        runtime.repo.append_agent_state(&state).unwrap();
+    fn set_agent_status(runtime: &ContainerRuntime, name: &str, status: &AgentStatus) {
+        let agent_name = AgentName::new(name);
+        let check = match status {
+            AgentStatus::Deploying => {
+                ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
+            }
+            AgentStatus::Deleting => {
+                ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str()).deleting()
+            }
+            AgentStatus::Failed => {
+                ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
+                    .failed("test".to_string())
+            }
+            _ => ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str()),
+        };
+        runtime.repo.append_readiness_check(&check).unwrap();
     }
 
     fn get_agent_status(runtime: &ContainerRuntime, name: &str) -> AgentStatus {
@@ -760,7 +755,7 @@ mod tests {
     fn deploy_transitions_to_live() {
         let mut runtime = test_runtime();
         register_test_agent(&mut runtime, "my-agent");
-        set_agent_status(&runtime, "my-agent", AgentStatus::Deploying);
+        set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         runtime.tick();
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
@@ -770,13 +765,13 @@ mod tests {
     fn redeploy_transitions_existing_agent_to_live() {
         let mut runtime = test_runtime();
         register_test_agent(&mut runtime, "my-agent");
-        set_agent_status(&runtime, "my-agent", AgentStatus::Deploying);
+        set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         runtime.tick();
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
 
         // Re-deploy: set back to Deploying
-        set_agent_status(&runtime, "my-agent", AgentStatus::Deploying);
+        set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         runtime.tick();
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
@@ -786,7 +781,7 @@ mod tests {
     fn delete_transitions_to_deleted() {
         let mut runtime = test_runtime();
         register_test_agent(&mut runtime, "my-agent");
-        set_agent_status(&runtime, "my-agent", AgentStatus::Deploying);
+        set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy first
         runtime.tick();
@@ -797,7 +792,7 @@ mod tests {
             ReadinessCheck::pending(AgentName::new("my-agent"), RuntimeType::Container.as_str())
                 .deleting();
         runtime.repo.append_readiness_check(&check).unwrap();
-        set_agent_status(&runtime, "my-agent", AgentStatus::Deleting);
+        set_agent_status(&runtime, "my-agent", &AgentStatus::Deleting);
         runtime.tick();
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Deleted);
     }
@@ -848,7 +843,7 @@ mod tests {
             Box::new(FailingPodmanClient),
         );
         register_test_agent(&mut runtime, "my-agent");
-        set_agent_status(&runtime, "my-agent", AgentStatus::Deploying);
+        set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         runtime.tick();
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Failed);
@@ -858,7 +853,7 @@ mod tests {
     fn orphan_pod_is_removed() {
         let mut runtime = test_runtime();
         register_test_agent(&mut runtime, "my-agent");
-        set_agent_status(&runtime, "my-agent", AgentStatus::Deploying);
+        set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy
         runtime.tick();

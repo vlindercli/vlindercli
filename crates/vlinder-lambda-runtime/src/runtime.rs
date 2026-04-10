@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    Agent, AgentName, AgentState, AgentStatus, CompleteMessage, DagNodeId, DataMessageKind,
+    Agent, AgentName, AgentStatus, CompleteMessage, DagNodeId, DataMessageKind,
     DataRoutingKey, MessageId, MessageQueue, ReadinessCheck, Registry, RegistryRepository,
     ResourceId, Runtime, RuntimeDiagnostics, RuntimeType,
 };
@@ -128,11 +128,6 @@ impl LambdaRuntime {
         match self.deploy(name, agent) {
             Ok(()) => {
                 let agent_name = AgentName::new(name);
-                let live =
-                    AgentState::registered(agent_name.clone()).transition(AgentStatus::Live, None);
-                if let Err(e) = self.repo.append_agent_state(&live) {
-                    tracing::warn!(error = %e, "Failed to set Live state");
-                }
                 let check =
                     ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str()).ready();
                 let _ = self.repo.append_readiness_check(&check);
@@ -140,11 +135,6 @@ impl LambdaRuntime {
             }
             Err(e) => {
                 let agent_name = AgentName::new(name);
-                let failed = AgentState::registered(agent_name.clone())
-                    .transition(AgentStatus::Failed, Some(e.to_string()));
-                if let Err(e2) = self.repo.append_agent_state(&failed) {
-                    tracing::warn!(error = %e2, "Failed to set Failed state");
-                }
                 let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str())
                     .failed(e.to_string());
                 let _ = self.repo.append_readiness_check(&check);
@@ -160,11 +150,6 @@ impl LambdaRuntime {
             self.undeploy(name);
         }
         let agent_name = AgentName::new(name);
-        let deleted =
-            AgentState::registered(agent_name.clone()).transition(AgentStatus::Deleted, None);
-        if let Err(e) = self.repo.append_agent_state(&deleted) {
-            tracing::warn!(error = %e, "Failed to set Deleted state");
-        }
         let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str()).deleted();
         let _ = self.repo.append_readiness_check(&check);
         tracing::info!(agent = name, "Lambda function deleted");
@@ -342,7 +327,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashSet;
-    use vlinder_core::domain::InMemorySecretStore;
+    use vlinder_core::domain::{AgentState, InMemorySecretStore};
     use vlinder_core::queue::InMemoryQueue;
 
     // ── Mock client ─────────────────────────────────────────────────
