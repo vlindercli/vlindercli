@@ -110,10 +110,9 @@ impl LambdaRuntime {
         }
 
         for (name, agent) in &desired {
-            let state = self.repo.get_agent_state(name).ok().flatten();
-            let status = state.as_ref().map(|s| &s.status);
+            let status = self.repo.get_derived_status(name).ok().flatten();
 
-            match status {
+            match status.as_ref() {
                 // Deploying: create Lambda function, transition to Live or Failed
                 Some(AgentStatus::Deploying) if !self.functions.contains_key(name) => {
                     tracing::info!(agent = name.as_str(), "Deploying Lambda function");
@@ -517,9 +516,12 @@ mod tests {
 
     /// Set an agent to `Deploying` state so the runtime will provision it.
     fn set_deploying(repo: &dyn RegistryRepository, name: &str) {
+        let agent_name = AgentName::new(name);
         let state =
-            AgentState::registered(AgentName::new(name)).transition(AgentStatus::Deploying, None);
+            AgentState::registered(agent_name.clone()).transition(AgentStatus::Deploying, None);
         repo.append_agent_state(&state).unwrap();
+        let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str());
+        repo.append_readiness_check(&check).unwrap();
     }
 
     fn make_runtime(

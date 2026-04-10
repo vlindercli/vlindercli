@@ -65,6 +65,22 @@ pub trait RegistryRepository: Send + Sync {
     fn all_checks_ready(&self, _agent_name: &str) -> Result<bool, RepositoryError> {
         Ok(false)
     }
+
+    /// Derive the agent's status from its readiness checks.
+    ///
+    /// Looks at each worker's latest check:
+    /// - All `ready` → `Live`
+    /// - Any `failed` → `Failed`
+    /// - Any `pending` → `Deploying`
+    /// - Any `deleting` → `Deleting`
+    /// - All `deleted` → `Deleted`
+    /// - No checks → `None`
+    fn get_derived_status(
+        &self,
+        _agent_name: &str,
+    ) -> Result<Option<super::AgentStatus>, RepositoryError> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug)]

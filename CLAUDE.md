@@ -47,18 +47,6 @@ ADRs are records of validated decisions, not speculative ones.
 - **CQRS**: all writes happen by sending a message through the queue. All reads come from the store. No direct store writes from CLI or harness — if you're calling `store.write_something()` outside a queue listener, it's a violation.
 - **Compiler-driven refactoring**: change the type or signature, then build. Fix each error the compiler shows one at a time. Don't search the codebase manually for usages — the compiler finds them all. Never use `replace_all` to batch-fix compiler errors — each call site has different context. Never pre-read files to "understand the scope" of breakage. Build, read the error, fix that line, repeat.
 
-## TODO.md
-
-- Ungoverned scratchpad for raw thoughts
-- Serialize not-fully-formed ideas
-- Keep it small - not a backlog, just working memory
-- Use it to resume context across sessions
-- Clean up as things get decided/validated/completed
-
-Claude should:
-- Read TODO.md when deciding what to do next (don't rely only on conversation memory)
-- Update TODO.md as work progresses, decisions are made, or new questions arise
-
 ## Verifying agent runs
 
 - After the human runs an agent, they will ask Claude to check the logs and conversations.

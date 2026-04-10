@@ -445,10 +445,9 @@ impl ContainerRuntime {
         }
 
         for agent in &agents {
-            let state = self.repo.get_agent_state(&agent.name).ok().flatten();
-            let status = state.as_ref().map(|s| &s.status);
+            let status = self.repo.get_derived_status(&agent.name).ok().flatten();
 
-            match status {
+            match status.as_ref() {
                 // Deploying: start pod, transition to Live or Failed
                 Some(AgentStatus::Deploying) => match self.start(&agent.name, agent) {
                     Ok(()) => {
@@ -743,6 +742,9 @@ mod tests {
         };
         runtime.registry().register_runtime(RuntimeType::Container);
         runtime.registry().register_manifest(manifest).unwrap();
+        // Create pending readiness check (mirrors PersistentRegistry.register_agent)
+        let check = ReadinessCheck::pending(AgentName::new(name), RuntimeType::Container.as_str());
+        runtime.repo.append_readiness_check(&check).unwrap();
     }
 
     fn set_agent_status(runtime: &ContainerRuntime, name: &str, status: AgentStatus) {
@@ -751,7 +753,7 @@ mod tests {
     }
 
     fn get_agent_status(runtime: &ContainerRuntime, name: &str) -> AgentStatus {
-        runtime.repo.get_agent_state(name).unwrap().unwrap().status
+        runtime.repo.get_derived_status(name).unwrap().unwrap()
     }
 
     #[test]
@@ -790,7 +792,11 @@ mod tests {
         runtime.tick();
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
 
-        // Delete
+        // Delete — mark as deleting via readiness check
+        let check =
+            ReadinessCheck::pending(AgentName::new("my-agent"), RuntimeType::Container.as_str())
+                .deleting();
+        runtime.repo.append_readiness_check(&check).unwrap();
         set_agent_status(&runtime, "my-agent", AgentStatus::Deleting);
         runtime.tick();
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Deleted);
