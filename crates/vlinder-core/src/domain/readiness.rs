@@ -126,6 +126,50 @@ impl ReadinessCheck {
     }
 }
 
+/// Derive aggregate agent status from per-worker latest statuses.
+///
+/// Takes a slice of `(worker_name, status_string)` pairs — one per distinct worker.
+/// Returns `None` if the slice is empty.
+pub fn derive_status(checks: &[(String, String)]) -> Result<Option<super::AgentStatus>, super::RepositoryError> {
+    if checks.is_empty() {
+        return Ok(None);
+    }
+    let mut all_ready = true;
+    let mut all_deleted = true;
+    let mut any_deleted = false;
+    for (_, status) in checks {
+        match status.as_str() {
+            s if s == ReadinessStatus::Failed.as_str() => {
+                return Ok(Some(super::AgentStatus::Failed));
+            }
+            s if s == ReadinessStatus::Deleting.as_str() => {
+                return Ok(Some(super::AgentStatus::Deleting));
+            }
+            s if s == ReadinessStatus::Deleted.as_str() => {
+                all_ready = false;
+                any_deleted = true;
+            }
+            s if s == ReadinessStatus::Ready.as_str() => {
+                all_deleted = false;
+            }
+            _ => {
+                all_ready = false;
+                all_deleted = false;
+            }
+        }
+    }
+
+    if all_ready {
+        Ok(Some(super::AgentStatus::Live))
+    } else if all_deleted {
+        Ok(Some(super::AgentStatus::Deleted))
+    } else if any_deleted {
+        Ok(Some(super::AgentStatus::Deleting))
+    } else {
+        Ok(Some(super::AgentStatus::Deploying))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

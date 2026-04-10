@@ -53,7 +53,7 @@ pub use image_digest::ImageDigest;
 pub use image_ref::ImageRef;
 pub use operation::Operation;
 pub use pod_id::PodId;
-pub use readiness::{ReadinessCheck, ReadinessStatus};
+pub use readiness::{derive_status, ReadinessCheck, ReadinessStatus};
 pub use service_type::ServiceType;
 
 // ============================================================================

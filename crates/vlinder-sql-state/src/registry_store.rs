@@ -6,10 +6,10 @@
 use diesel::prelude::*;
 
 use crate::dag_store::SqliteDagStore;
-use crate::models::{AgentRow, ModelRow, NewAgent, NewAgentState, NewModel, NewReadinessCheck};
+use crate::models::{AgentRow, ModelRow, NewAgent, NewModel, NewReadinessCheck};
 use crate::schema::{agent_states, agents, models, readiness_checks};
 use vlinder_core::domain::{
-    Agent, AgentStatus, Model, ReadinessCheck, ReadinessStatus, RegistryRepository,
+    Agent, AgentStatus, Model, ReadinessCheck, RegistryRepository,
     RepositoryError, StoredAgent, StoredModel,
 };
 
@@ -39,21 +39,30 @@ impl SqliteDagStore {
         .map_err(|e| RepositoryError::Database(e.to_string()))
     }
 
+    /// Derive agent status from readiness checks (uses existing conn).
+    fn get_derived_status_inner(
+        &self,
+        conn: &mut diesel::SqliteConnection,
+        agent_name: &str,
+    ) -> Result<Option<AgentStatus>, RepositoryError> {
+        let checks = self.latest_checks_inner(conn, agent_name)?;
+        if checks.is_empty() {
+            return Ok(None);
+        }
+        vlinder_core::domain::derive_status(&checks)
+    }
+
     /// Check if all readiness checks for an agent are ready (uses existing conn).
     fn all_checks_ready_inner(
         &self,
         conn: &mut diesel::SqliteConnection,
         agent_name: &str,
     ) -> Result<bool, RepositoryError> {
-        let checks = self.latest_checks_inner(conn, agent_name)?;
-        if checks.is_empty() {
-            return Ok(false);
-        }
-        Ok(checks
-            .iter()
-            .all(|(_, status)| status == ReadinessStatus::Ready.as_str()))
+        Ok(self.get_derived_status_inner(conn, agent_name)? == Some(AgentStatus::Live))
     }
 }
+
+
 
 /// Row type for the latest-check-per-worker raw SQL query.
 #[derive(diesel::QueryableByName)]
@@ -281,31 +290,17 @@ impl RegistryRepository for SqliteDagStore {
             .execute(&mut *conn)
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
 
-        // Barrier: if all workers are now ready, transition to Live
-        if self.all_checks_ready_inner(&mut conn, check.agent.as_str())? {
-            let now = chrono::Utc::now().to_rfc3339();
-            let state_row = NewAgentState {
-                agent_name: check.agent.as_str(),
-                state: AgentStatus::Live.as_str(),
-                updated_at: &now,
-                error: None,
-            };
-            diesel::insert_into(agent_states::table)
-                .values(&state_row)
-                .execute(&mut *conn)
-                .map_err(|e| RepositoryError::Database(e.to_string()))?;
-            tracing::info!(
-                agent = check.agent.as_str(),
-                "All readiness checks passed — agent is Live"
-            );
-        }
-
         Ok(())
     }
 
     fn all_checks_ready(&self, agent_name: &str) -> Result<bool, RepositoryError> {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        self.all_checks_ready_inner(&mut conn, agent_name)
+        Ok(self.get_derived_status_inner(&mut conn, agent_name)? == Some(AgentStatus::Live))
+    }
+
+    fn get_derived_status(&self, agent_name: &str) -> Result<Option<AgentStatus>, RepositoryError> {
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        self.get_derived_status_inner(&mut conn, agent_name)
     }
 }
 
