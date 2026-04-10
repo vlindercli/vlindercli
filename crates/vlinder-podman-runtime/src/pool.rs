@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    Agent, AgentName, AgentState, AgentStatus, ImageRef, PodId, Registry, RegistryRepository,
-    ResourceId, Runtime, RuntimeType,
+    Agent, AgentName, AgentState, AgentStatus, ImageRef, PodId, ReadinessCheck, Registry,
+    RegistryRepository, ResourceId, Runtime, RuntimeType,
 };
 
 use crate::config::PodmanRuntimeConfig;
@@ -452,11 +452,16 @@ impl ContainerRuntime {
                 // Deploying: start pod, transition to Live or Failed
                 Some(AgentStatus::Deploying) => match self.start(&agent.name, agent) {
                     Ok(()) => {
-                        let live = AgentState::registered(AgentName::new(&agent.name))
+                        let agent_name = AgentName::new(&agent.name);
+                        let live = AgentState::registered(agent_name.clone())
                             .transition(AgentStatus::Live, None);
                         if let Err(e) = self.repo.append_agent_state(&live) {
                             tracing::warn!(error = %e, "Failed to set Live state");
                         }
+                        let check =
+                            ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
+                                .ready();
+                        let _ = self.repo.append_readiness_check(&check);
                         tracing::info!(
                             event = "pod.deployed",
                             agent = %agent.name,

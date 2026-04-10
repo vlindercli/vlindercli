@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use vlinder_core::domain::{
     Agent, AgentName, AgentState, AgentStatus, CompleteMessage, DagNodeId, DataMessageKind,
-    DataRoutingKey, MessageId, MessageQueue, Registry, RegistryRepository, ResourceId, Runtime,
-    RuntimeDiagnostics, RuntimeType,
+    DataRoutingKey, MessageId, MessageQueue, ReadinessCheck, Registry, RegistryRepository,
+    ResourceId, Runtime, RuntimeDiagnostics, RuntimeType,
 };
 
 use crate::config::LambdaRuntimeConfig;
@@ -119,11 +119,16 @@ impl LambdaRuntime {
                     tracing::info!(agent = name.as_str(), "Deploying Lambda function");
                     match self.deploy(name, agent) {
                         Ok(()) => {
-                            let live = AgentState::registered(AgentName::new(name))
+                            let agent_name = AgentName::new(name);
+                            let live = AgentState::registered(agent_name.clone())
                                 .transition(AgentStatus::Live, None);
                             if let Err(e) = self.repo.append_agent_state(&live) {
                                 tracing::warn!(error = %e, "Failed to set Live state");
                             }
+                            let check =
+                                ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str())
+                                    .ready();
+                            let _ = self.repo.append_readiness_check(&check);
                             tracing::info!(agent = name.as_str(), "Lambda function deployed: Live");
                         }
                         Err(e) => {
