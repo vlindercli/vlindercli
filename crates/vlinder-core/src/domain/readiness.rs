@@ -18,6 +18,8 @@ pub enum ReadinessStatus {
     Pending,
     Ready,
     Failed,
+    Deleting,
+    Deleted,
 }
 
 impl ReadinessStatus {
@@ -26,6 +28,8 @@ impl ReadinessStatus {
             ReadinessStatus::Pending => "pending",
             ReadinessStatus::Ready => "ready",
             ReadinessStatus::Failed => "failed",
+            ReadinessStatus::Deleting => "deleting",
+            ReadinessStatus::Deleted => "deleted",
         }
     }
 }
@@ -44,6 +48,8 @@ impl FromStr for ReadinessStatus {
             "pending" => Ok(ReadinessStatus::Pending),
             "ready" => Ok(ReadinessStatus::Ready),
             "failed" => Ok(ReadinessStatus::Failed),
+            "deleting" => Ok(ReadinessStatus::Deleting),
+            "deleted" => Ok(ReadinessStatus::Deleted),
             _ => Err(format!("unknown readiness status: {s}")),
         }
     }
@@ -94,6 +100,30 @@ impl ReadinessCheck {
             error: Some(error),
         }
     }
+
+    /// Mark this check as deleting.
+    #[must_use]
+    pub fn deleting(&self) -> Self {
+        Self {
+            agent: self.agent.clone(),
+            worker: self.worker.clone(),
+            status: ReadinessStatus::Deleting,
+            updated_at: Utc::now(),
+            error: None,
+        }
+    }
+
+    /// Mark this check as deleted.
+    #[must_use]
+    pub fn deleted(&self) -> Self {
+        Self {
+            agent: self.agent.clone(),
+            worker: self.worker.clone(),
+            status: ReadinessStatus::Deleted,
+            updated_at: Utc::now(),
+            error: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -126,11 +156,30 @@ mod tests {
     }
 
     #[test]
+    fn transition_to_deleting() {
+        let ready = ReadinessCheck::pending(AgentName::new("todoapp"), "container").ready();
+        let deleting = ready.deleting();
+        assert_eq!(deleting.status, ReadinessStatus::Deleting);
+        assert!(deleting.error.is_none());
+    }
+
+    #[test]
+    fn transition_to_deleted() {
+        let deleting = ReadinessCheck::pending(AgentName::new("todoapp"), "container")
+            .ready()
+            .deleting();
+        let deleted = deleting.deleted();
+        assert_eq!(deleted.status, ReadinessStatus::Deleted);
+    }
+
+    #[test]
     fn status_round_trip() {
         for status in [
             ReadinessStatus::Pending,
             ReadinessStatus::Ready,
             ReadinessStatus::Failed,
+            ReadinessStatus::Deleting,
+            ReadinessStatus::Deleted,
         ] {
             let s = status.as_str();
             let parsed = ReadinessStatus::from_str(s).unwrap();
