@@ -409,16 +409,16 @@ impl RegistryService for RegistryServer {
     ) -> Result<Response<GetAgentStateResponse>, Status> {
         let req = request.into_inner();
 
-        let state = self
+        let status = self
             .repo
-            .get_agent_state(&req.name)
+            .get_derived_status(&req.name)
             .map_err(|e| Status::internal(format!("state query failed: {e}")))?;
 
-        match state {
+        match status {
             Some(s) => Ok(Response::new(GetAgentStateResponse {
-                status: Some(s.status.as_str().to_string()),
-                updated_at: Some(s.updated_at.to_rfc3339()),
-                error: s.error,
+                status: Some(s.as_str().to_string()),
+                updated_at: None,
+                error: None,
             })),
             None => Ok(Response::new(GetAgentStateResponse {
                 status: None,
