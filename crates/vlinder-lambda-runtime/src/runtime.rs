@@ -131,11 +131,6 @@ impl LambdaRuntime {
         match self.deploy(name, agent) {
             Ok(()) => {
                 let agent_name = AgentName::new(name);
-                let live =
-                    AgentState::registered(agent_name.clone()).transition(AgentStatus::Live, None);
-                if let Err(e) = self.repo.append_agent_state(&live) {
-                    tracing::warn!(error = %e, "Failed to set Live state");
-                }
                 let check =
                     ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str()).ready();
                 let _ = self.repo.append_readiness_check(&check);
@@ -143,11 +138,6 @@ impl LambdaRuntime {
             }
             Err(e) => {
                 let agent_name = AgentName::new(name);
-                let failed = AgentState::registered(agent_name.clone())
-                    .transition(AgentStatus::Failed, Some(e.to_string()));
-                if let Err(e2) = self.repo.append_agent_state(&failed) {
-                    tracing::warn!(error = %e2, "Failed to set Failed state");
-                }
                 let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str())
                     .failed(e.to_string());
                 let _ = self.repo.append_readiness_check(&check);
@@ -164,11 +154,6 @@ impl LambdaRuntime {
         let agent_name = AgentName::new(name);
         tracing::info!(agent = name, "Tearing down Lambda function");
         self.undeploy(name);
-        let deleted =
-            AgentState::registered(agent_name.clone()).transition(AgentStatus::Deleted, None);
-        if let Err(e) = self.repo.append_agent_state(&deleted) {
-            tracing::warn!(error = %e, "Failed to set Deleted state");
-        }
         let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str()).deleted();
         let _ = self.repo.append_readiness_check(&check);
         tracing::info!(agent = name, "Lambda function torn down: Deleted");
