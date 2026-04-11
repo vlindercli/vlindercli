@@ -241,7 +241,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                 if let Err(e) = queue.on_agent_deleted(&name) {
                     tracing::warn!(agent = %agent_name, error = %e, "Failed to deprovision agent queues");
                 }
-                let check = ReadinessCheck::pending(name, "registry").deleting();
+                let check = ReadinessCheck::pending(name, "registry").deleted();
                 let _ = repo.append_readiness_check(&check);
 
                 tracing::info!(agent = %agent_name, "Agent marked for deletion, awaiting runtime teardown");
