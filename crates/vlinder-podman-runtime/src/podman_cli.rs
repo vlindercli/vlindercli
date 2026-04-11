@@ -156,9 +156,11 @@ impl PodmanClient for PodmanCliClient {
 
     fn is_pod_live(&self, pod_id: &PodId) -> bool {
         Command::new("podman")
-            .args(["pod", "inspect", pod_id.as_str()])
+            .args(["pod", "inspect", pod_id.as_str(), "--format", "{{.State}}"])
             .output()
-            .is_ok_and(|o| o.status.success())
+            .is_ok_and(|o| {
+                o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "Running"
+            })
     }
 
     fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {

@@ -196,7 +196,10 @@ impl PodmanClient for PodmanApiClient {
         self.agent
             .get(&url)
             .call()
-            .is_ok_and(|r| r.status().as_u16() == 200)
+            .ok()
+            .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
+            .and_then(|v| v.get("State")?.as_str().map(String::from))
+            .is_some_and(|state| state == "Running")
     }
 
     fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {

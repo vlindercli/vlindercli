@@ -878,4 +878,74 @@ mod tests {
         runtime.tick();
         assert!(!runtime.pods.contains_key("my-agent"));
     }
+
+    #[test]
+    fn crashed_pod_is_recreated() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct CrashablePodmanClient {
+            pod_alive: Arc<AtomicBool>,
+        }
+        impl PodmanClient for CrashablePodmanClient {
+            fn engine_version(&self) -> Option<semver::Version> {
+                Some(semver::Version::new(5, 0, 0))
+            }
+            fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
+                None
+            }
+            fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
+                Ok(PodId::new("mock-pod"))
+            }
+            fn container_in_pod(
+                &self,
+                _: RunTarget<'_>,
+                _: &PodId,
+                _: &[(&str, &str)],
+                _: &[(&str, &str)],
+            ) -> Result<ContainerId, PodmanError> {
+                Ok(ContainerId::new("mock-container"))
+            }
+            fn volume_create(
+                &self,
+                _: &str,
+                _: &str,
+                _: &[(&str, &str)],
+            ) -> Result<(), PodmanError> {
+                Ok(())
+            }
+            fn volume_rm(&self, _: &str) {}
+            fn is_pod_live(&self, _: &PodId) -> bool {
+                self.pod_alive.load(Ordering::Relaxed)
+            }
+            fn pod_start(&self, _: &PodId) -> Result<(), PodmanError> {
+                Ok(())
+            }
+            fn pod_stop_and_remove(&self, _: &PodId, _: u32) {}
+        }
+
+        let pod_alive = Arc::new(AtomicBool::new(true));
+        let pod_alive_handle = Arc::clone(&pod_alive);
+        let mut runtime = ContainerRuntime::new(
+            &test_config(),
+            test_registry(),
+            test_repo(),
+            Box::new(CrashablePodmanClient { pod_alive }),
+        );
+        register_test_agent(&mut runtime, "my-agent");
+        set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
+
+        // Deploy — pod is alive
+        runtime.tick();
+        assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
+        assert!(runtime.pods.contains_key("my-agent"));
+
+        // Simulate crash: pod is no longer running
+        pod_alive_handle.store(false, Ordering::Relaxed);
+
+        // Re-deploy — should detect the dead pod and recreate
+        set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
+        runtime.tick();
+        assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
+        assert!(runtime.pods.contains_key("my-agent"));
+    }
 }
