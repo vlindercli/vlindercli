@@ -95,6 +95,9 @@ pub trait PodmanClient: Send {
     /// Remove a named volume (fire-and-forget, like pod cleanup).
     fn volume_rm(&self, name: &str);
 
+    /// Check if a pod is actually running.
+    fn is_pod_live(&self, pod_id: &PodId) -> bool;
+
     /// Start all containers in a pod.
     fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError>;
 

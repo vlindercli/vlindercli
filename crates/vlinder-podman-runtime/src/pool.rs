@@ -101,8 +101,14 @@ impl ContainerRuntime {
     /// 4. Add the sidecar container (vlinder-podman-sidecar image, env vars for config)
     /// 5. Start the pod (all containers start together)
     fn start(&mut self, name: &str, agent: &Agent) -> Result<(), String> {
-        if self.pods.contains_key(name) {
-            return Ok(());
+        if let Some(pod) = self.pods.get(name) {
+            if self.podman.is_pod_live(&pod.pod_id) {
+                return Ok(());
+            }
+            // Pod in hashmap but not running — remove stale entry
+            tracing::warn!(agent = name, "Pod not running, recreating");
+            let pod = self.pods.remove(name).unwrap();
+            self.cleanup_mount_volumes(&pod.mount_volumes);
         }
 
         let image_ref = ImageRef::parse(&agent.executable)
@@ -606,6 +612,9 @@ mod tests {
             Ok(())
         }
         fn volume_rm(&self, _: &str) {}
+        fn is_pod_live(&self, _: &PodId) -> bool {
+            true
+        }
         fn pod_start(&self, _: &PodId) -> Result<(), PodmanError> {
             Ok(())
         }
@@ -830,6 +839,9 @@ mod tests {
                 Ok(())
             }
             fn volume_rm(&self, _: &str) {}
+            fn is_pod_live(&self, _: &PodId) -> bool {
+                true
+            }
             fn pod_start(&self, _: &PodId) -> Result<(), PodmanError> {
                 Ok(())
             }

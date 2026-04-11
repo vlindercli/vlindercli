@@ -191,6 +191,14 @@ impl PodmanClient for PodmanApiClient {
         let _ = self.agent.delete(&url).call();
     }
 
+    fn is_pod_live(&self, pod_id: &PodId) -> bool {
+        let url = format!("{API_BASE}/pods/{}/json", pod_id.as_str());
+        self.agent
+            .get(&url)
+            .call()
+            .is_ok_and(|r| r.status().as_u16() == 200)
+    }
+
     fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {
         let url = format!("{API_BASE}/pods/{}/start", pod_id.as_str());
         let resp = self
