@@ -186,6 +186,8 @@ impl SqliteDagStore {
                  updated_at TEXT NOT NULL,
                  error TEXT
              );
+             CREATE INDEX IF NOT EXISTS idx_readiness_checks_agent_worker
+                 ON readiness_checks (agent_name, worker, updated_at);
              ",
         )
         .map_err(|e| format!("failed to initialize dag store: {e}"))?;

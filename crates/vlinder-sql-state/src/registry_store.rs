@@ -14,41 +14,54 @@ use vlinder_core::domain::{
 };
 
 impl SqliteDagStore {
-    /// Check if all readiness checks for an agent are ready (uses existing conn).
+    /// Get each worker's latest readiness status for an agent (single query).
     #[allow(clippy::unused_self)]
+    fn latest_checks_inner(
+        &self,
+        conn: &mut diesel::SqliteConnection,
+        agent_name: &str,
+    ) -> Result<Vec<(String, String)>, RepositoryError> {
+        // Single query: for each worker, get the status of the row with max id.
+        // id is monotonically increasing (AUTOINCREMENT), so max id = latest.
+        diesel::sql_query(
+            "SELECT r.worker, r.status \
+             FROM readiness_checks r \
+             INNER JOIN ( \
+                 SELECT worker, MAX(id) AS max_id \
+                 FROM readiness_checks \
+                 WHERE agent_name = ?1 \
+                 GROUP BY worker \
+             ) latest ON r.id = latest.max_id",
+        )
+        .bind::<diesel::sql_types::Text, _>(agent_name)
+        .load::<LatestCheckRow>(conn)
+        .map(|rows| rows.into_iter().map(|r| (r.worker, r.status)).collect())
+        .map_err(|e| RepositoryError::Database(e.to_string()))
+    }
+
+    /// Check if all readiness checks for an agent are ready (uses existing conn).
     fn all_checks_ready_inner(
         &self,
         conn: &mut diesel::SqliteConnection,
         agent_name: &str,
     ) -> Result<bool, RepositoryError> {
-        let workers: Vec<String> = readiness_checks::table
-            .filter(readiness_checks::agent_name.eq(agent_name))
-            .select(readiness_checks::worker)
-            .distinct()
-            .load(conn)
-            .map_err(|e| RepositoryError::Database(e.to_string()))?;
-
-        if workers.is_empty() {
+        let checks = self.latest_checks_inner(conn, agent_name)?;
+        if checks.is_empty() {
             return Ok(false);
         }
-
-        for worker in &workers {
-            let latest: Option<String> = readiness_checks::table
-                .filter(readiness_checks::agent_name.eq(agent_name))
-                .filter(readiness_checks::worker.eq(worker))
-                .order(readiness_checks::updated_at.desc())
-                .select(readiness_checks::status)
-                .first(conn)
-                .optional()
-                .map_err(|e| RepositoryError::Database(e.to_string()))?;
-
-            if latest.as_deref() != Some(ReadinessStatus::Ready.as_str()) {
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
+        Ok(checks
+            .iter()
+            .all(|(_, status)| status == ReadinessStatus::Ready.as_str()))
     }
+}
+
+/// Row type for the latest-check-per-worker raw SQL query.
+#[derive(diesel::QueryableByName)]
+struct LatestCheckRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    worker: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    status: String,
 }
 
 impl RegistryRepository for SqliteDagStore {
