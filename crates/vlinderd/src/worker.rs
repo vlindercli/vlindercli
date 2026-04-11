@@ -168,7 +168,7 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
 fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
     use crate::config::dag_db_path;
     use vlinder_core::domain::{
-        AgentName, AgentState, AgentStatus, QueueError, RegistryRepository,
+        AgentName, AgentState, AgentStatus, QueueError, ReadinessCheck, RegistryRepository,
     };
     use vlinder_sql_state::SqliteDagStore;
 
@@ -220,11 +220,14 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                     }
                     Err(e) => {
                         let name = AgentName::new(&agent_name);
-                        let failed = AgentState::registered(name)
+                        let failed = AgentState::registered(name.clone())
                             .transition(AgentStatus::Failed, Some(e.to_string()));
                         if let Err(e2) = repo.append_agent_state(&failed) {
                             tracing::warn!(error = %e2, "Failed to set Failed state");
                         }
+                        // Registration failed — no runtime type known, use "registry"
+                        let check = ReadinessCheck::pending(name, "registry").failed(e.to_string());
+                        let _ = repo.append_readiness_check(&check);
                         tracing::warn!(agent = %agent_name, error = %e, "Agent deploy failed");
                     }
                 }
@@ -246,8 +249,12 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                 if let Err(e) = queue.on_agent_deleted(&name) {
                     tracing::warn!(agent = %agent_name, error = %e, "Failed to deprovision agent queues");
                 }
-                let deleting = AgentState::registered(name).transition(AgentStatus::Deleting, None);
+                let deleting =
+                    AgentState::registered(name.clone()).transition(AgentStatus::Deleting, None);
                 let _ = repo.append_agent_state(&deleting);
+                // Use "registry" as worker — infra worker is the registry's queue adapter
+                let check = ReadinessCheck::pending(name, "registry").deleting();
+                let _ = repo.append_readiness_check(&check);
 
                 tracing::info!(agent = %agent_name, "Agent marked for deletion, awaiting runtime teardown");
             }

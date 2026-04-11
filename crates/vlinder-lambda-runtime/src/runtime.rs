@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use vlinder_core::domain::{
     Agent, AgentName, AgentState, AgentStatus, CompleteMessage, DagNodeId, DataMessageKind,
-    DataRoutingKey, MessageId, MessageQueue, Registry, RegistryRepository, ResourceId, Runtime,
-    RuntimeDiagnostics, RuntimeType,
+    DataRoutingKey, MessageId, MessageQueue, ReadinessCheck, Registry, RegistryRepository,
+    ResourceId, Runtime, RuntimeDiagnostics, RuntimeType,
 };
 
 use crate::config::LambdaRuntimeConfig;
@@ -119,19 +119,29 @@ impl LambdaRuntime {
                     tracing::info!(agent = name.as_str(), "Deploying Lambda function");
                     match self.deploy(name, agent) {
                         Ok(()) => {
-                            let live = AgentState::registered(AgentName::new(name))
+                            let agent_name = AgentName::new(name);
+                            let live = AgentState::registered(agent_name.clone())
                                 .transition(AgentStatus::Live, None);
                             if let Err(e) = self.repo.append_agent_state(&live) {
                                 tracing::warn!(error = %e, "Failed to set Live state");
                             }
+                            let check =
+                                ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str())
+                                    .ready();
+                            let _ = self.repo.append_readiness_check(&check);
                             tracing::info!(agent = name.as_str(), "Lambda function deployed: Live");
                         }
                         Err(e) => {
-                            let failed = AgentState::registered(AgentName::new(name))
+                            let agent_name = AgentName::new(name);
+                            let failed = AgentState::registered(agent_name.clone())
                                 .transition(AgentStatus::Failed, Some(e.to_string()));
                             if let Err(e2) = self.repo.append_agent_state(&failed) {
                                 tracing::warn!(error = %e2, "Failed to set Failed state");
                             }
+                            let check =
+                                ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str())
+                                    .failed(e.to_string());
+                            let _ = self.repo.append_readiness_check(&check);
                             tracing::error!(
                                 agent = name.as_str(),
                                 error = %e,
@@ -143,14 +153,18 @@ impl LambdaRuntime {
 
                 // Deleting: tear down function, delete from registry, transition to Deleted
                 Some(AgentStatus::Deleting) => {
+                    let agent_name = AgentName::new(name);
                     tracing::info!(agent = name.as_str(), "Tearing down Lambda function");
                     self.undeploy(name);
                     // Soft delete: agent row stays in registry, state says Deleted
-                    let deleted = AgentState::registered(AgentName::new(name))
+                    let deleted = AgentState::registered(agent_name.clone())
                         .transition(AgentStatus::Deleted, None);
                     if let Err(e) = self.repo.append_agent_state(&deleted) {
                         tracing::warn!(error = %e, "Failed to set Deleted state");
                     }
+                    let check =
+                        ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str()).deleted();
+                    let _ = self.repo.append_readiness_check(&check);
                     tracing::info!(agent = name.as_str(), "Lambda function torn down: Deleted");
                 }
 

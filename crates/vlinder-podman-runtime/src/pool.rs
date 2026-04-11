@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    Agent, AgentName, AgentState, AgentStatus, ImageRef, PodId, Registry, RegistryRepository,
-    ResourceId, Runtime, RuntimeType,
+    Agent, AgentName, AgentState, AgentStatus, ImageRef, PodId, ReadinessCheck, Registry,
+    RegistryRepository, ResourceId, Runtime, RuntimeType,
 };
 
 use crate::config::PodmanRuntimeConfig;
@@ -452,11 +452,16 @@ impl ContainerRuntime {
                 // Deploying: start pod, transition to Live or Failed
                 Some(AgentStatus::Deploying) => match self.start(&agent.name, agent) {
                     Ok(()) => {
-                        let live = AgentState::registered(AgentName::new(&agent.name))
+                        let agent_name = AgentName::new(&agent.name);
+                        let live = AgentState::registered(agent_name.clone())
                             .transition(AgentStatus::Live, None);
                         if let Err(e) = self.repo.append_agent_state(&live) {
                             tracing::warn!(error = %e, "Failed to set Live state");
                         }
+                        let check =
+                            ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
+                                .ready();
+                        let _ = self.repo.append_readiness_check(&check);
                         tracing::info!(
                             event = "pod.deployed",
                             agent = %agent.name,
@@ -464,11 +469,16 @@ impl ContainerRuntime {
                         );
                     }
                     Err(e) => {
-                        let failed = AgentState::registered(AgentName::new(&agent.name))
+                        let agent_name = AgentName::new(&agent.name);
+                        let failed = AgentState::registered(agent_name.clone())
                             .transition(AgentStatus::Failed, Some(e.clone()));
                         if let Err(e2) = self.repo.append_agent_state(&failed) {
                             tracing::warn!(error = %e2, "Failed to set Failed state");
                         }
+                        let check =
+                            ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
+                                .failed(e.clone());
+                        let _ = self.repo.append_readiness_check(&check);
                         tracing::error!(
                             event = "pod.start_failed",
                             agent = %agent.name,
@@ -480,17 +490,22 @@ impl ContainerRuntime {
 
                 // Deleting: tear down pod, delete from registry, transition to Deleted
                 Some(AgentStatus::Deleting) => {
+                    let agent_name = AgentName::new(&agent.name);
                     if let Some(pod) = self.pods.remove(&agent.name) {
                         tracing::info!(event = "pod.teardown", agent = %agent.name, "Tearing down pod");
                         self.podman.pod_stop_and_remove(&pod.pod_id, 5);
                         self.cleanup_mount_volumes(&pod.mount_volumes);
                     }
                     // Soft delete: agent row stays in registry, state says Deleted
-                    let deleted = AgentState::registered(AgentName::new(&agent.name))
+                    let deleted = AgentState::registered(agent_name.clone())
                         .transition(AgentStatus::Deleted, None);
                     if let Err(e) = self.repo.append_agent_state(&deleted) {
                         tracing::warn!(error = %e, "Failed to set Deleted state");
                     }
+                    let check =
+                        ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
+                            .deleted();
+                    let _ = self.repo.append_readiness_check(&check);
                     tracing::info!(event = "agent.deleted", agent = %agent.name, "Agent torn down: Deleted");
                 }
 

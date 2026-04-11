@@ -170,6 +170,17 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    readiness_checks (id) {
+        id -> Integer,
+        agent_name -> Text,
+        worker -> Text,
+        status -> Text,
+        updated_at -> Text,
+        error -> Nullable<Text>,
+    }
+}
+
 // Foreign key relationships — lets Diesel verify joins at compile time.
 diesel::joinable!(invoke_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(complete_nodes -> dag_nodes (dag_hash));
@@ -196,4 +207,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     deploy_agent_nodes,
     delete_agent_nodes,
     models,
+    readiness_checks,
 );
