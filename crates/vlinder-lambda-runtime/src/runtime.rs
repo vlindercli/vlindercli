@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    Agent, AgentName, AgentState, AgentStatus, CompleteMessage, DagNodeId, DataMessageKind,
-    DataRoutingKey, MessageId, MessageQueue, ReadinessCheck, Registry, RegistryRepository,
-    ResourceId, Runtime, RuntimeDiagnostics, RuntimeType,
+    Agent, AgentName, AgentStatus, CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey,
+    MessageId, MessageQueue, ReadinessCheck, Registry, RegistryRepository, ResourceId, Runtime,
+    RuntimeDiagnostics, RuntimeType,
 };
 
 use crate::config::LambdaRuntimeConfig;
@@ -500,11 +500,7 @@ mod tests {
 
     /// Set an agent to `Deploying` state so the runtime will provision it.
     fn set_deploying(repo: &dyn RegistryRepository, name: &str) {
-        let agent_name = AgentName::new(name);
-        let state =
-            AgentState::registered(agent_name.clone()).transition(AgentStatus::Deploying, None);
-        repo.append_agent_state(&state).unwrap();
-        let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str());
+        let check = ReadinessCheck::pending(AgentName::new(name), RuntimeType::Lambda.as_str());
         repo.append_readiness_check(&check).unwrap();
     }
 
