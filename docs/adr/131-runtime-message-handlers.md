@@ -198,10 +198,10 @@ Code review of PRs #68–#72 (steps 01–05) and step 06 identified issues to fi
 - ~~**`is_pod_live` checks existence, not running state.**~~ API client now parses `State` field from JSON response. CLI client uses `--format {{.State}}`. Both check for `"Running"`.
 - ~~**No test for crash recovery path.**~~ Added `crashed_pod_is_recreated` test with `AtomicBool`-controlled mock.
 
-### Step 06 (remove-agent-state)
+### Step 06 (remove-agent-state) — ✅ done
 
-- **`agent_states` table DDL and Diesel schema still present.** `CREATE TABLE IF NOT EXISTS agent_states` in `dag_store.rs` and `diesel::table! { agent_states }` in `schema.rs`. Remove both (or keep the DDL with a comment if migration-safety is a concern).
-- **`readiness_checks` not cleaned up on `delete_agent`.** `delete_agent` no longer deletes `agent_states` rows (removed in this step) but also doesn't delete `readiness_checks` rows. Orphaned rows accumulate for every deleted agent. Add cleanup in `delete_agent`.
+- ~~**`agent_states` table DDL and Diesel schema still present.**~~ Removed `CREATE TABLE`, index, `diesel::table!`, `joinable!`, and `allow_tables_to_appear_in_same_query!` entries.
+- ~~**`readiness_checks` not cleaned up on `delete_agent`.**~~ `delete_agent` now deletes `readiness_checks` rows before deleting the agent.
 
 ## Consequences
 

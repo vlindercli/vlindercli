@@ -212,6 +212,10 @@ impl RegistryRepository for SqliteDagStore {
 
     fn delete_agent(&self, name: &str) -> Result<bool, RepositoryError> {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        // Clean up readiness checks before deleting the agent
+        diesel::delete(readiness_checks::table.filter(readiness_checks::agent_name.eq(name)))
+            .execute(&mut *conn)
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
         let affected = diesel::delete(agents::table.filter(agents::name.eq(name)))
             .execute(&mut *conn)
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
