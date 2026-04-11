@@ -1,6 +1,25 @@
 # Working Guidelines
 
-Project-specific context goes in TODO.md. Git history of this file captures how the working style evolved.
+This file is for Claude Code (Opus) used as a high-level collaborator — drafting ADRs, making design decisions, investigating failures, steering the project. Mechanical code execution is often delegated to a cheaper executor agent (Pi with Qwen3-Coder or similar), which reads `AGENTS.md`, not this file.
+
+When you write specs or step-by-step instructions for the executor, assume `AGENTS.md` is already loaded into its context. Don't re-state the executor's general rules — do include scope fences, file paths, line numbers, explicit "do not" lists, and anything that goes beyond the general guidance.
+
+## TL;DR
+
+Vlinder is a Rust CLI platform for running AI agents locally with time-travel debugging. The core idea: every agent side effect becomes a node on a content-addressed Merkle DAG, so runs can fork, resume, and be proven after the fact. Runtime is a Rust workspace; persistence is SQLite plus per-agent storage backends; agents run in Podman containers behind a sidecar; the control plane is a message queue (NATS or AMQP). CQRS is strict — writes go through the queue, reads come from the store. Dogfooding is a way of life.
+
+## Docs
+
+Reference material loaded on demand:
+
+- `docs/DOMAIN_MODEL.md` — domain glossary (Session, Submission, DAG, readiness check, harness, sidecar, conversation).
+- `docs/ARCHITECTURE.md` — workspace crate layout.
+- `docs/OBSERVABILITY.md` — logging and telemetry conventions.
+- `docs/REQUEST_FLOW.md` — end-to-end request path through the system.
+- `docs/MOTIVATION.md`, `docs/VISION.md` — project framing.
+- `docs/TIMELINE.md`, `docs/TIMELINE_WALKTHROUGH.md` — time-travel semantics.
+- `docs/BRING_YOUR_OWN_STORAGE.md` — pluggable storage backend story.
+- `docs/adr/` — one file per architectural decision. Cite by number when passing work to the executor.
 
 ## Process
 
@@ -33,16 +52,11 @@ Default to **strangler fig pattern**:
 ## Code
 
 ### Principles
-- Top-down ordering: main type first, then errors, then supporting types.
+- Top-down ordering (per file): main type first, then its errors, then supporting types.
 - Separate manifest (`foo_manifest.rs`) from value types (`foo.rs`).
-- **Value types over strings**: domain properties get their own types (SessionId, AgentName, SubmissionId). Convert to/from String only at true boundaries (SQLite, protobuf, CLI input).
+- **Value types over strings**: domain properties get their own types (SessionId, AgentName, SubmissionId). Convert to/from String only at true boundaries (SQLite, protobuf, CLI input). Example: `SessionId` is a newtype in `vlinder-core`; session-touching code accepts `&SessionId`, never `&str` — the only places `String` appears are the storage serialization layer and CLI argument parsing.
 - **CQRS**: writes go through the message queue, reads come from the store. No direct store writes from CLI or harness.
 - Avoid smells: stringly typed values, overly long functions, too many parameters.
-
-### Refactoring
-- **Compiler-driven**: change the type or signature, then build. Fix each error one at a time. Don't search the codebase manually — the compiler finds all usages.
-- Never use `replace_all` to batch-fix compiler errors — each call site has different context.
-- Never pre-read files to "understand the scope" of breakage. Build, read the error, fix that line, repeat.
 
 ### Testing
 - TDD: red → green → refactor.
