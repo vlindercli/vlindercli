@@ -193,10 +193,10 @@ Code review of PRs #68–#72 (steps 01–05) and step 06 identified issues to fi
 - ~~**Error reason lost from deploy/delete failure messages.**~~ Added `get_derived_status_with_error` to `RegistryRepository`. gRPC `GetAgentState` now returns the error from the latest `Failed` readiness check. CLI shows actual error on failure.
 - **`ListAgents` calls `get_derived_status` per agent.** N mutex acquisitions + N×(1+W) queries. Deferred — perf optimization, not a correctness issue.
 
-### Step 05 (pod-liveness)
+### Step 05 (pod-liveness) — ✅ done
 
-- **`is_pod_live` checks existence, not running state.** API client checks HTTP 200 on `pods/{id}/json`, CLI checks `pod inspect` success. Both confirm the pod exists, not that it's running. A stopped/exited pod returns success. Fix: check the pod's actual status field.
-- **No test for crash recovery path.** Both test mocks hardcode `is_pod_live` to `true`. Add a test where `is_pod_live` returns `false` to validate the stale-entry cleanup and recreation logic.
+- ~~**`is_pod_live` checks existence, not running state.**~~ API client now parses `State` field from JSON response. CLI client uses `--format {{.State}}`. Both check for `"Running"`.
+- ~~**No test for crash recovery path.**~~ Added `crashed_pod_is_recreated` test with `AtomicBool`-controlled mock.
 
 ### Step 06 (remove-agent-state)
 
