@@ -102,6 +102,30 @@ Clippy pedantic is the bar. If it fires a new lint on code you touched, fix it p
 
 **Full integration suite**: only when the spec asks for it, via `just run-integration-tests`. Do NOT run this in the edit loop — it is slow and has side effects.
 
+## Declaring Done
+
+A task is NOT complete until you have personally verified workspace-wide green since your last edit. Self-reported "done" based on scoped checks is a common false-completion failure mode — the commit gate exists to catch it, but you should never need to rely on the commit gate. You catch it yourself, earlier.
+
+**The verification ritual — run these three commands in order, see exit code 0 on all three, THEN declare done:**
+
+1. `cargo check --workspace --all-targets`
+2. `cargo test --workspace` (skip only if the task has no test surface)
+3. `cargo clippy --workspace --all-targets -- -D warnings`
+
+Scoped `cargo check -p <crate>` during iteration is fine and encouraged — see the Feedback Loop section. But **it is never sufficient as the final check**. Trait-impl mismatches, cross-crate cascades, and lifetime bound errors from macro expansion only surface under workspace-wide checks. A scoped check that passes can still leave the workspace red.
+
+**Anti-patterns — if you catch yourself doing any of these, you are NOT done:**
+
+- "I ran `cargo check -p vlinder-core` and it passed, moving on." Scoped check is not the final check. Run the workspace-wide command before declaring done, every single time.
+- "The remaining work is mechanical, I'll describe it in the summary." A describe-remaining-work section in a final report is a signal that you should have kept going. Finish the mechanical work, then report.
+- "I can see what needs to happen." Knowing what to do is not the same as doing it. Execute, don't just diagnose.
+- "Partial conversion of this file is acceptable since the pattern is obvious." No. Finish the file, verify workspace-wide green, then report.
+- "My last check passed." Which check? If it was scoped, you are not done until the workspace-wide command returns 0.
+- "The pre-commit hook failure was expected since <reason>." Never. Any hook failure means your commit is broken. If the failure is due to work outside your scope, stop and report — do NOT bypass the hook with `--no-verify` or any equivalent. The `--no-verify` rule in the Git section is absolute and has no exceptions, including "the failure is expected" or "the failing work is out of scope."
+- "The broken state is outside my scope." If your scoped work produces a broken workspace — even transitively through downstream callers — it IS your problem. "I converted the trait methods as specified" does not excuse leaving the workspace unbuildable. Either finish the cascading caller updates or stop and report.
+
+Your final report should describe **what you did**, not what still needs doing. If the final report contains a "remaining" section, the task is not finished — go finish it. Enumerating residual work is not the same as completing it.
+
 ## Escape Hatches
 
 Tools for specific situations. Default to `cargo check` and `rg` for the common case; reach for these only when the common case is not enough.
