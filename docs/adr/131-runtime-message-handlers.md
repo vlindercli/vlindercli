@@ -176,6 +176,33 @@ Branch `registry-conditions/06-remove-agent-state` is validated (unit tests + e2
 - `runtime-handlers/02-infra-plane`: Podman deploy/delete via handlers (1 commit on top)
 - `infra-stress-tests` (sample-agents-fleets): parked, blocked on async migration
 
+## Pre-merge fixes for registry-conditions
+
+Code review of PRs #68–#72 (steps 01–05) and step 06 identified issues to fix before merging to main. Organized by which stacked diff branch should carry the fix.
+
+### Step 02 (readiness-checks) — ✅ done
+
+- ~~**No index on `readiness_checks`.**~~ Added `(agent_name, worker, updated_at)` index in DDL.
+- ~~**N+1 query in `get_derived_status_inner`.**~~ Collapsed into single self-join query via `latest_checks_inner` (`MAX(id)` per worker).
+- ~~**Duplicated derivation logic.**~~ Extracted shared `derive_status()` in `vlinder-core/domain/readiness.rs`, used by both `InMemoryDagStore` and `SqliteDagStore`. (Moved from step 03 — natural fit alongside the query refactor.)
+
+### Step 03 (derived-status)
+
+- **`ensure_deleted` no-ops when function not in local map.** If the runtime restarts or never tracked the function, `ensure_deleted` returns early without marking the readiness check as `Deleted`. Agent stuck in `Deleting` forever. Same class of bug that caused the e2e hang. **Medium severity.** Fix: mark readiness check as `Deleted` even when the function isn't locally tracked.
+- **`ensure_deployed` appends a ready check every tick.** When a function is already in the local map but status is still `Deploying`, a new `ready` readiness check row is inserted on every tick cycle. Guard: only append if the latest check for this worker isn't already `ready`.
+- **Error reason lost from deploy/delete failure messages.** `GetAgentState` gRPC response returns `error: None` always. CLI shows "Deploy failed" with no explanation. **Medium severity.** Fix: `get_derived_status` (or a new `get_derived_status_with_error`) should pull the error string from the latest `Failed` readiness check and surface it through the gRPC response.
+- **`ListAgents` calls `get_derived_status` per agent.** N mutex acquisitions + N×(1+W) queries. Add a batch query or cache.
+
+### Step 05 (pod-liveness)
+
+- **`is_pod_live` checks existence, not running state.** API client checks HTTP 200 on `pods/{id}/json`, CLI checks `pod inspect` success. Both confirm the pod exists, not that it's running. A stopped/exited pod returns success. Fix: check the pod's actual status field.
+- **No test for crash recovery path.** Both test mocks hardcode `is_pod_live` to `true`. Add a test where `is_pod_live` returns `false` to validate the stale-entry cleanup and recreation logic.
+
+### Step 06 (remove-agent-state)
+
+- **`agent_states` table DDL and Diesel schema still present.** `CREATE TABLE IF NOT EXISTS agent_states` in `dag_store.rs` and `diesel::table! { agent_states }` in `schema.rs`. Remove both (or keep the DDL with a comment if migration-safety is a concern).
+- **`readiness_checks` not cleaned up on `delete_agent`.** `delete_agent` no longer deletes `agent_states` rows (removed in this step) but also doesn't delete `readiness_checks` rows. Orphaned rows accumulate for every deleted agent. Add cleanup in `delete_agent`.
+
 ## Consequences
 
 - Runtime trait is the definitive contract for what a runtime handles
