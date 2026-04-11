@@ -89,7 +89,7 @@ The tight edit → check → fix cycle. Use the smallest command that would catc
 
 **Type or signature change that crosses crate boundaries** (trait change, enum variant, fn signature): `cargo check --workspace --all-targets`. Scoping to one crate HIDES errors in downstream crates — the whole point of a compiler-driven refactor is to see the full cascade.
 
-**Targeted tests during iteration**: `cargo test -p <crate> <test_filter>`.
+**Targeted tests during iteration**: `cargo nextest run -p <crate> <test_filter>` — preferred for speed (process-isolated parallelism) and clearer failure output. Fallback to `cargo test -p <crate> <test_filter>` if nextest misbehaves.
 
 **Structured diagnostics** (when the error list is long and you need to distill it): `cargo check --message-format=json` piped through `jq`.
 
