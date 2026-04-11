@@ -191,6 +191,17 @@ impl PodmanClient for PodmanApiClient {
         let _ = self.agent.delete(&url).call();
     }
 
+    fn is_pod_live(&self, pod_id: &PodId) -> bool {
+        let url = format!("{API_BASE}/pods/{}/json", pod_id.as_str());
+        self.agent
+            .get(&url)
+            .call()
+            .ok()
+            .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
+            .and_then(|v| v.get("State")?.as_str().map(String::from))
+            .is_some_and(|state| state == "Running")
+    }
+
     fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {
         let url = format!("{API_BASE}/pods/{}/start", pod_id.as_str());
         let resp = self

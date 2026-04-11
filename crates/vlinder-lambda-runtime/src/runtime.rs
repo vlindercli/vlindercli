@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    Agent, AgentName, AgentState, AgentStatus, CompleteMessage, DagNodeId, DataMessageKind,
-    DataRoutingKey, MessageId, MessageQueue, Registry, RegistryRepository, ResourceId, Runtime,
+    Agent, AgentName, AgentStatus, CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey,
+    MessageId, MessageQueue, ReadinessCheck, Registry, RegistryRepository, ResourceId, Runtime,
     RuntimeDiagnostics, RuntimeType,
 };
 
@@ -84,19 +84,27 @@ impl LambdaRuntime {
     }
 
     /// Reconcile deployed functions with registry state.
-    ///
-    /// 1. Query registry for Lambda agents.
-    /// 2. Remove orphan functions (deployed but no longer in registry).
-    /// 3. Deploy missing agents (in registry but not deployed).
-    ///
-    /// Returns true if the function count changed.
     fn ensure_functions(&mut self) -> bool {
         let agents = self.registry.get_agents_by_runtime(RuntimeType::Lambda);
         let desired: HashMap<String, &Agent> = agents.iter().map(|a| (a.name.clone(), a)).collect();
-
         let before = self.functions.len();
 
-        // Remove orphans: deployed but not in registry.
+        self.stop_orphan_functions(&desired);
+
+        for (name, agent) in &desired {
+            let status = self.repo.get_derived_status(name).ok().flatten();
+            match status.as_ref() {
+                Some(AgentStatus::Deploying) => self.ensure_deployed(name, agent),
+                Some(AgentStatus::Deleting) => self.ensure_deleted(name),
+                _ => {}
+            }
+        }
+
+        self.functions.len() != before
+    }
+
+    /// Stop functions that are deployed but no longer in the registry.
+    fn stop_orphan_functions(&mut self, desired: &HashMap<String, &Agent>) {
         let orphans: Vec<String> = self
             .functions
             .keys()
@@ -108,58 +116,43 @@ impl LambdaRuntime {
             tracing::info!(agent = name.as_str(), "Removing orphan Lambda function");
             self.undeploy(&name);
         }
+    }
 
-        for (name, agent) in &desired {
-            let state = self.repo.get_agent_state(name).ok().flatten();
-            let status = state.as_ref().map(|s| &s.status);
-
-            match status {
-                // Deploying: create Lambda function, transition to Live or Failed
-                Some(AgentStatus::Deploying) if !self.functions.contains_key(name) => {
-                    tracing::info!(agent = name.as_str(), "Deploying Lambda function");
-                    match self.deploy(name, agent) {
-                        Ok(()) => {
-                            let live = AgentState::registered(AgentName::new(name))
-                                .transition(AgentStatus::Live, None);
-                            if let Err(e) = self.repo.append_agent_state(&live) {
-                                tracing::warn!(error = %e, "Failed to set Live state");
-                            }
-                            tracing::info!(agent = name.as_str(), "Lambda function deployed: Live");
-                        }
-                        Err(e) => {
-                            let failed = AgentState::registered(AgentName::new(name))
-                                .transition(AgentStatus::Failed, Some(e.to_string()));
-                            if let Err(e2) = self.repo.append_agent_state(&failed) {
-                                tracing::warn!(error = %e2, "Failed to set Failed state");
-                            }
-                            tracing::error!(
-                                agent = name.as_str(),
-                                error = %e,
-                                "Failed to deploy Lambda function"
-                            );
-                        }
-                    }
-                }
-
-                // Deleting: tear down function, delete from registry, transition to Deleted
-                Some(AgentStatus::Deleting) => {
-                    tracing::info!(agent = name.as_str(), "Tearing down Lambda function");
-                    self.undeploy(name);
-                    // Soft delete: agent row stays in registry, state says Deleted
-                    let deleted = AgentState::registered(AgentName::new(name))
-                        .transition(AgentStatus::Deleted, None);
-                    if let Err(e) = self.repo.append_agent_state(&deleted) {
-                        tracing::warn!(error = %e, "Failed to set Deleted state");
-                    }
-                    tracing::info!(agent = name.as_str(), "Lambda function torn down: Deleted");
-                }
-
-                // Live or other states: nothing to do
-                _ => {}
-            }
+    /// Ensure a Lambda function is deployed and mark readiness.
+    fn ensure_deployed(&mut self, name: &str, agent: &Agent) {
+        if self.functions.contains_key(name) {
+            return;
         }
 
-        self.functions.len() != before
+        tracing::info!(agent = name, "Deploying Lambda function");
+        match self.deploy(name, agent) {
+            Ok(()) => {
+                let agent_name = AgentName::new(name);
+                let check =
+                    ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str()).ready();
+                let _ = self.repo.append_readiness_check(&check);
+                tracing::info!(agent = name, "Lambda function deployed: Live");
+            }
+            Err(e) => {
+                let agent_name = AgentName::new(name);
+                let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str())
+                    .failed(e.to_string());
+                let _ = self.repo.append_readiness_check(&check);
+                tracing::error!(agent = name, error = %e, "Failed to deploy Lambda function");
+            }
+        }
+    }
+
+    /// Tear down a Lambda function and mark deleted.
+    fn ensure_deleted(&mut self, name: &str) {
+        if self.functions.contains_key(name) {
+            tracing::info!(agent = name, "Tearing down Lambda function");
+            self.undeploy(name);
+        }
+        let agent_name = AgentName::new(name);
+        let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str()).deleted();
+        let _ = self.repo.append_readiness_check(&check);
+        tracing::info!(agent = name, "Lambda function deleted");
     }
 
     /// Deploy a single agent as a Lambda function.
@@ -503,9 +496,8 @@ mod tests {
 
     /// Set an agent to `Deploying` state so the runtime will provision it.
     fn set_deploying(repo: &dyn RegistryRepository, name: &str) {
-        let state =
-            AgentState::registered(AgentName::new(name)).transition(AgentStatus::Deploying, None);
-        repo.append_agent_state(&state).unwrap();
+        let check = ReadinessCheck::pending(AgentName::new(name), RuntimeType::Lambda.as_str());
+        repo.append_readiness_check(&check).unwrap();
     }
 
     fn make_runtime(

@@ -11,9 +11,9 @@ use std::sync::Arc;
 use crate::RegistryConfig;
 use vlinder_core::domain::InMemoryRegistry;
 use vlinder_core::domain::{
-    Agent, Fleet, Job, JobId, JobStatus, Model, ObjectStorageType, Provider, RegistrationError,
-    Registry, RegistryRepository, ResourceId, RuntimeType, SecretStore, SubmissionId,
-    VectorStorageType,
+    Agent, AgentName, Fleet, Job, JobId, JobStatus, Model, ObjectStorageType, Provider,
+    ReadinessCheck, RegistrationError, Registry, RegistryRepository, ResourceId, RuntimeType,
+    SecretStore, SubmissionId, VectorStorageType,
 };
 
 /// Registry with write-through persistence.
@@ -87,6 +87,21 @@ impl Registry for PersistentRegistry {
         self.repo
             .save_agent(&agent)
             .map_err(|e| RegistrationError::Persistence(e.to_string()))?;
+
+        // Create readiness checks — status is derived from these.
+        let agent_name = AgentName::new(&agent.name);
+
+        // Registry's work (validation + persistence) is done — mark ready
+        let registry_check = ReadinessCheck::pending(agent_name.clone(), "registry").ready();
+        if let Err(e) = self.repo.append_readiness_check(&registry_check) {
+            tracing::warn!(error = %e, "Failed to create registry readiness check");
+        }
+
+        // Runtime needs to provision compute — starts pending
+        let compute_check = ReadinessCheck::pending(agent_name, agent.runtime.as_str());
+        if let Err(e) = self.repo.append_readiness_check(&compute_check) {
+            tracing::warn!(error = %e, "Failed to create compute readiness check");
+        }
 
         Ok(())
     }

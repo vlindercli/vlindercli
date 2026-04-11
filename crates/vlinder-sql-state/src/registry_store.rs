@@ -6,11 +6,86 @@
 use diesel::prelude::*;
 
 use crate::dag_store::SqliteDagStore;
-use crate::models::{AgentRow, ModelRow, NewAgent, NewModel};
-use crate::schema::{agents, models};
+use crate::models::{AgentRow, ModelRow, NewAgent, NewModel, NewReadinessCheck};
+use crate::schema::{agents, models, readiness_checks};
 use vlinder_core::domain::{
-    Agent, Model, RegistryRepository, RepositoryError, StoredAgent, StoredModel,
+    Agent, AgentStatus, Model, ReadinessCheck, RegistryRepository, RepositoryError, StoredAgent,
+    StoredModel,
 };
+
+impl SqliteDagStore {
+    /// Get each worker's latest readiness status for an agent (single query).
+    #[allow(clippy::unused_self)]
+    fn latest_checks_inner(
+        &self,
+        conn: &mut diesel::SqliteConnection,
+        agent_name: &str,
+    ) -> Result<Vec<LatestCheckRow>, RepositoryError> {
+        // Single query: for each worker, get the row with max id.
+        // id is monotonically increasing (AUTOINCREMENT), so max id = latest.
+        diesel::sql_query(
+            "SELECT r.worker, r.status, r.error \
+             FROM readiness_checks r \
+             INNER JOIN ( \
+                 SELECT worker, MAX(id) AS max_id \
+                 FROM readiness_checks \
+                 WHERE agent_name = ?1 \
+                 GROUP BY worker \
+             ) latest ON r.id = latest.max_id",
+        )
+        .bind::<diesel::sql_types::Text, _>(agent_name)
+        .load::<LatestCheckRow>(conn)
+        .map_err(|e| RepositoryError::Database(e.to_string()))
+    }
+
+    /// Derive agent status from readiness checks (uses existing conn).
+    fn get_derived_status_inner(
+        &self,
+        conn: &mut diesel::SqliteConnection,
+        agent_name: &str,
+    ) -> Result<Option<AgentStatus>, RepositoryError> {
+        let rows = self.latest_checks_inner(conn, agent_name)?;
+        let pairs: Vec<(String, String)> = rows
+            .iter()
+            .map(|r| (r.worker.clone(), r.status.clone()))
+            .collect();
+        vlinder_core::domain::derive_status(&pairs)
+    }
+
+    /// Derive status + error from readiness checks (uses existing conn).
+    fn get_derived_status_with_error_inner(
+        &self,
+        conn: &mut diesel::SqliteConnection,
+        agent_name: &str,
+    ) -> Result<(Option<AgentStatus>, Option<String>), RepositoryError> {
+        let rows = self.latest_checks_inner(conn, agent_name)?;
+        let pairs: Vec<(String, String)> = rows
+            .iter()
+            .map(|r| (r.worker.clone(), r.status.clone()))
+            .collect();
+        let status = vlinder_core::domain::derive_status(&pairs)?;
+        // If failed, find the error from the failed check
+        let error = if status == Some(AgentStatus::Failed) {
+            rows.iter()
+                .find(|r| r.status == vlinder_core::domain::ReadinessStatus::Failed.as_str())
+                .and_then(|r| r.error.clone())
+        } else {
+            None
+        };
+        Ok((status, error))
+    }
+}
+
+/// Row type for the latest-check-per-worker raw SQL query.
+#[derive(diesel::QueryableByName)]
+struct LatestCheckRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    worker: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    status: String,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    error: Option<String>,
+}
 
 impl RegistryRepository for SqliteDagStore {
     fn save_model(&self, model: &Model) -> Result<(), RepositoryError> {
@@ -137,6 +212,10 @@ impl RegistryRepository for SqliteDagStore {
 
     fn delete_agent(&self, name: &str) -> Result<bool, RepositoryError> {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        // Clean up readiness checks before deleting the agent
+        diesel::delete(readiness_checks::table.filter(readiness_checks::agent_name.eq(name)))
+            .execute(&mut *conn)
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
         let affected = diesel::delete(agents::table.filter(agents::name.eq(name)))
             .execute(&mut *conn)
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
@@ -153,61 +232,40 @@ impl RegistryRepository for SqliteDagStore {
         Ok(count > 0)
     }
 
-    fn append_agent_state(
-        &self,
-        state: &vlinder_core::domain::AgentState,
-    ) -> Result<(), RepositoryError> {
-        use crate::models::NewAgentState;
-        use crate::schema::agent_states;
-
+    fn append_readiness_check(&self, check: &ReadinessCheck) -> Result<(), RepositoryError> {
+        let updated_at = check.updated_at.to_rfc3339();
+        let row = NewReadinessCheck {
+            agent_name: check.agent.as_str(),
+            worker: &check.worker,
+            status: check.status.as_str(),
+            updated_at: &updated_at,
+            error: check.error.as_deref(),
+        };
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        let updated_at_str = state.updated_at.to_rfc3339();
-
-        diesel::insert_into(agent_states::table)
-            .values(&NewAgentState {
-                agent_name: state.agent.as_str(),
-                state: state.status.as_str(),
-                updated_at: &updated_at_str,
-                error: state.error.as_deref(),
-            })
+        diesel::insert_into(readiness_checks::table)
+            .values(&row)
             .execute(&mut *conn)
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
         Ok(())
     }
 
-    fn get_agent_state(
-        &self,
-        name: &str,
-    ) -> Result<Option<vlinder_core::domain::AgentState>, RepositoryError> {
-        use crate::models::AgentStateRow;
-        use crate::schema::agent_states;
-        use std::str::FromStr;
-
+    fn all_checks_ready(&self, agent_name: &str) -> Result<bool, RepositoryError> {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        let row: Option<AgentStateRow> = agent_states::table
-            .filter(agent_states::agent_name.eq(name))
-            .order(agent_states::updated_at.desc())
-            .select(AgentStateRow::as_select())
-            .first(&mut *conn)
-            .optional()
-            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(self.get_derived_status_inner(&mut conn, agent_name)? == Some(AgentStatus::Live))
+    }
 
-        match row {
-            None => Ok(None),
-            Some(r) => {
-                let status = vlinder_core::domain::AgentStatus::from_str(&r.state)
-                    .map_err(RepositoryError::Serialization)?;
-                let updated_at = chrono::DateTime::parse_from_rfc3339(&r.updated_at)
-                    .map_err(|e| RepositoryError::Serialization(e.to_string()))?
-                    .with_timezone(&chrono::Utc);
-                Ok(Some(vlinder_core::domain::AgentState {
-                    agent: vlinder_core::domain::AgentName::new(r.agent_name),
-                    status,
-                    updated_at,
-                    error: r.error,
-                }))
-            }
-        }
+    fn get_derived_status(&self, agent_name: &str) -> Result<Option<AgentStatus>, RepositoryError> {
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        self.get_derived_status_inner(&mut conn, agent_name)
+    }
+
+    fn get_derived_status_with_error(
+        &self,
+        agent_name: &str,
+    ) -> Result<(Option<AgentStatus>, Option<String>), RepositoryError> {
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        self.get_derived_status_with_error_inner(&mut conn, agent_name)
     }
 }
 
@@ -392,67 +450,5 @@ mod tests {
         assert_eq!(restored.requirements.models.len(), 1);
         assert_eq!(restored.requirements.services.len(), 1);
         assert!(restored.prompts.is_some());
-    }
-
-    // --- Agent state tests ---
-
-    #[test]
-    fn agent_state_round_trip() {
-        let store = test_store();
-        store.save_agent(&test_agent("echo")).unwrap();
-
-        let state = vlinder_core::domain::AgentState::registered(
-            vlinder_core::domain::AgentName::new("echo"),
-        );
-        store.append_agent_state(&state).unwrap();
-
-        let loaded = store.get_agent_state("echo").unwrap().unwrap();
-        assert_eq!(loaded.agent, state.agent);
-        assert_eq!(loaded.status, vlinder_core::domain::AgentStatus::Registered);
-        assert!(loaded.error.is_none());
-    }
-
-    #[test]
-    fn agent_state_transition() {
-        let store = test_store();
-        store.save_agent(&test_agent("echo")).unwrap();
-
-        let initial = vlinder_core::domain::AgentState::registered(
-            vlinder_core::domain::AgentName::new("echo"),
-        );
-        store.append_agent_state(&initial).unwrap();
-
-        let live = initial.transition(vlinder_core::domain::AgentStatus::Live, None);
-        store.append_agent_state(&live).unwrap();
-
-        let loaded = store.get_agent_state("echo").unwrap().unwrap();
-        assert_eq!(loaded.status, vlinder_core::domain::AgentStatus::Live);
-        assert!(loaded.error.is_none());
-    }
-
-    #[test]
-    fn agent_state_failed_with_error() {
-        let store = test_store();
-        store.save_agent(&test_agent("echo")).unwrap();
-
-        let initial = vlinder_core::domain::AgentState::registered(
-            vlinder_core::domain::AgentName::new("echo"),
-        );
-        let failed = initial.transition(
-            vlinder_core::domain::AgentStatus::Failed,
-            Some("image not found".to_string()),
-        );
-        store.append_agent_state(&failed).unwrap();
-
-        let loaded = store.get_agent_state("echo").unwrap().unwrap();
-        assert_eq!(loaded.status, vlinder_core::domain::AgentStatus::Failed);
-        assert_eq!(loaded.error.as_deref(), Some("image not found"));
-    }
-
-    #[test]
-    fn agent_state_returns_none_for_unknown() {
-        let store = test_store();
-        let loaded = store.get_agent_state("nonexistent").unwrap();
-        assert!(loaded.is_none());
     }
 }

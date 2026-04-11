@@ -28,6 +28,7 @@ mod operation;
 mod path;
 mod pod_id;
 mod provider;
+mod readiness;
 mod registry;
 pub mod registry_memory;
 mod registry_repository;
@@ -46,12 +47,13 @@ pub mod workers;
 // ============================================================================
 
 pub use agent::{Agent, LoadError as AgentLoadError, Prompts, Requirements};
-pub use agent_state::{AgentState, AgentStatus};
+pub use agent_state::AgentStatus;
 pub use container_id::ContainerId;
 pub use image_digest::ImageDigest;
 pub use image_ref::ImageRef;
 pub use operation::Operation;
 pub use pod_id::PodId;
+pub use readiness::{derive_status, ReadinessCheck, ReadinessStatus};
 pub use service_type::ServiceType;
 
 // ============================================================================

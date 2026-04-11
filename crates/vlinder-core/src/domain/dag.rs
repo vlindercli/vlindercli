@@ -576,7 +576,7 @@ pub struct InMemoryDagStore {
     nodes: std::sync::Mutex<Vec<DagNode>>,
     branches: std::sync::Mutex<Vec<Branch>>,
     sessions: std::sync::Mutex<Vec<Session>>,
-    agent_states: std::sync::Mutex<Vec<super::AgentState>>,
+    readiness_checks: std::sync::Mutex<Vec<super::ReadinessCheck>>,
 }
 
 impl InMemoryDagStore {
@@ -585,7 +585,7 @@ impl InMemoryDagStore {
             nodes: std::sync::Mutex::new(Vec::new()),
             branches: std::sync::Mutex::new(Vec::new()),
             sessions: std::sync::Mutex::new(Vec::new()),
-            agent_states: std::sync::Mutex::new(Vec::new()),
+            readiness_checks: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -958,21 +958,85 @@ impl super::RegistryRepository for InMemoryDagStore {
     fn agent_exists(&self, _: &str) -> Result<bool, super::RepositoryError> {
         Ok(false)
     }
-    fn append_agent_state(&self, state: &super::AgentState) -> Result<(), super::RepositoryError> {
-        let mut states = self.agent_states.lock().unwrap();
-        states.push(state.clone());
+    fn append_readiness_check(
+        &self,
+        check: &super::ReadinessCheck,
+    ) -> Result<(), super::RepositoryError> {
+        self.readiness_checks.lock().unwrap().push(check.clone());
         Ok(())
     }
-    fn get_agent_state(
+
+    fn get_derived_status(
         &self,
-        name: &str,
-    ) -> Result<Option<super::AgentState>, super::RepositoryError> {
-        let states = self.agent_states.lock().unwrap();
-        Ok(states
+        agent_name: &str,
+    ) -> Result<Option<super::AgentStatus>, super::RepositoryError> {
+        let checks = self.readiness_checks.lock().unwrap();
+
+        // Build (worker, latest_status) pairs for this agent
+        let workers: std::collections::HashSet<&str> = checks
             .iter()
-            .rev()
-            .find(|s| s.agent.as_str() == name)
-            .cloned())
+            .filter(|c| c.agent.as_str() == agent_name)
+            .map(|c| c.worker.as_str())
+            .collect();
+
+        if workers.is_empty() {
+            return Ok(None);
+        }
+
+        let latest_per_worker: Vec<(String, String)> = workers
+            .iter()
+            .filter_map(|worker| {
+                checks
+                    .iter()
+                    .rev()
+                    .find(|c| c.agent.as_str() == agent_name && c.worker == *worker)
+                    .map(|c| (c.worker.clone(), c.status.as_str().to_string()))
+            })
+            .collect();
+
+        super::readiness::derive_status(&latest_per_worker)
+    }
+
+    fn all_checks_ready(&self, agent_name: &str) -> Result<bool, super::RepositoryError> {
+        Ok(self.get_derived_status(agent_name)? == Some(super::AgentStatus::Live))
+    }
+
+    fn get_derived_status_with_error(
+        &self,
+        agent_name: &str,
+    ) -> Result<(Option<super::AgentStatus>, Option<String>), super::RepositoryError> {
+        let checks = self.readiness_checks.lock().unwrap();
+        let workers: std::collections::HashSet<&str> = checks
+            .iter()
+            .filter(|c| c.agent.as_str() == agent_name)
+            .map(|c| c.worker.as_str())
+            .collect();
+        if workers.is_empty() {
+            return Ok((None, None));
+        }
+        let latest_per_worker: Vec<(String, String)> = workers
+            .iter()
+            .filter_map(|worker| {
+                checks
+                    .iter()
+                    .rev()
+                    .find(|c| c.agent.as_str() == agent_name && c.worker == *worker)
+                    .map(|c| (c.worker.clone(), c.status.as_str().to_string()))
+            })
+            .collect();
+        let status = super::readiness::derive_status(&latest_per_worker)?;
+        let error = if status == Some(super::AgentStatus::Failed) {
+            checks
+                .iter()
+                .rev()
+                .find(|c| {
+                    c.agent.as_str() == agent_name && c.status == super::ReadinessStatus::Failed
+                })
+                .and_then(|c| c.error.clone())
+        } else {
+            None
+        };
+        Ok((status, error))
     }
 }
 

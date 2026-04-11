@@ -38,16 +38,44 @@ pub trait RegistryRepository: Send + Sync {
     /// Check if an agent exists.
     fn agent_exists(&self, name: &str) -> Result<bool, RepositoryError>;
 
-    /// Append a state transition to the agent state log.
-    fn append_agent_state(&self, _state: &super::AgentState) -> Result<(), RepositoryError> {
+    /// Append a readiness check for an agent worker.
+    fn append_readiness_check(
+        &self,
+        _check: &super::ReadinessCheck,
+    ) -> Result<(), RepositoryError> {
         Err(RepositoryError::Database(
-            "append_agent_state not implemented".to_string(),
+            "append_readiness_check not implemented".to_string(),
         ))
     }
 
-    /// Get the latest agent deployment state by name.
-    fn get_agent_state(&self, _name: &str) -> Result<Option<super::AgentState>, RepositoryError> {
+    /// Check if all readiness checks for an agent are ready.
+    /// Returns true if every worker's latest check has status "ready".
+    fn all_checks_ready(&self, _agent_name: &str) -> Result<bool, RepositoryError> {
+        Ok(false)
+    }
+
+    /// Derive the agent's status from its readiness checks.
+    ///
+    /// Looks at each worker's latest check:
+    /// - All `ready` → `Live`
+    /// - Any `failed` → `Failed`
+    /// - Any `pending` → `Deploying`
+    /// - Any `deleting` → `Deleting`
+    /// - All `deleted` → `Deleted`
+    /// - No checks → `None`
+    fn get_derived_status(
+        &self,
+        _agent_name: &str,
+    ) -> Result<Option<super::AgentStatus>, RepositoryError> {
         Ok(None)
+    }
+
+    /// Derive status and return the error from the latest Failed check (if any).
+    fn get_derived_status_with_error(
+        &self,
+        _agent_name: &str,
+    ) -> Result<(Option<super::AgentStatus>, Option<String>), RepositoryError> {
+        Ok((None, None))
     }
 }
 

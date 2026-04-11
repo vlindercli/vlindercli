@@ -174,9 +174,9 @@ fn deploy(path: Option<PathBuf>) {
     let mut last_status: Option<AgentStatus> = None;
     loop {
         match client.get_agent_state(&agent_name) {
-            Ok(Some(state)) => {
-                if last_status.as_ref() != Some(&state.status) {
-                    match &state.status {
+            Ok(Some(status)) => {
+                if last_status.as_ref() != Some(&status) {
+                    match &status {
                         AgentStatus::Registered => println!("  Registered"),
                         AgentStatus::Deploying => println!("  Deploying..."),
                         AgentStatus::Live => {
@@ -185,15 +185,12 @@ fn deploy(path: Option<PathBuf>) {
                             break;
                         }
                         AgentStatus::Failed => {
-                            eprintln!(
-                                "Deploy failed: {}",
-                                state.error.as_deref().unwrap_or("unknown error")
-                            );
+                            eprintln!("Deploy failed");
                             std::process::exit(1);
                         }
                         _ => {}
                     }
-                    last_status = Some(state.status);
+                    last_status = Some(status);
                 }
             }
             Ok(None) => {}
@@ -507,24 +504,21 @@ fn delete(name: &str) {
     let mut last_status: Option<AgentStatus> = None;
     loop {
         match client.get_agent_state(name) {
-            Ok(Some(state)) => {
-                if last_status.as_ref() != Some(&state.status) {
-                    match &state.status {
+            Ok(Some(status)) => {
+                if last_status.as_ref() != Some(&status) {
+                    match &status {
                         AgentStatus::Deleting => println!("  Deleting..."),
                         AgentStatus::Deleted => {
                             println!("Deleted agent '{name}'");
                             break;
                         }
                         AgentStatus::Failed => {
-                            eprintln!(
-                                "Delete failed: {}",
-                                state.error.as_deref().unwrap_or("unknown error")
-                            );
+                            eprintln!("Delete failed");
                             std::process::exit(1);
                         }
                         _ => {}
                     }
-                    last_status = Some(state.status);
+                    last_status = Some(status);
                 }
             }
             Ok(None) => {}

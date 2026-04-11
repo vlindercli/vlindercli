@@ -168,15 +168,16 @@ impl SqliteDagStore {
                  agent_name TEXT NOT NULL,
                  message_id TEXT NOT NULL UNIQUE
              );
-             CREATE TABLE IF NOT EXISTS agent_states (
+             CREATE TABLE IF NOT EXISTS readiness_checks (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 agent_name TEXT NOT NULL REFERENCES agents(name),
-                 state TEXT NOT NULL,
+                 agent_name TEXT NOT NULL,
+                 worker TEXT NOT NULL,
+                 status TEXT NOT NULL,
                  updated_at TEXT NOT NULL,
                  error TEXT
              );
-             CREATE INDEX IF NOT EXISTS idx_agent_states_name
-                 ON agent_states (agent_name, updated_at);
+             CREATE INDEX IF NOT EXISTS idx_readiness_checks_agent_worker
+                 ON readiness_checks (agent_name, worker, updated_at);
              ",
         )
         .map_err(|e| format!("failed to initialize dag store: {e}"))?;

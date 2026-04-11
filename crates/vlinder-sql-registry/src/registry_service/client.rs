@@ -78,11 +78,11 @@ impl GrpcRegistryClient {
         Ok(SubmissionId::from(resp.submission_id))
     }
 
-    /// Query agent deployment state.
+    /// Query agent deployment status.
     pub fn get_agent_state(
         &self,
         name: &str,
-    ) -> Result<Option<vlinder_core::domain::AgentState>, String> {
+    ) -> Result<Option<vlinder_core::domain::AgentStatus>, String> {
         let mut client = self.client.clone();
         let response = self
             .runtime
@@ -99,17 +99,7 @@ impl GrpcRegistryClient {
             Some(status) => {
                 let agent_status: vlinder_core::domain::AgentStatus =
                     status.parse().map_err(|e: String| e)?;
-                let updated_at = resp
-                    .updated_at
-                    .as_deref()
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                    .map_or_else(chrono::Utc::now, |dt| dt.with_timezone(&chrono::Utc));
-                Ok(Some(vlinder_core::domain::AgentState {
-                    agent: vlinder_core::domain::AgentName::new(name),
-                    status: agent_status,
-                    updated_at,
-                    error: resp.error,
-                }))
+                Ok(Some(agent_status))
             }
             None => Ok(None),
         }

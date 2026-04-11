@@ -151,22 +151,23 @@ diesel::table! {
 }
 
 diesel::table! {
-    agent_states (id) {
-        id -> Integer,
-        agent_name -> Text,
-        state -> Text,
-        updated_at -> Text,
-        error -> Nullable<Text>,
-    }
-}
-
-diesel::table! {
     models (name) {
         name -> Text,
         model_type -> Text,
         provider -> Text,
         model_path -> Text,
         digest -> Text,
+    }
+}
+
+diesel::table! {
+    readiness_checks (id) {
+        id -> Integer,
+        agent_name -> Text,
+        worker -> Text,
+        status -> Text,
+        updated_at -> Text,
+        error -> Nullable<Text>,
     }
 }
 
@@ -179,8 +180,6 @@ diesel::joinable!(fork_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(promote_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(deploy_agent_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(delete_agent_nodes -> dag_nodes (dag_hash));
-diesel::joinable!(agent_states -> agents (agent_name));
-
 diesel::allow_tables_to_appear_in_same_query!(
     dag_nodes,
     invoke_nodes,
@@ -192,8 +191,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     branches,
     sessions,
     agents,
-    agent_states,
     deploy_agent_nodes,
     delete_agent_nodes,
     models,
+    readiness_checks,
 );
