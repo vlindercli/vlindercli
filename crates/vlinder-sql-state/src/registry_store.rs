@@ -7,7 +7,7 @@ use diesel::prelude::*;
 
 use crate::dag_store::SqliteDagStore;
 use crate::models::{AgentRow, ModelRow, NewAgent, NewModel, NewReadinessCheck};
-use crate::schema::{agent_states, agents, models, readiness_checks};
+use crate::schema::{agents, models, readiness_checks};
 use vlinder_core::domain::{
     Agent, AgentStatus, Model, ReadinessCheck, RegistryRepository, RepositoryError, StoredAgent,
     StoredModel,
@@ -212,10 +212,6 @@ impl RegistryRepository for SqliteDagStore {
 
     fn delete_agent(&self, name: &str) -> Result<bool, RepositoryError> {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        // Delete agent_states first (FK references agents.name)
-        diesel::delete(agent_states::table.filter(agent_states::agent_name.eq(name)))
-            .execute(&mut *conn)
-            .map_err(|e| RepositoryError::Database(e.to_string()))?;
         let affected = diesel::delete(agents::table.filter(agents::name.eq(name)))
             .execute(&mut *conn)
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
@@ -230,63 +226,6 @@ impl RegistryRepository for SqliteDagStore {
             .get_result(&mut *conn)
             .map_err(|e| RepositoryError::Database(e.to_string()))?;
         Ok(count > 0)
-    }
-
-    fn append_agent_state(
-        &self,
-        state: &vlinder_core::domain::AgentState,
-    ) -> Result<(), RepositoryError> {
-        use crate::models::NewAgentState;
-        use crate::schema::agent_states;
-
-        let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        let updated_at_str = state.updated_at.to_rfc3339();
-
-        diesel::insert_into(agent_states::table)
-            .values(&NewAgentState {
-                agent_name: state.agent.as_str(),
-                state: state.status.as_str(),
-                updated_at: &updated_at_str,
-                error: state.error.as_deref(),
-            })
-            .execute(&mut *conn)
-            .map_err(|e| RepositoryError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    fn get_agent_state(
-        &self,
-        name: &str,
-    ) -> Result<Option<vlinder_core::domain::AgentState>, RepositoryError> {
-        use crate::models::AgentStateRow;
-        use crate::schema::agent_states;
-        use std::str::FromStr;
-
-        let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        let row: Option<AgentStateRow> = agent_states::table
-            .filter(agent_states::agent_name.eq(name))
-            .order(agent_states::updated_at.desc())
-            .select(AgentStateRow::as_select())
-            .first(&mut *conn)
-            .optional()
-            .map_err(|e| RepositoryError::Database(e.to_string()))?;
-
-        match row {
-            None => Ok(None),
-            Some(r) => {
-                let status = vlinder_core::domain::AgentStatus::from_str(&r.state)
-                    .map_err(RepositoryError::Serialization)?;
-                let updated_at = chrono::DateTime::parse_from_rfc3339(&r.updated_at)
-                    .map_err(|e| RepositoryError::Serialization(e.to_string()))?
-                    .with_timezone(&chrono::Utc);
-                Ok(Some(vlinder_core::domain::AgentState {
-                    agent: vlinder_core::domain::AgentName::new(r.agent_name),
-                    status,
-                    updated_at,
-                    error: r.error,
-                }))
-            }
-        }
     }
 
     fn append_readiness_check(&self, check: &ReadinessCheck) -> Result<(), RepositoryError> {
@@ -507,67 +446,5 @@ mod tests {
         assert_eq!(restored.requirements.models.len(), 1);
         assert_eq!(restored.requirements.services.len(), 1);
         assert!(restored.prompts.is_some());
-    }
-
-    // --- Agent state tests ---
-
-    #[test]
-    fn agent_state_round_trip() {
-        let store = test_store();
-        store.save_agent(&test_agent("echo")).unwrap();
-
-        let state = vlinder_core::domain::AgentState::registered(
-            vlinder_core::domain::AgentName::new("echo"),
-        );
-        store.append_agent_state(&state).unwrap();
-
-        let loaded = store.get_agent_state("echo").unwrap().unwrap();
-        assert_eq!(loaded.agent, state.agent);
-        assert_eq!(loaded.status, vlinder_core::domain::AgentStatus::Registered);
-        assert!(loaded.error.is_none());
-    }
-
-    #[test]
-    fn agent_state_transition() {
-        let store = test_store();
-        store.save_agent(&test_agent("echo")).unwrap();
-
-        let initial = vlinder_core::domain::AgentState::registered(
-            vlinder_core::domain::AgentName::new("echo"),
-        );
-        store.append_agent_state(&initial).unwrap();
-
-        let live = initial.transition(vlinder_core::domain::AgentStatus::Live, None);
-        store.append_agent_state(&live).unwrap();
-
-        let loaded = store.get_agent_state("echo").unwrap().unwrap();
-        assert_eq!(loaded.status, vlinder_core::domain::AgentStatus::Live);
-        assert!(loaded.error.is_none());
-    }
-
-    #[test]
-    fn agent_state_failed_with_error() {
-        let store = test_store();
-        store.save_agent(&test_agent("echo")).unwrap();
-
-        let initial = vlinder_core::domain::AgentState::registered(
-            vlinder_core::domain::AgentName::new("echo"),
-        );
-        let failed = initial.transition(
-            vlinder_core::domain::AgentStatus::Failed,
-            Some("image not found".to_string()),
-        );
-        store.append_agent_state(&failed).unwrap();
-
-        let loaded = store.get_agent_state("echo").unwrap().unwrap();
-        assert_eq!(loaded.status, vlinder_core::domain::AgentStatus::Failed);
-        assert_eq!(loaded.error.as_deref(), Some("image not found"));
-    }
-
-    #[test]
-    fn agent_state_returns_none_for_unknown() {
-        let store = test_store();
-        let loaded = store.get_agent_state("nonexistent").unwrap();
-        assert!(loaded.is_none());
     }
 }

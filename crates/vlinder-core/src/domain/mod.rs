@@ -47,7 +47,7 @@ pub mod workers;
 // ============================================================================
 
 pub use agent::{Agent, LoadError as AgentLoadError, Prompts, Requirements};
-pub use agent_state::{AgentState, AgentStatus};
+pub use agent_state::AgentStatus;
 pub use container_id::ContainerId;
 pub use image_digest::ImageDigest;
 pub use image_ref::ImageRef;

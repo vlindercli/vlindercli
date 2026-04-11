@@ -8,9 +8,9 @@
 use diesel::prelude::*;
 
 use crate::schema::{
-    agent_states, agents, branches, complete_nodes, dag_nodes, delete_agent_nodes,
-    deploy_agent_nodes, fork_nodes, invoke_nodes, models, promote_nodes, readiness_checks,
-    request_nodes, response_nodes, sessions,
+    agents, branches, complete_nodes, dag_nodes, delete_agent_nodes, deploy_agent_nodes,
+    fork_nodes, invoke_nodes, models, promote_nodes, readiness_checks, request_nodes,
+    response_nodes, sessions,
 };
 
 // ============================================================================
@@ -328,29 +328,6 @@ pub struct NewModel<'a> {
     pub provider: &'a str,
     pub model_path: &'a str,
     pub digest: &'a str,
-}
-
-// ============================================================================
-// agent_states (infra lifecycle)
-// ============================================================================
-
-#[derive(Queryable, Selectable, Debug)]
-#[diesel(table_name = agent_states)]
-pub struct AgentStateRow {
-    pub id: i32,
-    pub agent_name: String,
-    pub state: String,
-    pub updated_at: String,
-    pub error: Option<String>,
-}
-
-#[derive(Insertable, Debug)]
-#[diesel(table_name = agent_states)]
-pub struct NewAgentState<'a> {
-    pub agent_name: &'a str,
-    pub state: &'a str,
-    pub updated_at: &'a str,
-    pub error: Option<&'a str>,
 }
 
 // ============================================================================
