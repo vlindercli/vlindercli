@@ -1019,6 +1019,44 @@ impl super::RegistryRepository for InMemoryDagStore {
     fn all_checks_ready(&self, agent_name: &str) -> Result<bool, super::RepositoryError> {
         Ok(self.get_derived_status(agent_name)? == Some(super::AgentStatus::Live))
     }
+
+    fn get_derived_status_with_error(
+        &self,
+        agent_name: &str,
+    ) -> Result<(Option<super::AgentStatus>, Option<String>), super::RepositoryError> {
+        let checks = self.readiness_checks.lock().unwrap();
+        let workers: std::collections::HashSet<&str> = checks
+            .iter()
+            .filter(|c| c.agent.as_str() == agent_name)
+            .map(|c| c.worker.as_str())
+            .collect();
+        if workers.is_empty() {
+            return Ok((None, None));
+        }
+        let latest_per_worker: Vec<(String, String)> = workers
+            .iter()
+            .filter_map(|worker| {
+                checks
+                    .iter()
+                    .rev()
+                    .find(|c| c.agent.as_str() == agent_name && c.worker == *worker)
+                    .map(|c| (c.worker.clone(), c.status.as_str().to_string()))
+            })
+            .collect();
+        let status = super::readiness::derive_status(&latest_per_worker)?;
+        let error = if status == Some(super::AgentStatus::Failed) {
+            checks
+                .iter()
+                .rev()
+                .find(|c| {
+                    c.agent.as_str() == agent_name && c.status == super::ReadinessStatus::Failed
+                })
+                .and_then(|c| c.error.clone())
+        } else {
+            None
+        };
+        Ok((status, error))
+    }
 }
 
 #[cfg(test)]

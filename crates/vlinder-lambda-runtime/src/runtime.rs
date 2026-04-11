@@ -121,9 +121,6 @@ impl LambdaRuntime {
     /// Ensure a Lambda function is deployed and mark readiness.
     fn ensure_deployed(&mut self, name: &str, agent: &Agent) {
         if self.functions.contains_key(name) {
-            let check =
-                ReadinessCheck::pending(AgentName::new(name), RuntimeType::Lambda.as_str()).ready();
-            let _ = self.repo.append_readiness_check(&check);
             return;
         }
 
@@ -158,12 +155,11 @@ impl LambdaRuntime {
 
     /// Tear down a Lambda function and mark deleted.
     fn ensure_deleted(&mut self, name: &str) {
-        if !self.functions.contains_key(name) {
-            return;
+        if self.functions.contains_key(name) {
+            tracing::info!(agent = name, "Tearing down Lambda function");
+            self.undeploy(name);
         }
         let agent_name = AgentName::new(name);
-        tracing::info!(agent = name, "Tearing down Lambda function");
-        self.undeploy(name);
         let deleted =
             AgentState::registered(agent_name.clone()).transition(AgentStatus::Deleted, None);
         if let Err(e) = self.repo.append_agent_state(&deleted) {
@@ -171,7 +167,7 @@ impl LambdaRuntime {
         }
         let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str()).deleted();
         let _ = self.repo.append_readiness_check(&check);
-        tracing::info!(agent = name, "Lambda function torn down: Deleted");
+        tracing::info!(agent = name, "Lambda function deleted");
     }
 
     /// Deploy a single agent as a Lambda function.

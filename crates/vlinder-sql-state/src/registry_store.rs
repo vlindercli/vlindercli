@@ -9,8 +9,8 @@ use crate::dag_store::SqliteDagStore;
 use crate::models::{AgentRow, ModelRow, NewAgent, NewModel, NewReadinessCheck};
 use crate::schema::{agent_states, agents, models, readiness_checks};
 use vlinder_core::domain::{
-    Agent, AgentStatus, Model, ReadinessCheck, RegistryRepository,
-    RepositoryError, StoredAgent, StoredModel,
+    Agent, AgentStatus, Model, ReadinessCheck, RegistryRepository, RepositoryError, StoredAgent,
+    StoredModel,
 };
 
 impl SqliteDagStore {
@@ -20,11 +20,11 @@ impl SqliteDagStore {
         &self,
         conn: &mut diesel::SqliteConnection,
         agent_name: &str,
-    ) -> Result<Vec<(String, String)>, RepositoryError> {
-        // Single query: for each worker, get the status of the row with max id.
+    ) -> Result<Vec<LatestCheckRow>, RepositoryError> {
+        // Single query: for each worker, get the row with max id.
         // id is monotonically increasing (AUTOINCREMENT), so max id = latest.
         diesel::sql_query(
-            "SELECT r.worker, r.status \
+            "SELECT r.worker, r.status, r.error \
              FROM readiness_checks r \
              INNER JOIN ( \
                  SELECT worker, MAX(id) AS max_id \
@@ -35,7 +35,6 @@ impl SqliteDagStore {
         )
         .bind::<diesel::sql_types::Text, _>(agent_name)
         .load::<LatestCheckRow>(conn)
-        .map(|rows| rows.into_iter().map(|r| (r.worker, r.status)).collect())
         .map_err(|e| RepositoryError::Database(e.to_string()))
     }
 
@@ -45,24 +44,37 @@ impl SqliteDagStore {
         conn: &mut diesel::SqliteConnection,
         agent_name: &str,
     ) -> Result<Option<AgentStatus>, RepositoryError> {
-        let checks = self.latest_checks_inner(conn, agent_name)?;
-        if checks.is_empty() {
-            return Ok(None);
-        }
-        vlinder_core::domain::derive_status(&checks)
+        let rows = self.latest_checks_inner(conn, agent_name)?;
+        let pairs: Vec<(String, String)> = rows
+            .iter()
+            .map(|r| (r.worker.clone(), r.status.clone()))
+            .collect();
+        vlinder_core::domain::derive_status(&pairs)
     }
 
-    /// Check if all readiness checks for an agent are ready (uses existing conn).
-    fn all_checks_ready_inner(
+    /// Derive status + error from readiness checks (uses existing conn).
+    fn get_derived_status_with_error_inner(
         &self,
         conn: &mut diesel::SqliteConnection,
         agent_name: &str,
-    ) -> Result<bool, RepositoryError> {
-        Ok(self.get_derived_status_inner(conn, agent_name)? == Some(AgentStatus::Live))
+    ) -> Result<(Option<AgentStatus>, Option<String>), RepositoryError> {
+        let rows = self.latest_checks_inner(conn, agent_name)?;
+        let pairs: Vec<(String, String)> = rows
+            .iter()
+            .map(|r| (r.worker.clone(), r.status.clone()))
+            .collect();
+        let status = vlinder_core::domain::derive_status(&pairs)?;
+        // If failed, find the error from the failed check
+        let error = if status == Some(AgentStatus::Failed) {
+            rows.iter()
+                .find(|r| r.status == vlinder_core::domain::ReadinessStatus::Failed.as_str())
+                .and_then(|r| r.error.clone())
+        } else {
+            None
+        };
+        Ok((status, error))
     }
 }
-
-
 
 /// Row type for the latest-check-per-worker raw SQL query.
 #[derive(diesel::QueryableByName)]
@@ -71,6 +83,8 @@ struct LatestCheckRow {
     worker: String,
     #[diesel(sql_type = diesel::sql_types::Text)]
     status: String,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    error: Option<String>,
 }
 
 impl RegistryRepository for SqliteDagStore {
@@ -301,6 +315,14 @@ impl RegistryRepository for SqliteDagStore {
     fn get_derived_status(&self, agent_name: &str) -> Result<Option<AgentStatus>, RepositoryError> {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
         self.get_derived_status_inner(&mut conn, agent_name)
+    }
+
+    fn get_derived_status_with_error(
+        &self,
+        agent_name: &str,
+    ) -> Result<(Option<AgentStatus>, Option<String>), RepositoryError> {
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        self.get_derived_status_with_error_inner(&mut conn, agent_name)
     }
 }
 

@@ -81,6 +81,14 @@ pub trait RegistryRepository: Send + Sync {
     ) -> Result<Option<super::AgentStatus>, RepositoryError> {
         Ok(None)
     }
+
+    /// Derive status and return the error from the latest Failed check (if any).
+    fn get_derived_status_with_error(
+        &self,
+        _agent_name: &str,
+    ) -> Result<(Option<super::AgentStatus>, Option<String>), RepositoryError> {
+        Ok((None, None))
+    }
 }
 
 #[derive(Debug)]

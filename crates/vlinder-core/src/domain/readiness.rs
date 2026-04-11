@@ -130,7 +130,9 @@ impl ReadinessCheck {
 ///
 /// Takes a slice of `(worker_name, status_string)` pairs — one per distinct worker.
 /// Returns `None` if the slice is empty.
-pub fn derive_status(checks: &[(String, String)]) -> Result<Option<super::AgentStatus>, super::RepositoryError> {
+pub fn derive_status(
+    checks: &[(String, String)],
+) -> Result<Option<super::AgentStatus>, super::RepositoryError> {
     if checks.is_empty() {
         return Ok(None);
     }
