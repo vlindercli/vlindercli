@@ -17,9 +17,9 @@ use super::proto::{
     UpdateJobStatusResponse,
 };
 use vlinder_core::domain::{
-    AgentManifest, AgentName, DeleteAgentMessage, DeployAgentMessage, InfraMessageKind,
-    InfraRoutingKey, JobStatus as DomainJobStatus, MessageQueue, Registry, RegistryRepository,
-    ResourceId, SubmissionId,
+    AgentManifest, AgentName, AgentStatus, DeleteAgentMessage, DeployAgentMessage,
+    InfraMessageKind, InfraRoutingKey, JobStatus as DomainJobStatus, MessageQueue, Registry,
+    RegistryRepository, ResourceId, SubmissionId,
 };
 
 /// gRPC server that wraps a Registry implementation.
@@ -148,6 +148,13 @@ impl RegistryService for RegistryServer {
             .registry
             .get_agents()
             .into_iter()
+            .filter(|a| {
+                self.repo
+                    .get_derived_status(&a.name)
+                    .ok()
+                    .flatten()
+                    .is_none_or(|s| s != AgentStatus::Deleted)
+            })
             .map(std::convert::Into::into)
             .collect();
 

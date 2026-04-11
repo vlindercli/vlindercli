@@ -34,6 +34,7 @@ impl SqliteDagStore {
 
         let mut all_ready = true;
         let mut all_deleted = true;
+        let mut any_deleted = false;
         for worker in &workers {
             let latest: Option<String> = readiness_checks::table
                 .filter(readiness_checks::agent_name.eq(agent_name))
@@ -53,6 +54,7 @@ impl SqliteDagStore {
                 }
                 Some(s) if s == ReadinessStatus::Deleted.as_str() => {
                     all_ready = false;
+                    any_deleted = true;
                 }
                 Some(s) if s == ReadinessStatus::Ready.as_str() => {
                     all_deleted = false;
@@ -69,6 +71,8 @@ impl SqliteDagStore {
             Ok(Some(AgentStatus::Live))
         } else if all_deleted {
             Ok(Some(AgentStatus::Deleted))
+        } else if any_deleted {
+            Ok(Some(AgentStatus::Deleting))
         } else {
             Ok(Some(AgentStatus::Deploying))
         }

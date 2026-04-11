@@ -1004,6 +1004,7 @@ impl super::RegistryRepository for InMemoryDagStore {
 
         let mut all_ready = true;
         let mut all_deleted = true;
+        let mut any_deleted = false;
         for worker in &workers {
             let latest = checks
                 .iter()
@@ -1019,6 +1020,7 @@ impl super::RegistryRepository for InMemoryDagStore {
                 }
                 Some(super::ReadinessStatus::Deleted) => {
                     all_ready = false;
+                    any_deleted = true;
                 }
                 Some(super::ReadinessStatus::Ready) => {
                     all_deleted = false;
@@ -1034,6 +1036,8 @@ impl super::RegistryRepository for InMemoryDagStore {
             Ok(Some(super::AgentStatus::Live))
         } else if all_deleted {
             Ok(Some(super::AgentStatus::Deleted))
+        } else if any_deleted {
+            Ok(Some(super::AgentStatus::Deleting))
         } else {
             Ok(Some(super::AgentStatus::Deploying))
         }
