@@ -186,12 +186,12 @@ Code review of PRs #68–#72 (steps 01–05) and step 06 identified issues to fi
 - ~~**N+1 query in `get_derived_status_inner`.**~~ Collapsed into single self-join query via `latest_checks_inner` (`MAX(id)` per worker).
 - ~~**Duplicated derivation logic.**~~ Extracted shared `derive_status()` in `vlinder-core/domain/readiness.rs`, used by both `InMemoryDagStore` and `SqliteDagStore`. (Moved from step 03 — natural fit alongside the query refactor.)
 
-### Step 03 (derived-status)
+### Step 03 (derived-status) — ✅ done
 
-- **`ensure_deleted` no-ops when function not in local map.** If the runtime restarts or never tracked the function, `ensure_deleted` returns early without marking the readiness check as `Deleted`. Agent stuck in `Deleting` forever. Same class of bug that caused the e2e hang. **Medium severity.** Fix: mark readiness check as `Deleted` even when the function isn't locally tracked.
-- **`ensure_deployed` appends a ready check every tick.** When a function is already in the local map but status is still `Deploying`, a new `ready` readiness check row is inserted on every tick cycle. Guard: only append if the latest check for this worker isn't already `ready`.
-- **Error reason lost from deploy/delete failure messages.** `GetAgentState` gRPC response returns `error: None` always. CLI shows "Deploy failed" with no explanation. **Medium severity.** Fix: `get_derived_status` (or a new `get_derived_status_with_error`) should pull the error string from the latest `Failed` readiness check and surface it through the gRPC response.
-- **`ListAgents` calls `get_derived_status` per agent.** N mutex acquisitions + N×(1+W) queries. Add a batch query or cache.
+- ~~**`ensure_deleted` no-ops when function not in local map.**~~ Now marks readiness check as `Deleted` even when the function isn't locally tracked. Conditional teardown only if function exists.
+- ~~**`ensure_deployed` appends a ready check every tick.**~~ Removed the re-append — returns early without writing when function already deployed.
+- ~~**Error reason lost from deploy/delete failure messages.**~~ Added `get_derived_status_with_error` to `RegistryRepository`. gRPC `GetAgentState` now returns the error from the latest `Failed` readiness check. CLI shows actual error on failure.
+- **`ListAgents` calls `get_derived_status` per agent.** N mutex acquisitions + N×(1+W) queries. Deferred — perf optimization, not a correctness issue.
 
 ### Step 05 (pod-liveness)
 
