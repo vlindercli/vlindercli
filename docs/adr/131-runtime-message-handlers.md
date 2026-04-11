@@ -16,6 +16,32 @@ Both `ContainerRuntime` (Podman) and `LambdaRuntime` implement `Runtime::tick()`
 
 **Session plane:** Neither runtime handles fork or promote. Today this works because sqlite-kv state travels on the DAG envelope — no infrastructure changes needed on fork. S3 Files breaks this assumption: fork requires CopyObject + access point creation + Lambda config switch.
 
+### The sync tick loop ordering bug (observed)
+
+The infra worker's tick loop processes deploy then delete in each iteration:
+
+```rust
+while !shutdown {
+    match queue.receive_deploy_agent() { ... }  // always tried first
+    match queue.receive_delete_agent() { ... }  // always tried second
+    sleep(10ms);
+}
+```
+
+This creates a message ordering bug. When the CLI does an "idempotent delete" (agent already deleted), it sees `Deleted` from previous readiness checks and exits immediately — but its NATS message is still queued. If a new deploy arrives before the infra worker consumes the stale delete, the worker processes the deploy first (because it tries deploy before delete), then the stale delete in the same iteration, poisoning the readiness state:
+
+```
+ Row 9:  registry=ready    @ 37.940  ← deploy processed
+ Row 10: container=pending @ 37.940  ← deploy processed
+ Row 11: registry=deleted  @ 37.942  ← stale delete processed 2ms later
+ Row 12: container=ready   @ 38.372  ← container runtime finishes deploy
+ Row 13: container=deleted @ 48.732  ← container runtime processes stale delete
+```
+
+The CLI deploy loop sees `Deleted`/`Deleting` instead of `Live` and hangs forever. This is not fixable with guards in the handler — the deploy re-registers the agent, so by the time the stale delete runs the agent exists again. The fix requires FIFO processing of all infra messages on a single stream, which requires async.
+
+Validated by e2e testing: the infra stress tests in `sample-agents-fleets` (commit `8579d74`) reliably reproduce this. The tests are parked on the `infra-stress-tests` branch, blocked on this ADR's async migration.
+
 ### The coordination problem
 
 Operations span multiple workers. Deploy requires:
@@ -129,6 +155,26 @@ Today each is a custom loop with ad-hoc message parsing. The Runtime trait is th
 - **Crash recovery**: agent in `Live` state but compute not running → restart
 
 These are reconciliation concerns that don't have messages — they detect drift between desired and actual state. The health check is what remains of `tick()` after all planes are migrated.
+
+## Current status
+
+### Prerequisite: registry-conditions (ready to merge)
+
+Branch `registry-conditions/06-remove-agent-state` is validated (unit tests + e2e pass). Implements readiness checks, derived status, barrier-based state transitions. The AgentState dead code is removed. Ready to merge to main.
+
+### Dependency chain
+
+1. **Merge registry-conditions to main** — gate: Lambda e2e validation on EC2
+2. **Async traits on MessageQueue** (this ADR, phase 1) — unblocks FIFO message processing
+3. **Async infra worker** (this ADR, phase 2) — fixes the tick loop ordering bug
+4. **Control/session/data plane signatures on MessageQueue** — unblocks S3 Files
+5. **S3 Files integration** (ADR 130)
+
+### Branches in progress
+
+- `runtime-handlers/01-queue-wiring`: async handler no-ops + queue wiring (3 commits)
+- `runtime-handlers/02-infra-plane`: Podman deploy/delete via handlers (1 commit on top)
+- `infra-stress-tests` (sample-agents-fleets): parked, blocked on async migration
 
 ## Consequences
 

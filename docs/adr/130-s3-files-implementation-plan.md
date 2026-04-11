@@ -100,12 +100,12 @@ After each invocation, capture the current file VersionIds and store them on the
 **Flow:**
 1. Stat-diff detects changes
 2. If no changes: carry forward previous manifest. Done.
-3. If changes: for each changed file, boto3 `put_object` from the mount to S3 → capture VersionId
+3. If changes: for each changed file, `put_object` from the mount to S3 → capture VersionId
 4. For unchanged files: carry forward VersionId from previous manifest
 5. Build manifest: `{path: VersionId, ...}`
 6. Store manifest JSON as `state` on the DAG Complete node
 
-**Why boto3 upload instead of waiting for sync:** S3 Files sync takes ~65s and aggregates writes. boto3 upload is instant and gives a per-invocation VersionId. Only changed files are uploaded (stat-diff tells us which). Unchanged files keep their existing VersionIds.
+**Why direct S3 upload instead of waiting for sync:** S3 Files sync takes ~65s and aggregates writes. A direct `put_object` via `aws-sdk-s3` is instant and gives a per-invocation VersionId. Only changed files are uploaded (stat-diff tells us which). Unchanged files keep their existing VersionIds.
 
 **Changes:**
 - Lambda adapter: after dispatch, call stat-diff, upload changed files, build manifest
@@ -209,9 +209,9 @@ Linear chain. Each step builds on the previous.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| S3 Files sync aggregates writes (~65s) | Can't rely on sync for per-invocation VersionIds | boto3 upload for changed files (step 5) |
+| S3 Files sync aggregates writes (~65s) | Can't rely on sync for per-invocation VersionIds | Direct S3 upload for changed files (step 5) |
 | CopyObject without POSIX metadata → readonly | Fork fails | Always set file-owner/group/permissions metadata (step 6) |
 | Access point limit (10,000 per file system) | Can't create unlimited branches | Cleanup old branch access points; one file system per agent |
 | Lambda config update on branch switch (~7s) | Latency on fork/switch | One-time cost per switch, not per invocation |
-| S3 Files only on AWS | No Azure/GCP portability | Phase 2 (boto3 copy + VersionId) is the portable fallback |
+| S3 Files only on AWS | No Azure/GCP portability | Phase 2 (S3 API copy + VersionId) is the portable fallback |
 | aws-sdk for s3files may not exist in Rust | Can't use typed SDK | Use raw AWS API calls via reqwest/hyper, or use the AWS CLI from Rust |
