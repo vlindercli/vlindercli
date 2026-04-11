@@ -95,22 +95,19 @@ impl Registry for PersistentRegistry {
             tracing::warn!(error = %e, agent = agent.name.as_str(), "Failed to set Deploying state");
         }
 
-        // Create readiness checks based on validated capabilities (dual write)
+        // Create readiness checks — status is derived from these.
         let agent_name = AgentName::new(&agent.name);
 
-        // Runtime — always needed
-        let check = ReadinessCheck::pending(agent_name.clone(), agent.runtime.as_str());
-        if let Err(e) = self.repo.append_readiness_check(&check) {
-            tracing::warn!(error = %e, "Failed to create compute readiness check");
+        // Registry's work (validation + persistence) is done — mark ready
+        let registry_check = ReadinessCheck::pending(agent_name.clone(), "registry").ready();
+        if let Err(e) = self.repo.append_readiness_check(&registry_check) {
+            tracing::warn!(error = %e, "Failed to create registry readiness check");
         }
-        // Object storage — if declared
-        if let Some(ref uri) = agent.object_storage {
-            if let Some(storage_type) = ObjectStorageType::from_scheme(uri.scheme()) {
-                let check = ReadinessCheck::pending(agent_name.clone(), storage_type.as_str());
-                if let Err(e) = self.repo.append_readiness_check(&check) {
-                    tracing::warn!(error = %e, "Failed to create storage readiness check");
-                }
-            }
+
+        // Runtime needs to provision compute — starts pending
+        let compute_check = ReadinessCheck::pending(agent_name, agent.runtime.as_str());
+        if let Err(e) = self.repo.append_readiness_check(&compute_check) {
+            tracing::warn!(error = %e, "Failed to create compute readiness check");
         }
 
         Ok(())
