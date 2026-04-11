@@ -17,9 +17,9 @@ use super::proto::{
     UpdateJobStatusResponse,
 };
 use vlinder_core::domain::{
-    AgentManifest, AgentName, DeleteAgentMessage, DeployAgentMessage, InfraMessageKind,
-    InfraRoutingKey, JobStatus as DomainJobStatus, MessageQueue, Registry, RegistryRepository,
-    ResourceId, SubmissionId,
+    AgentManifest, AgentName, AgentStatus, DeleteAgentMessage, DeployAgentMessage,
+    InfraMessageKind, InfraRoutingKey, JobStatus as DomainJobStatus, MessageQueue, Registry,
+    RegistryRepository, ResourceId, SubmissionId,
 };
 
 /// gRPC server that wraps a Registry implementation.
@@ -148,6 +148,13 @@ impl RegistryService for RegistryServer {
             .registry
             .get_agents()
             .into_iter()
+            .filter(|a| {
+                self.repo
+                    .get_derived_status(&a.name)
+                    .ok()
+                    .flatten()
+                    .is_none_or(|s| s != AgentStatus::Deleted)
+            })
             .map(std::convert::Into::into)
             .collect();
 
@@ -409,16 +416,16 @@ impl RegistryService for RegistryServer {
     ) -> Result<Response<GetAgentStateResponse>, Status> {
         let req = request.into_inner();
 
-        let state = self
+        let status = self
             .repo
-            .get_agent_state(&req.name)
+            .get_derived_status(&req.name)
             .map_err(|e| Status::internal(format!("state query failed: {e}")))?;
 
-        match state {
+        match status {
             Some(s) => Ok(Response::new(GetAgentStateResponse {
-                status: Some(s.status.as_str().to_string()),
-                updated_at: Some(s.updated_at.to_rfc3339()),
-                error: s.error,
+                status: Some(s.as_str().to_string()),
+                updated_at: None,
+                error: None,
             })),
             None => Ok(Response::new(GetAgentStateResponse {
                 status: None,
