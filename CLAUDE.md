@@ -92,6 +92,7 @@ Write throwaway code to learn, not to keep. Once you understand, delete and take
 
 - Never mention Claude in commit messages. No "Co-Authored-By" lines.
 - **Never use `--no-verify`** — if the hook fails, fix the issue.
+- **Rebase does not trigger pre-commit hooks.** After rebasing a stacked diff chain, manually run `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test` on each rebased branch. Dead code or new warnings introduced by conflict resolution won't be caught otherwise.
 
 ### Commit Format
 ```
