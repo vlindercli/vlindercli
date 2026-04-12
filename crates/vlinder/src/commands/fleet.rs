@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 
 use crate::config::CliConfig;
+use tokio::runtime::Runtime;
 use vlinder_core::domain::{agent_routing_key, DagNodeId, Fleet, FleetManifest, Registry};
 
 use super::connect::{connect_harness, connect_registry};
@@ -201,8 +202,9 @@ pub fn run(name: &str, prompt: Option<&str>) {
     );
 
     let invoke = |input: &str| -> String {
+        let rt = Runtime::new().expect("Failed to create tokio runtime");
         let enriched_input = format!("{fleet_context}\n\n{input}");
-        match harness.run_agent(
+        match rt.block_on(harness.run_agent(
             &entry_agent_id,
             &enriched_input,
             session_id.clone(),
@@ -210,7 +212,7 @@ pub fn run(name: &str, prompt: Option<&str>) {
             false,
             None,
             DagNodeId::root(),
-        ) {
+        )) {
             Ok(result) => result,
             Err(e) => format!("[error] {e}"),
         }

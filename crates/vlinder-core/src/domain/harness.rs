@@ -15,9 +15,10 @@ use crate::domain::{
     MessageType, PromoteMessage, Registry, ResourceId, SessionId, SessionMessageKind,
     SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
-use tokio::runtime::Runtime;
+use async_trait::async_trait;
 
 /// Common harness operations shared across all harness types.
+#[async_trait]
 pub trait Harness {
     /// Identify which transport submitted the job.
     ///
@@ -36,7 +37,7 @@ pub trait Harness {
     /// Sends input to the agent and blocks until the response arrives.
     /// Returns the agent's output as a string.
     #[allow(clippy::too_many_arguments)]
-    fn run_agent(
+    async fn run_agent(
         &self,
         agent_id: &ResourceId,
         input: &str,
@@ -143,7 +144,7 @@ impl CoreHarness {
     ///
     /// Returns the routing key, payload message, and job ID.
     #[allow(clippy::too_many_arguments)]
-    fn build_invoke(
+    async fn build_invoke(
         &self,
         agent_id: &ResourceId,
         input: &str,
@@ -168,13 +169,11 @@ impl CoreHarness {
             .registry
             .select_runtime(&agent)
             .ok_or_else(|| format!("no runtime available for agent: {agent_id}"))?;
-        let rt = Runtime::new().unwrap();
 
-        let last_invoke_node = rt
-            .block_on(
-                self.store
-                    .latest_node_on_branch(timeline, Some(MessageType::Invoke)),
-            )
+        let last_invoke_node = self
+            .store
+            .latest_node_on_branch(timeline, Some(MessageType::Invoke))
+            .await
             .unwrap_or(None);
         let last_invoke_payload = last_invoke_node.as_ref().and_then(|n| {
             self.store
@@ -183,11 +182,10 @@ impl CoreHarness {
                 .flatten()
                 .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
         });
-        let last_complete_node = rt
-            .block_on(
-                self.store
-                    .latest_node_on_branch(timeline, Some(MessageType::Complete)),
-            )
+        let last_complete_node = self
+            .store
+            .latest_node_on_branch(timeline, Some(MessageType::Complete))
+            .await
             .unwrap_or(None);
         let last_complete = last_complete_node
             .as_ref()
@@ -236,6 +234,7 @@ impl CoreHarness {
     }
 }
 
+#[async_trait]
 impl Harness for CoreHarness {
     fn harness_type(&self) -> HarnessType {
         self.harness_type
@@ -259,7 +258,7 @@ impl Harness for CoreHarness {
         (session_id, branch_id)
     }
 
-    fn run_agent(
+    async fn run_agent(
         &self,
         agent_id: &ResourceId,
         input: &str,
@@ -269,15 +268,17 @@ impl Harness for CoreHarness {
         initial_state: Option<String>,
         dag_parent: DagNodeId,
     ) -> Result<String, String> {
-        let (key, msg, job_id) = self.build_invoke(
-            agent_id,
-            input,
-            &session_id,
-            timeline,
-            sealed,
-            initial_state.as_deref(),
-            &dag_parent,
-        )?;
+        let (key, msg, job_id) = self
+            .build_invoke(
+                agent_id,
+                input,
+                &session_id,
+                timeline,
+                sealed,
+                initial_state.as_deref(),
+                &dag_parent,
+            )
+            .await?;
         self.registry.update_job_status(&job_id, JobStatus::Running);
 
         let harness = self.harness_type();
@@ -287,9 +288,12 @@ impl Harness for CoreHarness {
             .send_invoke(key, msg)
             .map_err(|e| format!("queue error: {e}"))?;
 
-        let rt = Runtime::new().expect("Failed to create tokio runtime for harness");
         let result = loop {
-            match rt.block_on(self.queue.receive_complete(&submission, harness, &agent)) {
+            match self
+                .queue
+                .receive_complete(&submission, harness, &agent)
+                .await
+            {
                 Ok((_key, v2, ack)) => {
                     let _ = ack();
                     break String::from_utf8_lossy(&v2.payload).to_string();

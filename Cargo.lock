@@ -4968,6 +4968,7 @@ dependencies = [
 name = "vlinder-harness"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "prost",
  "tokio",

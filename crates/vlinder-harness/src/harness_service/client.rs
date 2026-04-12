@@ -1,5 +1,6 @@
 //! gRPC client implementing the Harness trait.
 
+use async_trait::async_trait;
 use tonic::transport::Channel;
 
 use super::proto::{self, harness_client::HarnessClient};
@@ -43,6 +44,7 @@ impl GrpcHarnessClient {
     }
 }
 
+#[async_trait]
 impl Harness for GrpcHarnessClient {
     fn harness_type(&self) -> HarnessType {
         HarnessType::Grpc
@@ -67,7 +69,7 @@ impl Harness for GrpcHarnessClient {
         (session_id, branch_id)
     }
 
-    fn run_agent(
+    async fn run_agent(
         &self,
         agent_id: &ResourceId,
         input: &str,
@@ -88,9 +90,9 @@ impl Harness for GrpcHarnessClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.run_agent(request).await })
+        let response = client
+            .run_agent(request)
+            .await
             .map_err(|e| format!("gRPC error: {e}"))?;
 
         let resp = response.into_inner();

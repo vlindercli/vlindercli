@@ -67,13 +67,13 @@ impl HarnessService for HarnessServer {
         let req = request.into_inner();
         let harness = Arc::clone(&self.harness);
 
-        let result = tokio::task::spawn_blocking(move || {
-            let id = ResourceId::new(&req.agent_id);
-            let session_id = SessionId::try_from(req.session_id)
-                .map_err(|e| format!("invalid session_id: {e}"))?;
-            let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
-            let dag_parent = DagNodeId::from(req.dag_parent);
-            harness.run_agent(
+        let id = ResourceId::new(&req.agent_id);
+        let session_id = SessionId::try_from(req.session_id)
+            .map_err(|e| Status::invalid_argument(format!("invalid session_id: {e}")))?;
+        let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
+        let dag_parent = DagNodeId::from(req.dag_parent);
+        let result = harness
+            .run_agent(
                 &id,
                 &req.input,
                 session_id,
@@ -82,9 +82,7 @@ impl HarnessService for HarnessServer {
                 req.initial_state,
                 dag_parent,
             )
-        })
-        .await
-        .map_err(|e| Status::internal(format!("spawn_blocking failed: {e}")))?;
+            .await;
 
         match result {
             Ok(output) => Ok(Response::new(RunAgentResponse {

@@ -268,7 +268,8 @@ fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&
     };
 
     let invoke = |input: &str| -> String {
-        match harness.run_agent(
+        let rt = Runtime::new().expect("Failed to create tokio runtime");
+        match rt.block_on(harness.run_agent(
             &agent_id,
             input,
             session_id.clone(),
@@ -276,7 +277,7 @@ fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&
             sealed,
             initial_state.clone(),
             dag_parent.clone(),
-        ) {
+        )) {
             Ok(result) => result,
             Err(e) => format!("[error] {e}"),
         }
