@@ -4906,6 +4906,7 @@ dependencies = [
 name = "vlinder-amqp"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures",
  "lapin",
  "serde_json",
@@ -4930,6 +4931,7 @@ name = "vlinder-core"
 version = "0.1.0"
 dependencies = [
  "async-openai",
+ "async-trait",
  "base64",
  "chrono",
  "ed25519-dalek",
@@ -4941,6 +4943,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
  "toml",
  "tracing",
  "uuid",
@@ -4980,6 +4983,7 @@ dependencies = [
  "http 1.4.0",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "ureq 3.2.0",
  "vlinder-core",
@@ -4989,9 +4993,11 @@ dependencies = [
 name = "vlinder-lambda-adapter"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "rustls 0.23.36",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "ureq 2.12.1",
@@ -5019,6 +5025,7 @@ name = "vlinder-nats"
 version = "0.1.0"
 dependencies = [
  "async-nats",
+ "async-trait",
  "dirs",
  "futures",
  "prost",
@@ -5038,6 +5045,7 @@ dependencies = [
  "http 1.4.0",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "ureq 3.2.0",
  "vlinder-core",
@@ -5064,6 +5072,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "ureq 2.12.1",
@@ -5078,6 +5087,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "tiny_http",
+ "tokio",
  "tracing",
  "ureq 2.12.1",
  "vlinder-amqp",
@@ -5137,6 +5147,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
  "vlinder-core",
 ]
 
@@ -5149,6 +5160,7 @@ dependencies = [
  "serde_json",
  "sqlite-vec",
  "tempfile",
+ "tokio",
  "vlinder-core",
  "zerocopy 0.7.35",
 ]

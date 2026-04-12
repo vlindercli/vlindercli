@@ -7,6 +7,7 @@
 use std::io::Read;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use vlinder_core::domain::{
     Acknowledgement, AgentName, CompleteMessage, DataRoutingKey, DeleteAgentMessage,
     DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey, InvokeMessage, MessageQueue,
@@ -37,6 +38,7 @@ impl LambdaRuntimeQueue {
     }
 }
 
+#[async_trait]
 impl MessageQueue for LambdaRuntimeQueue {
     // -------------------------------------------------------------------------
     // Invoke — from Lambda Runtime API, not from the queue
@@ -47,7 +49,7 @@ impl MessageQueue for LambdaRuntimeQueue {
         self.inner.send_invoke(key, msg)
     }
 
-    fn receive_invoke(
+    async fn receive_invoke(
         &self,
         _agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
@@ -105,32 +107,34 @@ impl MessageQueue for LambdaRuntimeQueue {
         self.inner.send_complete(key, msg)
     }
 
-    fn receive_complete(
+    async fn receive_complete(
         &self,
         submission: &SubmissionId,
         harness: HarnessType,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
-        self.inner.receive_complete(submission, harness, agent)
+        self.inner
+            .receive_complete(submission, harness, agent)
+            .await
     }
 
     fn send_request(&self, key: DataRoutingKey, msg: RequestMessage) -> Result<(), QueueError> {
         self.inner.send_request(key, msg)
     }
 
-    fn receive_request(
+    async fn receive_request(
         &self,
         service: ServiceBackend,
         operation: Operation,
     ) -> Result<(DataRoutingKey, RequestMessage, Acknowledgement), QueueError> {
-        self.inner.receive_request(service, operation)
+        self.inner.receive_request(service, operation).await
     }
 
     fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {
         self.inner.send_response(key, msg)
     }
 
-    fn receive_response(
+    async fn receive_response(
         &self,
         submission: &SubmissionId,
         agent: &AgentName,
@@ -140,6 +144,7 @@ impl MessageQueue for LambdaRuntimeQueue {
     ) -> Result<(DataRoutingKey, ResponseMessage, Acknowledgement), QueueError> {
         self.inner
             .receive_response(submission, agent, service, operation, sequence)
+            .await
     }
 
     fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {

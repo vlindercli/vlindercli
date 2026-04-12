@@ -15,6 +15,7 @@ use crate::domain::{
     MessageType, PromoteMessage, Registry, ResourceId, SessionId, SessionMessageKind,
     SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
+use tokio::runtime::Runtime;
 
 /// Common harness operations shared across all harness types.
 pub trait Harness {
@@ -281,8 +282,9 @@ impl Harness for CoreHarness {
             .send_invoke(key, msg)
             .map_err(|e| format!("queue error: {e}"))?;
 
+        let rt = Runtime::new().expect("Failed to create tokio runtime for harness");
         let result = loop {
-            match self.queue.receive_complete(&submission, harness, &agent) {
+            match rt.block_on(self.queue.receive_complete(&submission, harness, &agent)) {
                 Ok((_key, v2, ack)) => {
                     let _ = ack();
                     break String::from_utf8_lossy(&v2.payload).to_string();

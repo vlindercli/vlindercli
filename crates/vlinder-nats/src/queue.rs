@@ -12,6 +12,7 @@ use std::time::Duration;
 use async_nats::jetstream::{self, consumer, stream};
 type PullConsumer = async_nats::jetstream::consumer::Consumer<consumer::pull::Config>;
 use async_nats::jetstream::message::Message as JetStreamMessage;
+use async_trait::async_trait;
 use futures::StreamExt;
 use tokio::runtime::Runtime;
 
@@ -224,6 +225,7 @@ impl NatsQueue {
     }
 }
 
+#[async_trait]
 impl MessageQueue for NatsQueue {
     fn on_cluster_start(&self) -> Result<(), QueueError> {
         // Stream is already created in connect(). Log its state for observability.
@@ -304,25 +306,23 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn receive_invoke(
+    async fn receive_invoke(
         &self,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
         let filter = invoke_filter(agent);
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = invoke_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid invoke subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = invoke_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid invoke subject: {subject}"))
+        })?;
 
-            let msg: InvokeMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize invoke: {e}")))?;
+        let msg: InvokeMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize invoke: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
     fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
@@ -351,7 +351,7 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn receive_complete(
+    async fn receive_complete(
         &self,
         submission: &SubmissionId,
         harness: HarnessType,
@@ -359,19 +359,17 @@ impl MessageQueue for NatsQueue {
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
         let filter = complete_filter(submission, agent, harness);
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = complete_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid complete subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = complete_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid complete subject: {subject}"))
+        })?;
 
-            let msg: CompleteMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize complete: {e}")))?;
+        let msg: CompleteMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize complete: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
     fn send_request(&self, key: DataRoutingKey, msg: RequestMessage) -> Result<(), QueueError> {
@@ -414,26 +412,24 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn receive_request(
+    async fn receive_request(
         &self,
         service: ServiceBackend,
         operation: Operation,
     ) -> Result<(DataRoutingKey, RequestMessage, Acknowledgement), QueueError> {
         let filter = request_filter(service, operation);
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = request_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid request subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = request_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid request subject: {subject}"))
+        })?;
 
-            let msg: RequestMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize request: {e}")))?;
+        let msg: RequestMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize request: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
     fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {
@@ -476,7 +472,7 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn receive_response(
+    async fn receive_response(
         &self,
         submission: &SubmissionId,
         agent: &AgentName,
@@ -486,19 +482,17 @@ impl MessageQueue for NatsQueue {
     ) -> Result<(DataRoutingKey, ResponseMessage, Acknowledgement), QueueError> {
         let filter = response_filter(submission, agent, service, operation, sequence);
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = response_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid response subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = response_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid response subject: {subject}"))
+        })?;
 
-            let msg: ResponseMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize response: {e}")))?;
+        let msg: ResponseMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize response: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
     fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
@@ -605,53 +599,47 @@ impl MessageQueue for NatsQueue {
         })
     }
 
-    fn receive_deploy_agent(
+    async fn receive_deploy_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
         let filter = "vlinder.infra.v1.*.deploy-agent";
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = deploy_agent_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid deploy-agent subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = deploy_agent_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid deploy-agent subject: {subject}"))
+        })?;
 
-            let msg: DeployAgentMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize deploy-agent: {e}")))?;
+        let msg: DeployAgentMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize deploy-agent: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
-    fn receive_delete_agent(
+    async fn receive_delete_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
         let filter = "vlinder.infra.v1.*.delete-agent";
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = delete_agent_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid delete-agent subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = delete_agent_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid delete-agent subject: {subject}"))
+        })?;
 
-            let msg: DeleteAgentMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize delete-agent: {e}")))?;
+        let msg: DeleteAgentMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize delete-agent: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
-    fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+    async fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
         let filter = "vlinder.>";
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
-            Ok((js_msg.subject.to_string(), js_msg.payload.to_vec(), ack_fn))
-        })
+        let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+        Ok((js_msg.subject.to_string(), js_msg.payload.to_vec(), ack_fn))
     }
 }
 

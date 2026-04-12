@@ -70,6 +70,7 @@ pub struct KvWorker {
     stores: RwLock<HashMap<String, Arc<SqliteObjectStorage>>>,
     state_stores: RwLock<HashMap<String, Arc<SqliteStateStore>>>,
     service: ServiceBackend,
+    rt: tokio::runtime::Runtime,
 }
 
 impl KvWorker {
@@ -78,12 +79,15 @@ impl KvWorker {
         registry: Arc<dyn Registry>,
         service: ServiceBackend,
     ) -> Self {
+        let rt =
+            tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for KvWorker");
         Self {
             queue,
             registry,
             stores: RwLock::new(HashMap::new()),
             state_stores: RwLock::new(HashMap::new()),
             service,
+            rt,
         }
     }
 
@@ -205,7 +209,10 @@ impl KvWorker {
     }
 
     fn try_get_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Get) {
+        match self
+            .rt
+            .block_on(self.queue.receive_request(self.service, Operation::Get))
+        {
             Ok((key, msg, ack)) => {
                 let (agent, session) = extract_agent_session(&key);
                 let start = std::time::Instant::now();
@@ -239,7 +246,10 @@ impl KvWorker {
     }
 
     fn try_put_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Put) {
+        match self
+            .rt
+            .block_on(self.queue.receive_request(self.service, Operation::Put))
+        {
             Ok((key, msg, ack)) => {
                 let (agent, session) = extract_agent_session(&key);
                 let start = std::time::Instant::now();
@@ -273,7 +283,10 @@ impl KvWorker {
     }
 
     fn try_list_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::List) {
+        match self
+            .rt
+            .block_on(self.queue.receive_request(self.service, Operation::List))
+        {
             Ok((key, msg, ack)) => {
                 let (agent, session) = extract_agent_session(&key);
                 let start = std::time::Instant::now();
@@ -307,7 +320,10 @@ impl KvWorker {
     }
 
     fn try_delete_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Delete) {
+        match self
+            .rt
+            .block_on(self.queue.receive_request(self.service, Operation::Delete))
+        {
             Ok((key, msg, ack)) => {
                 let (agent, session) = extract_agent_session(&key);
                 let start = std::time::Instant::now();
@@ -593,6 +609,10 @@ mod tests {
     };
     use vlinder_core::queue::InMemoryQueue;
 
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Runtime::new().unwrap().block_on(f)
+    }
+
     fn test_secret_store() -> Arc<dyn SecretStore> {
         Arc::new(InMemorySecretStore::new())
     }
@@ -700,15 +720,14 @@ mod tests {
 
         queue.send_request(put_key, put_msg).unwrap();
         assert!(handler.tick());
-        let (_key, response, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Put,
-                Sequence::first(),
-            )
-            .unwrap();
+        let (_key, response, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Put,
+            Sequence::first(),
+        ))
+        .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
         ack().unwrap();
 
@@ -726,15 +745,14 @@ mod tests {
 
         queue.send_request(get_key, get_msg).unwrap();
         assert!(handler.tick());
-        let (_key, response, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Get,
-                Sequence::from(2),
-            )
-            .unwrap();
+        let (_key, response, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Get,
+            Sequence::from(2),
+        ))
+        .unwrap();
         assert_eq!(response.payload.as_slice(), b"hello world");
         ack().unwrap();
     }
@@ -781,15 +799,14 @@ mod tests {
         queue.send_request(put_key, put_msg).unwrap();
         assert!(handler.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Put,
-                Sequence::first(),
-            )
-            .unwrap();
+        let (_key, response, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Put,
+            Sequence::first(),
+        ))
+        .unwrap();
         ack().unwrap();
 
         // Response should be JSON with a state field
@@ -837,15 +854,14 @@ mod tests {
         let msg1 = make_request_msg(serde_json::to_vec(&put1).unwrap(), Some(String::new()));
         queue.send_request(key1, msg1).unwrap();
         handler.tick();
-        let (_key, resp1, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Put,
-                Sequence::first(),
-            )
-            .unwrap();
+        let (_key, resp1, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Put,
+            Sequence::first(),
+        ))
+        .unwrap();
         ack().unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
         let hash1 = state1["state"].as_str().unwrap().to_string();
@@ -866,15 +882,14 @@ mod tests {
         );
         queue.send_request(key2, msg2).unwrap();
         handler.tick();
-        let (_key, resp2, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Put,
-                Sequence::from(2),
-            )
-            .unwrap();
+        let (_key, resp2, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Put,
+            Sequence::from(2),
+        ))
+        .unwrap();
         ack().unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
         let hash2 = state2["state"].as_str().unwrap().to_string();
@@ -898,15 +913,14 @@ mod tests {
         );
         queue.send_request(get_key, get_msg).unwrap();
         handler.tick();
-        let (_key, resp, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Get,
-                Sequence::from(3),
-            )
-            .unwrap();
+        let (_key, resp, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Get,
+            Sequence::from(3),
+        ))
+        .unwrap();
         ack().unwrap();
         assert_eq!(resp.payload.as_slice(), b"aaa");
     }
@@ -948,15 +962,14 @@ mod tests {
         );
         queue.send_request(key1, msg1).unwrap();
         handler.tick();
-        let (_key, resp1, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Put,
-                Sequence::first(),
-            )
-            .unwrap();
+        let (_key, resp1, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Put,
+            Sequence::first(),
+        ))
+        .unwrap();
         ack().unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
         let hash1 = state1["state"].as_str().unwrap().to_string();
@@ -976,15 +989,14 @@ mod tests {
         );
         queue.send_request(key2, msg2).unwrap();
         handler.tick();
-        let (_key, resp2, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Put,
-                Sequence::from(2),
-            )
-            .unwrap();
+        let (_key, resp2, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Put,
+            Sequence::from(2),
+        ))
+        .unwrap();
         ack().unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
         let hash2 = state2["state"].as_str().unwrap().to_string();
@@ -1004,15 +1016,14 @@ mod tests {
         );
         queue.send_request(list_key2, list_msg2).unwrap();
         handler.tick();
-        let (_key, resp, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::List,
-                Sequence::from(3),
-            )
-            .unwrap();
+        let (_key, resp, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::List,
+            Sequence::from(3),
+        ))
+        .unwrap();
         ack().unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
         assert_eq!(files, vec!["/a.txt", "/b.txt"]);
@@ -1032,15 +1043,14 @@ mod tests {
         );
         queue.send_request(list_key1, list_msg1).unwrap();
         handler.tick();
-        let (_key, resp, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::List,
-                Sequence::from(4),
-            )
-            .unwrap();
+        let (_key, resp, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::List,
+            Sequence::from(4),
+        ))
+        .unwrap();
         ack().unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
         assert_eq!(files, vec!["/a.txt"]);
@@ -1080,15 +1090,14 @@ mod tests {
         let put_msg = make_request_msg(serde_json::to_vec(&put_payload).unwrap(), None);
         queue.send_request(put_key, put_msg).unwrap();
         handler.tick();
-        let (_key, _resp, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Put,
-                Sequence::first(),
-            )
-            .unwrap();
+        let (_key, _resp, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Put,
+            Sequence::first(),
+        ))
+        .unwrap();
         ack().unwrap();
 
         // Get with state in envelope — should echo it back
@@ -1107,15 +1116,14 @@ mod tests {
         );
         queue.send_request(get_key, get_msg).unwrap();
         handler.tick();
-        let (_key, response, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Get,
-                Sequence::from(2),
-            )
-            .unwrap();
+        let (_key, response, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Get,
+            Sequence::from(2),
+        ))
+        .unwrap();
         ack().unwrap();
 
         assert_eq!(

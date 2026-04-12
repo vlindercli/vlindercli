@@ -35,6 +35,7 @@ pub struct LambdaRuntime {
     functions: HashMap<String, DeployedFunction>,
     config: LambdaRuntimeConfig,
     client: Box<dyn LambdaClient>,
+    rt: tokio::runtime::Runtime,
 }
 
 impl LambdaRuntime {
@@ -72,6 +73,8 @@ impl LambdaRuntime {
             RuntimeType::Lambda.as_str()
         ));
 
+        let rt = tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime for LambdaRuntime");
         Self {
             id,
             queue,
@@ -80,6 +83,7 @@ impl LambdaRuntime {
             functions: HashMap::new(),
             config: config.clone(),
             client,
+            rt,
         }
     }
 
@@ -227,7 +231,7 @@ impl LambdaRuntime {
             let agent_id = AgentName::new(name);
 
             // Receive invoke (ADR 121 — data plane).
-            if let Ok((key, invoke, ack)) = self.queue.receive_invoke(&agent_id) {
+            if let Ok((key, invoke, ack)) = self.rt.block_on(self.queue.receive_invoke(&agent_id)) {
                 let _ = ack();
                 let function_name = format!("vlinder-{name}");
 
@@ -329,6 +333,10 @@ mod tests {
     use std::collections::HashSet;
     use vlinder_core::domain::InMemorySecretStore;
     use vlinder_core::queue::InMemoryQueue;
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Runtime::new().unwrap().block_on(f)
+    }
 
     // ── Mock client ─────────────────────────────────────────────────
 
@@ -669,7 +677,7 @@ mod tests {
         // The invoke should be consumed.
         let agent_id = AgentName::new("echo");
         assert!(
-            queue.receive_invoke(&agent_id).is_err(),
+            block_on(queue.receive_invoke(&agent_id)).is_err(),
             "invoke should have been consumed from the queue"
         );
     }
@@ -730,9 +738,12 @@ mod tests {
         // Tick — invoke_function fails, so daemon sends error complete.
         runtime.tick();
 
-        let (_key, complete, ack) = queue
-            .receive_complete(&submission, HarnessType::Grpc, &AgentName::new("echo"))
-            .expect("should receive error complete from daemon");
+        let (_key, complete, ack) = block_on(queue.receive_complete(
+            &submission,
+            HarnessType::Grpc,
+            &AgentName::new("echo"),
+        ))
+        .expect("should receive error complete from daemon");
         ack().unwrap();
         let payload_str = String::from_utf8_lossy(&complete.payload);
         assert!(

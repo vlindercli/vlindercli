@@ -15,7 +15,10 @@ use super::{
     PromoteMessage, RequestMessage, ResourceId, ResponseMessage, Sequence, ServiceBackend,
     SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
+use async_trait::async_trait;
 use std::fmt;
+use std::future::Future;
+use tokio::time::sleep;
 
 /// One-shot closure that acknowledges a received message was processed.
 pub type Acknowledgement = Box<dyn FnOnce() -> Result<(), QueueError> + Send>;
@@ -23,7 +26,8 @@ pub type Acknowledgement = Box<dyn FnOnce() -> Result<(), QueueError> + Send>;
 // --- MessageQueue Trait ---
 
 /// A message queue for sending and receiving typed messages (ADR 044).
-pub trait MessageQueue {
+#[async_trait]
+pub trait MessageQueue: Send + Sync {
     // -------------------------------------------------------------------------
     // Lifecycle (ADR 125)
     // -------------------------------------------------------------------------
@@ -73,7 +77,7 @@ pub trait MessageQueue {
     /// Receive an invoke from the data plane (ADR 121).
     ///
     /// Returns the routing key, payload, and acknowledgement.
-    fn receive_invoke(
+    async fn receive_invoke(
         &self,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError>;
@@ -90,7 +94,7 @@ pub trait MessageQueue {
     }
 
     /// Receive a complete from the data plane (ADR 121).
-    fn receive_complete(
+    async fn receive_complete(
         &self,
         _submission: &SubmissionId,
         _harness: HarnessType,
@@ -111,7 +115,7 @@ pub trait MessageQueue {
     }
 
     /// Receive a request from the data plane (ADR 121).
-    fn receive_request(
+    async fn receive_request(
         &self,
         _service: ServiceBackend,
         _operation: Operation,
@@ -131,7 +135,7 @@ pub trait MessageQueue {
     }
 
     /// Receive a response from the data plane (ADR 121).
-    fn receive_response(
+    async fn receive_response(
         &self,
         _submission: &SubmissionId,
         _agent: &AgentName,
@@ -150,7 +154,7 @@ pub trait MessageQueue {
     fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError>;
 
     /// Receive a fork from the session plane.
-    fn receive_fork(
+    async fn receive_fork(
         &self,
     ) -> Result<(SessionRoutingKey, ForkMessage, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
@@ -160,7 +164,7 @@ pub trait MessageQueue {
     fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError>;
 
     /// Receive a promote from the session plane.
-    fn receive_promote(
+    async fn receive_promote(
         &self,
     ) -> Result<(SessionRoutingKey, PromoteMessage, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
@@ -185,7 +189,7 @@ pub trait MessageQueue {
     ) -> Result<(), QueueError>;
 
     /// Receive an agent deploy from the infra plane.
-    fn receive_deploy_agent(
+    async fn receive_deploy_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
@@ -199,7 +203,7 @@ pub trait MessageQueue {
     ) -> Result<(), QueueError>;
 
     /// Receive an agent delete from the infra plane.
-    fn receive_delete_agent(
+    async fn receive_delete_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
@@ -214,7 +218,7 @@ pub trait MessageQueue {
     /// watch all traffic for projection.
     ///
     /// NATS: subscribes to `vlinder.>`. AMQP: binds to `vlinder.#`.
-    fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+    async fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
     }
 
@@ -228,7 +232,7 @@ pub trait MessageQueue {
     ///
     /// Data-plane variant of `call_service`. Routing key carries session/branch/submission/
     /// service/operation/sequence; payload is `RequestMessageV2`.
-    fn call_service(
+    async fn call_service(
         &self,
         key: DataRoutingKey,
         msg: RequestMessage,
@@ -248,11 +252,13 @@ pub trait MessageQueue {
         let agent = agent.clone();
         send_and_wait(
             || self.send_request(key, msg),
-            || {
+            || async {
                 self.receive_response(&submission, &agent, service, operation, sequence)
+                    .await
                     .map(|(_key, msg, ack)| (msg, ack))
             },
         )
+        .await
     }
 }
 
@@ -261,19 +267,22 @@ pub trait MessageQueue {
 /// Send a message and poll until the correlated reply arrives (ADR 092).
 ///
 /// Single implementation behind `call_service()`.
-fn send_and_wait<T>(
+async fn send_and_wait<T, Fut>(
     send: impl FnOnce() -> Result<(), QueueError>,
-    receive: impl Fn() -> Result<(T, Acknowledgement), QueueError>,
-) -> Result<T, QueueError> {
+    receive: impl Fn() -> Fut,
+) -> Result<T, QueueError>
+where
+    Fut: Future<Output = Result<(T, Acknowledgement), QueueError>>,
+{
     send()?;
     loop {
-        match receive() {
+        match receive().await {
             Ok((reply, ack)) => {
                 let _ = ack();
                 return Ok(reply);
             }
             Err(QueueError::Timeout) => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                sleep(std::time::Duration::from_millis(1)).await;
             }
             Err(e) => return Err(e),
         }
@@ -426,11 +435,12 @@ mod routing_contract_proofs {
         msgs: [CompleteMessage; 2],
     }
 
+    #[async_trait]
     impl MessageQueue for FilteredQueue {
         fn send_invoke(&self, _: DataRoutingKey, _: InvokeMessage) -> Result<(), QueueError> {
             Ok(())
         }
-        fn receive_invoke(
+        async fn receive_invoke(
             &self,
             _: &AgentName,
         ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
@@ -464,7 +474,7 @@ mod routing_contract_proofs {
             Ok(())
         }
 
-        fn receive_complete(
+        async fn receive_complete(
             &self,
             submission: &SubmissionId,
             _harness: HarnessType,
@@ -491,11 +501,12 @@ mod routing_contract_proofs {
         msgs: [CompleteMessage; 2],
     }
 
+    #[async_trait]
     impl MessageQueue for UnfilteredQueue {
         fn send_invoke(&self, _: DataRoutingKey, _: InvokeMessage) -> Result<(), QueueError> {
             Ok(())
         }
-        fn receive_invoke(
+        async fn receive_invoke(
             &self,
             _: &AgentName,
         ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
@@ -529,7 +540,7 @@ mod routing_contract_proofs {
             Ok(())
         }
 
-        fn receive_complete(
+        async fn receive_complete(
             &self,
             _submission: &SubmissionId,
             _harness: HarnessType,

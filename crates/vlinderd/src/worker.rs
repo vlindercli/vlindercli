@@ -188,9 +188,11 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
 
     tracing::info!("Infra plane worker ready");
 
+    let rt =
+        tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for infra worker");
     while !shutdown.load(Ordering::Relaxed) {
         // Try deploy
-        match queue.receive_deploy_agent() {
+        match rt.block_on(queue.receive_deploy_agent()) {
             Ok((_key, deploy_msg, ack)) => {
                 let _ = ack();
                 let agent_name = deploy_msg.manifest.name.clone();
@@ -231,7 +233,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
         }
 
         // Try delete
-        match queue.receive_delete_agent() {
+        match rt.block_on(queue.receive_delete_agent()) {
             Ok((_key, delete_msg, ack)) => {
                 let _ = ack();
                 let agent_name = delete_msg.agent.as_str().to_string();
@@ -670,8 +672,10 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
 
     tracing::info!(git = %repo_path.display(), "DAG git worker ready");
 
+    let rt =
+        tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for DAG git worker");
     while !shutdown.load(Ordering::Relaxed) {
-        match queue.receive_any() {
+        match rt.block_on(queue.receive_any()) {
             Ok((subject, payload, ack)) => {
                 tracing::debug!(subject = subject.as_str(), "DAG git received message",);
 

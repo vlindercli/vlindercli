@@ -92,6 +92,8 @@ fn request_loop(
     hosts: Vec<ProviderHost>,
     handler: InvokeHandler,
 ) {
+    let rt = tokio::runtime::Runtime::new()
+        .expect("Failed to create tokio runtime for provider-server thread");
     while !should_stop.load(Ordering::Relaxed) {
         match server.recv_timeout(Duration::from_millis(100)) {
             Ok(Some(mut request)) => {
@@ -111,7 +113,7 @@ fn request_loop(
 
                 let (status, response_body) =
                     match match_route(&hosts, &method, &host, &path, &body) {
-                        Ok(route) => handler.forward_provider(route, body, checkpoint),
+                        Ok(route) => rt.block_on(handler.forward_provider(route, body, checkpoint)),
                         Err(err) => err,
                     };
 

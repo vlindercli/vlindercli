@@ -115,8 +115,10 @@ fn dispatch_loop(
     registry: &Arc<dyn vlinder_core::domain::Registry>,
 ) {
     let agent_id = vlinder_core::domain::AgentName::new(function_name);
+    let rt =
+        tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for lambda adapter");
     loop {
-        match queue.receive_invoke(&agent_id) {
+        match rt.block_on(queue.receive_invoke(&agent_id)) {
             Ok((key, invoke, ack)) => {
                 let vlinder_core::domain::DataMessageKind::Invoke { ref agent, .. } = key.kind
                 else {

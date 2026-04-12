@@ -12,6 +12,7 @@ secret-client = []
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
+async-trait = "0.1"
 serde_json = { version = "1", optional = true }
 async-nats = { version = "0.46", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }

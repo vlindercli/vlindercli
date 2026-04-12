@@ -46,7 +46,7 @@ impl InvokeHandler {
     }
 
     /// Forward a matched provider request to the message queue.
-    pub fn forward_provider(
+    pub async fn forward_provider(
         &self,
         route: &ProviderRoute,
         body: Vec<u8>,
@@ -89,7 +89,7 @@ impl InvokeHandler {
             checkpoint,
         };
 
-        match self.queue.call_service(key, msg) {
+        match self.queue.call_service(key, msg).await {
             Ok(response) => {
                 if let Some(ref new_state) = response.state {
                     *self.state.write().unwrap() = Some(new_state.clone());

@@ -48,30 +48,37 @@ fn response_key_from_request(req_key: &DataRoutingKey) -> DataRoutingKey {
 pub struct OllamaWorker {
     queue: Arc<dyn MessageQueue + Send + Sync>,
     endpoint: String,
+    rt: tokio::runtime::Runtime,
 }
 
 impl OllamaWorker {
     pub fn new(queue: Arc<dyn MessageQueue + Send + Sync>, endpoint: String) -> Self {
-        Self { queue, endpoint }
+        let rt = tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime for OllamaWorker");
+        Self {
+            queue,
+            endpoint,
+            rt,
+        }
     }
 
     /// Process one message if available. Polls inference and embed queues.
     /// Returns true if a message was processed.
     pub fn tick(&self) -> bool {
         for op in [Operation::Run, Operation::Chat, Operation::Generate] {
-            if let Ok((key, msg, ack)) = self
-                .queue
-                .receive_request(ServiceBackend::Infer(InferenceBackendType::Ollama), op)
-            {
+            if let Ok((key, msg, ack)) = self.rt.block_on(
+                self.queue
+                    .receive_request(ServiceBackend::Infer(InferenceBackendType::Ollama), op),
+            ) {
                 self.process_v2(&key, msg, ack, op);
                 return true;
             }
         }
 
-        if let Ok((key, msg, ack)) = self.queue.receive_request(
+        if let Ok((key, msg, ack)) = self.rt.block_on(self.queue.receive_request(
             ServiceBackend::Embed(EmbeddingBackendType::Ollama),
             Operation::Run,
-        ) {
+        )) {
             self.process_embed_v2(&key, msg, ack);
             return true;
         }
@@ -361,6 +368,10 @@ mod tests {
     };
     use vlinder_core::queue::InMemoryQueue;
 
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Runtime::new().unwrap().block_on(f)
+    }
+
     fn test_request_diag() -> RequestDiagnostics {
         RequestDiagnostics {
             sequence: 0,
@@ -455,9 +466,9 @@ mod tests {
             send_infer_request(&queue, Operation::Run, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.status_code, 400);
         ack().unwrap();
     }
@@ -479,9 +490,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.state, Some("xyz".to_string()));
         ack().unwrap();
     }
@@ -503,9 +514,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.status_code, 500);
         ack().unwrap();
     }
@@ -521,9 +532,9 @@ mod tests {
             send_infer_request(&queue, Operation::Chat, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.status_code, 400);
         ack().unwrap();
     }
@@ -545,9 +556,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.state, Some("abc".to_string()));
         ack().unwrap();
     }
@@ -569,9 +580,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.status_code, 500);
         ack().unwrap();
     }
@@ -587,9 +598,9 @@ mod tests {
             send_infer_request(&queue, Operation::Generate, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.status_code, 400);
         ack().unwrap();
     }
@@ -611,9 +622,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.state, Some("def".to_string()));
         ack().unwrap();
     }
@@ -635,9 +646,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.status_code, 500);
         ack().unwrap();
     }
@@ -652,9 +663,9 @@ mod tests {
         let (sub, svc, op, seq) = send_embed_request(&queue, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.status_code, 400);
         ack().unwrap();
     }
@@ -675,9 +686,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.state, Some("embed-state".to_string()));
         ack().unwrap();
     }
@@ -695,9 +706,9 @@ mod tests {
             send_embed_request(&queue, serde_json::to_vec(&body).unwrap(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(response.status_code, 500);
         ack().unwrap();
     }

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures::StreamExt;
 use lapin::{
     options::{
@@ -208,6 +209,7 @@ impl AmqpQueue {
     }
 }
 
+#[async_trait]
 impl MessageQueue for AmqpQueue {
     fn on_cluster_start(&self) -> Result<(), QueueError> {
         tracing::info!(exchange = EXCHANGE_NAME, "AMQP topic exchange ready");
@@ -231,7 +233,7 @@ impl MessageQueue for AmqpQueue {
         self.publish(&rk, msg.id.as_str(), &payload)
     }
 
-    fn receive_invoke(
+    async fn receive_invoke(
         &self,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
@@ -245,7 +247,7 @@ impl MessageQueue for AmqpQueue {
         Ok((key, msg, ack))
     }
 
-    fn receive_complete(
+    async fn receive_complete(
         &self,
         submission: &SubmissionId,
         harness: HarnessType,
@@ -261,7 +263,7 @@ impl MessageQueue for AmqpQueue {
         Ok((key, msg, ack))
     }
 
-    fn receive_request(
+    async fn receive_request(
         &self,
         service: ServiceBackend,
         operation: Operation,
@@ -276,7 +278,7 @@ impl MessageQueue for AmqpQueue {
         Ok((key, msg, ack))
     }
 
-    fn receive_response(
+    async fn receive_response(
         &self,
         submission: &SubmissionId,
         agent: &AgentName,
@@ -294,7 +296,7 @@ impl MessageQueue for AmqpQueue {
         Ok((key, msg, ack))
     }
 
-    fn receive_fork(
+    async fn receive_fork(
         &self,
     ) -> Result<(SessionRoutingKey, ForkMessage, Acknowledgement), QueueError> {
         let binding = routing::fork_binding();
@@ -306,7 +308,7 @@ impl MessageQueue for AmqpQueue {
         Ok((key, msg, ack))
     }
 
-    fn receive_promote(
+    async fn receive_promote(
         &self,
     ) -> Result<(SessionRoutingKey, PromoteMessage, Acknowledgement), QueueError> {
         let binding = routing::promote_binding();
@@ -319,7 +321,7 @@ impl MessageQueue for AmqpQueue {
         Ok((key, msg, ack))
     }
 
-    fn receive_deploy_agent(
+    async fn receive_deploy_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
         let binding = routing::deploy_agent_binding();
@@ -332,7 +334,7 @@ impl MessageQueue for AmqpQueue {
         Ok((key, msg, ack))
     }
 
-    fn receive_delete_agent(
+    async fn receive_delete_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
         let binding = routing::delete_agent_binding();
@@ -345,7 +347,7 @@ impl MessageQueue for AmqpQueue {
         Ok((key, msg, ack))
     }
 
-    fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+    async fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
         let binding = "vlinder.#";
         let (rk, payload, ack) = self.fetch_one(binding)?;
         Ok((rk, payload, ack))

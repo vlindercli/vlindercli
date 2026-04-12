@@ -41,6 +41,7 @@ pub struct OpenRouterWorker {
     queue: Arc<dyn MessageQueue + Send + Sync>,
     endpoint: String,
     api_key: String,
+    rt: tokio::runtime::Runtime,
 }
 
 impl OpenRouterWorker {
@@ -49,19 +50,22 @@ impl OpenRouterWorker {
         endpoint: String,
         api_key: String,
     ) -> Self {
+        let rt = tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime for OpenRouterWorker");
         Self {
             queue,
             endpoint,
             api_key,
+            rt,
         }
     }
 
     /// Process one message if available. Returns true if a message was processed.
     pub fn tick(&self) -> bool {
-        if let Ok((key, msg, ack)) = self.queue.receive_request(
+        if let Ok((key, msg, ack)) = self.rt.block_on(self.queue.receive_request(
             ServiceBackend::Infer(InferenceBackendType::OpenRouter),
             Operation::Run,
-        ) {
+        )) {
             self.process_v2(&key, msg, ack);
             return true;
         }
@@ -208,6 +212,10 @@ mod tests {
     };
     use vlinder_core::queue::InMemoryQueue;
 
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Runtime::new().unwrap().block_on(f)
+    }
+
     fn test_request_diag() -> RequestDiagnostics {
         RequestDiagnostics {
             sequence: 0,
@@ -277,9 +285,9 @@ mod tests {
         let (sub, svc, op, seq) = send_request(&queue, b"not json".to_vec(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         let (status, body) = unwrap_wire(&response);
         assert_eq!(status, 400);
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -308,9 +316,9 @@ mod tests {
         );
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         assert_eq!(
             response.state,
             Some("xyz".to_string()),
@@ -335,9 +343,9 @@ mod tests {
         let (sub, svc, op, seq) = send_request(&queue, serde_json::to_vec(&body).unwrap(), None);
         assert!(worker.tick());
 
-        let (_key, response, ack) = queue
-            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
-            .unwrap();
+        let (_key, response, ack) =
+            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
+                .unwrap();
         let (status, body) = unwrap_wire(&response);
         assert_eq!(status, 500);
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();

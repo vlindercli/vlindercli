@@ -59,6 +59,7 @@ pub struct SqliteVecWorker {
     registry: Arc<dyn Registry>,
     stores: RwLock<HashMap<String, Arc<SqliteVectorStorage>>>,
     service: ServiceBackend,
+    rt: tokio::runtime::Runtime,
 }
 
 impl SqliteVecWorker {
@@ -67,11 +68,14 @@ impl SqliteVecWorker {
         registry: Arc<dyn Registry>,
         service: ServiceBackend,
     ) -> Self {
+        let rt = tokio::runtime::Runtime::new()
+            .expect("Failed to create tokio runtime for SqliteVecWorker");
         Self {
             queue,
             registry,
             stores: RwLock::new(HashMap::new()),
             service,
+            rt,
         }
     }
 
@@ -115,7 +119,10 @@ impl SqliteVecWorker {
     }
 
     fn try_store_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Store) {
+        match self
+            .rt
+            .block_on(self.queue.receive_request(self.service, Operation::Store))
+        {
             Ok((key, msg, ack)) => {
                 let agent = extract_agent(&key);
                 let start = std::time::Instant::now();
@@ -148,7 +155,10 @@ impl SqliteVecWorker {
     }
 
     fn try_search_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Search) {
+        match self
+            .rt
+            .block_on(self.queue.receive_request(self.service, Operation::Search))
+        {
             Ok((key, msg, ack)) => {
                 let agent = extract_agent(&key);
                 let start = std::time::Instant::now();
@@ -181,7 +191,10 @@ impl SqliteVecWorker {
     }
 
     fn try_delete_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Delete) {
+        match self
+            .rt
+            .block_on(self.queue.receive_request(self.service, Operation::Delete))
+        {
             Ok((key, msg, ack)) => {
                 let agent = extract_agent(&key);
                 let start = std::time::Instant::now();
@@ -294,6 +307,10 @@ mod tests {
     };
     use vlinder_core::queue::InMemoryQueue;
 
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Runtime::new().unwrap().block_on(f)
+    }
+
     fn test_secret_store() -> Arc<dyn SecretStore> {
         Arc::new(InMemorySecretStore::new())
     }
@@ -402,15 +419,14 @@ mod tests {
         );
         queue.send_request(store_key, store_msg).unwrap();
         handler.tick();
-        let (_key, store_resp, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Store,
-                Sequence::first(),
-            )
-            .unwrap();
+        let (_key, store_resp, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Store,
+            Sequence::first(),
+        ))
+        .unwrap();
         ack().unwrap();
         assert_eq!(
             store_resp.state,
@@ -435,15 +451,14 @@ mod tests {
         );
         queue.send_request(search_key, search_msg).unwrap();
         handler.tick();
-        let (_key, search_resp, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Search,
-                Sequence::from(2),
-            )
-            .unwrap();
+        let (_key, search_resp, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Search,
+            Sequence::from(2),
+        ))
+        .unwrap();
         ack().unwrap();
         assert_eq!(
             search_resp.state,
@@ -490,15 +505,14 @@ mod tests {
 
         queue.send_request(store_key, store_msg).unwrap();
         assert!(handler.tick());
-        let (_key, response, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Store,
-                Sequence::first(),
-            )
-            .unwrap();
+        let (_key, response, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Store,
+            Sequence::first(),
+        ))
+        .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
         ack().unwrap();
 
@@ -517,15 +531,14 @@ mod tests {
 
         queue.send_request(search_key, search_msg).unwrap();
         assert!(handler.tick());
-        let (_key, response, ack) = queue
-            .receive_response(
-                &submission,
-                &test_agent_id(),
-                service,
-                Operation::Search,
-                Sequence::from(2),
-            )
-            .unwrap();
+        let (_key, response, ack) = block_on(queue.receive_response(
+            &submission,
+            &test_agent_id(),
+            service,
+            Operation::Search,
+            Sequence::from(2),
+        ))
+        .unwrap();
         let results: Vec<serde_json::Value> =
             serde_json::from_slice(response.payload.as_slice()).unwrap();
         assert_eq!(results.len(), 1);

@@ -9,6 +9,7 @@ use crate::domain::{
     ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessage,
     SubmissionId,
 };
+use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -43,6 +44,7 @@ impl Default for InMemoryQueue {
     }
 }
 
+#[async_trait]
 impl MessageQueue for InMemoryQueue {
     fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
         let mut q = self
@@ -53,7 +55,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn receive_invoke(
+    async fn receive_invoke(
         &self,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
@@ -86,7 +88,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn receive_complete(
+    async fn receive_complete(
         &self,
         submission: &SubmissionId,
         _harness: HarnessType,
@@ -122,7 +124,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn receive_request(
+    async fn receive_request(
         &self,
         service: ServiceBackend,
         operation: Operation,
@@ -161,7 +163,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn receive_response(
+    async fn receive_response(
         &self,
         submission: &SubmissionId,
         _agent: &AgentName,
@@ -249,6 +251,10 @@ mod tests {
     use crate::domain::RuntimeType;
     use crate::domain::{BranchId, DagNodeId, MessageId, SessionId, SubmissionId};
 
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Runtime::new().unwrap().block_on(f)
+    }
+
     fn test_agent_id() -> AgentName {
         AgentName::new("echo-agent")
     }
@@ -261,8 +267,8 @@ mod tests {
     // Typed receive tests
     // ========================================================================
 
-    #[test]
-    fn receive_invoke_returns_typed_message() {
+    #[tokio::test]
+    async fn receive_invoke_returns_typed_message() {
         let queue = InMemoryQueue::new();
 
         let key = DataRoutingKey {
@@ -290,7 +296,7 @@ mod tests {
         queue.send_invoke(key, msg).unwrap();
 
         // Receive typed message
-        let (recv_key, received, ack) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (recv_key, received, ack) = queue.receive_invoke(&test_agent_id()).await.unwrap();
 
         assert_eq!(received.id, original_id);
         assert!(matches!(
@@ -336,7 +342,7 @@ mod tests {
 
         queue.send_invoke(key, msg).unwrap();
 
-        let (recv_key, _, _) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (recv_key, _, _) = block_on(queue.receive_invoke(&test_agent_id())).unwrap();
 
         // All dimensions preserved for reply construction
         assert_eq!(recv_key.submission, submission);
@@ -384,7 +390,7 @@ mod tests {
 
         queue.send_invoke(key, msg.clone()).unwrap();
 
-        let (recv_key, recv_msg, ack) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (recv_key, recv_msg, ack) = block_on(queue.receive_invoke(&test_agent_id())).unwrap();
 
         assert_eq!(recv_msg, msg);
         assert_eq!(recv_key.submission, test_submission());
@@ -399,7 +405,7 @@ mod tests {
 
         queue.send_invoke(key, msg).unwrap();
 
-        let result = queue.receive_invoke(&AgentName::new("other-agent"));
+        let result = block_on(queue.receive_invoke(&AgentName::new("other-agent")));
         assert!(matches!(result, Err(QueueError::Timeout)));
     }
 
@@ -432,10 +438,10 @@ mod tests {
         queue.send_invoke(key.clone(), msg1.clone()).unwrap();
         queue.send_invoke(key, msg2.clone()).unwrap();
 
-        let (_, recv1, _) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (_, recv1, _) = block_on(queue.receive_invoke(&test_agent_id())).unwrap();
         assert_eq!(recv1, msg1);
 
-        let (_, recv2, _) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (_, recv2, _) = block_on(queue.receive_invoke(&test_agent_id())).unwrap();
         assert_eq!(recv2, msg2);
     }
 }

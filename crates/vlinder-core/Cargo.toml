@@ -20,6 +20,8 @@ semver = "1"
 async-openai = { version = "0.32", default-features = false, features = ["chat-completion-types"] }
 http = "1"
 http-serde-ext = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["time", "rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true
