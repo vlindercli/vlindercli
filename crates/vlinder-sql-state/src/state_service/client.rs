@@ -1,5 +1,6 @@
 //! gRPC client implementing the `DagStore` trait.
 
+use async_trait::async_trait;
 use tonic::transport::Channel;
 
 use super::proto::{self, state_service_client::StateServiceClient};
@@ -42,6 +43,7 @@ pub fn ping_state_service(addr: &str) -> Option<(u32, u32, u32)> {
     })
 }
 
+#[async_trait]
 impl DagStore for GrpcStateClient {
     fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
         let request = proto::GetNodeRequest {
@@ -406,7 +408,7 @@ impl DagStore for GrpcStateClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_request_node(
+    async fn insert_request_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -444,9 +446,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_request_node(request).await })
+        let response = client
+            .insert_request_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -770,7 +772,7 @@ impl DagStore for GrpcStateClient {
             .collect()
     }
 
-    fn latest_node_on_branch(
+    async fn latest_node_on_branch(
         &self,
         branch_id: BranchId,
         message_type: Option<vlinder_core::domain::MessageType>,
@@ -780,9 +782,9 @@ impl DagStore for GrpcStateClient {
             message_type: message_type.map(|mt| mt.as_str().to_string()),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.latest_node_on_branch(request).await })
+        let response = client
+            .latest_node_on_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {

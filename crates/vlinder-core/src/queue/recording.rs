@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use tokio::runtime::Runtime;
 
 use crate::domain::{
     hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataMessageKind,
@@ -41,7 +42,7 @@ impl RecordingQueue {
     }
 
     /// Record a DAG node for an invoke message. Returns the computed `DagNodeId`.
-    fn record_invoke(&self, key: &DataRoutingKey, msg: &InvokeMessage) -> DagNodeId {
+    async fn record_invoke(&self, key: &DataRoutingKey, msg: &InvokeMessage) -> DagNodeId {
         let branch_id = key.branch;
 
         let dag_parent_override = if msg.dag_parent.is_empty() {
@@ -50,21 +51,20 @@ impl RecordingQueue {
             Some(msg.dag_parent.clone())
         };
 
-        let parent_node = dag_parent_override
-            .and_then(|id| {
-                self.store.get_node(&id).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "Failed to look up dag_parent node");
+        let parent_node = match dag_parent_override {
+            Some(id) => self.store.get_node(&id).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to look up dag_parent node");
+                None
+            }),
+            None => match self.store.latest_node_on_branch(branch_id, None).await {
+                Ok(Some(node)) => Some(node),
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(error = %e, branch = branch_id.as_i64(), "Failed to query latest node on branch");
                     None
-                })
-            })
-            .or_else(|| {
-                self.store
-                    .latest_node_on_branch(branch_id, None)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, branch = branch_id.as_i64(), "Failed to query latest node on branch");
-                        None
-                    })
-            });
+                }
+            },
+        };
 
         let parent_id = parent_node
             .as_ref()
@@ -112,16 +112,17 @@ impl RecordingQueue {
     }
 
     /// Record a DAG node for a complete message (data-plane path).
-    fn record_complete(&self, key: &DataRoutingKey, msg: &CompleteMessage) {
+    async fn record_complete(&self, key: &DataRoutingKey, msg: &CompleteMessage) {
         let branch_id = key.branch;
 
-        let parent_node = self
-            .store
-            .latest_node_on_branch(branch_id, None)
-            .unwrap_or_else(|e| {
+        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => None,
+            Err(e) => {
                 tracing::warn!(error = %e, branch = branch_id.as_i64(), "Failed to query latest node on branch");
                 None
-            });
+            }
+        };
 
         let parent_id = parent_node
             .as_ref()
@@ -176,16 +177,17 @@ impl RecordingQueue {
         }
     }
     /// Record a DAG node for a request message (data-plane path).
-    fn record_request(&self, key: &DataRoutingKey, msg: &crate::domain::RequestMessage) {
+    async fn record_request(&self, key: &DataRoutingKey, msg: &crate::domain::RequestMessage) {
         let branch_id = key.branch;
 
-        let parent_node = self
-            .store
-            .latest_node_on_branch(branch_id, None)
-            .unwrap_or_else(|e| {
+        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => None,
+            Err(e) => {
                 tracing::warn!(error = %e, branch = branch_id.as_i64(), "Failed to query latest node on branch");
                 None
-            });
+            }
+        };
 
         let parent_id = parent_node
             .as_ref()
@@ -223,20 +225,24 @@ impl RecordingQueue {
             return;
         };
 
-        if let Err(e) = self.store.insert_request_node(
-            &id,
-            &parent_id,
-            Utc::now(),
-            &state,
-            &key.session,
-            &key.submission,
-            key.branch,
-            agent,
-            *service,
-            *operation,
-            *sequence,
-            msg,
-        ) {
+        if let Err(e) = self
+            .store
+            .insert_request_node(
+                &id,
+                &parent_id,
+                Utc::now(),
+                &state,
+                &key.session,
+                &key.submission,
+                key.branch,
+                agent,
+                *service,
+                *operation,
+                *sequence,
+                msg,
+            )
+            .await
+        {
             tracing::warn!(
                 dag_id = %id,
                 submission = %key.submission,
@@ -251,16 +257,17 @@ impl RecordingQueue {
     }
 
     /// Record a DAG node for a response message (data-plane path).
-    fn record_response(&self, key: &DataRoutingKey, msg: &crate::domain::ResponseMessage) {
+    async fn record_response(&self, key: &DataRoutingKey, msg: &crate::domain::ResponseMessage) {
         let branch_id = key.branch;
 
-        let parent_node = self
-            .store
-            .latest_node_on_branch(branch_id, None)
-            .unwrap_or_else(|e| {
+        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => None,
+            Err(e) => {
                 tracing::warn!(error = %e, branch = branch_id.as_i64(), "Failed to query latest node on branch");
                 None
-            });
+            }
+        };
 
         let parent_id = parent_node
             .as_ref()
@@ -349,7 +356,8 @@ impl MessageQueue for RecordingQueue {
     // -------------------------------------------------------------------------
 
     fn send_invoke(&self, key: DataRoutingKey, mut msg: InvokeMessage) -> Result<(), QueueError> {
-        let dag_id = self.record_invoke(&key, &msg);
+        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
+        let dag_id = rt.block_on(self.record_invoke(&key, &msg));
         msg.dag_id = dag_id;
         self.inner.send_invoke(key, msg)
     }
@@ -363,17 +371,18 @@ impl MessageQueue for RecordingQueue {
 
     fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
         // Record to typed table before forwarding
-        self.record_complete(&key, &msg);
+        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
+        rt.block_on(self.record_complete(&key, &msg));
         self.inner.send_complete(key, msg)
     }
 
-    fn send_request(
+    async fn send_request(
         &self,
         key: DataRoutingKey,
         msg: crate::domain::RequestMessage,
     ) -> Result<(), QueueError> {
-        self.record_request(&key, &msg);
-        self.inner.send_request(key, msg)
+        self.record_request(&key, &msg).await;
+        self.inner.send_request(key, msg).await
     }
 
     fn send_response(
@@ -381,7 +390,8 @@ impl MessageQueue for RecordingQueue {
         key: DataRoutingKey,
         msg: crate::domain::ResponseMessage,
     ) -> Result<(), QueueError> {
-        self.record_response(&key, &msg);
+        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
+        rt.block_on(self.record_response(&key, &msg));
         self.inner.send_response(key, msg)
     }
 
@@ -469,7 +479,8 @@ impl MessageQueue for RecordingQueue {
     }
 
     fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {
-        self.record_promote(&key, &msg);
+        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
+        rt.block_on(self.record_promote(&key, &msg));
 
         // Promote: seal old main, rename promoted branch to "main"
         let branch_to_promote = self.store.get_branch(msg.branch_id).ok().flatten();
@@ -621,15 +632,16 @@ impl RecordingQueue {
     }
 
     /// Record a promote DAG node.
-    fn record_promote(&self, key: &SessionRoutingKey, msg: &PromoteMessage) {
+    async fn record_promote(&self, key: &SessionRoutingKey, msg: &PromoteMessage) {
         // Promote's parent is the latest node on the branch being promoted
-        let parent_node = self
-            .store
-            .latest_node_on_branch(msg.branch_id, None)
-            .unwrap_or_else(|e| {
+        let parent_node = match self.store.latest_node_on_branch(msg.branch_id, None).await {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => None,
+            Err(e) => {
                 tracing::warn!(error = %e, "Failed to query latest node for promote");
                 None
-            });
+            }
+        };
 
         let parent_id = parent_node
             .as_ref()
@@ -893,6 +905,7 @@ mod tests {
     fn dag_store_error_does_not_block_send() {
         // Use a store that always fails on insert
         struct FailStore;
+        #[async_trait]
         impl DagStore for FailStore {
             fn get_node(&self, _: &crate::domain::DagNodeId) -> Result<Option<DagNode>, String> {
                 Ok(None)
@@ -935,7 +948,7 @@ mod tests {
             ) -> Result<Vec<crate::domain::Branch>, String> {
                 Ok(vec![])
             }
-            fn latest_node_on_branch(
+            async fn latest_node_on_branch(
                 &self,
                 _: crate::domain::BranchId,
                 _: Option<crate::domain::MessageType>,

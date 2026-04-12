@@ -72,7 +72,7 @@ impl Sidecar {
     }
 
     /// Main loop: wait for agent, then poll invoke/delegate/response queues.
-    pub async fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
         health::wait_for_ready(
             &mut self.health,
             self.dispatch.container_port,
@@ -82,10 +82,15 @@ impl Sidecar {
 
         tracing::info!(event = "sidecar.started", agent = %self.agent_name, "Sidecar loop started");
 
+        let rt =
+            tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for sidecar");
+
         loop {
             let agent_id = AgentName::new(&self.agent_name);
 
-            if let Ok((key, invoke, ack)) = self.dispatch.queue.receive_invoke(&agent_id).await {
+            if let Ok((key, invoke, ack)) =
+                rt.block_on(self.dispatch.queue.receive_invoke(&agent_id))
+            {
                 let _ = ack();
                 tracing::info!(
                     event = "dispatch.started",

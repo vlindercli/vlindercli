@@ -168,10 +168,13 @@ impl CoreHarness {
             .registry
             .select_runtime(&agent)
             .ok_or_else(|| format!("no runtime available for agent: {agent_id}"))?;
+        let rt = Runtime::new().unwrap();
 
-        let last_invoke_node = self
-            .store
-            .latest_node_on_branch(timeline, Some(MessageType::Invoke))
+        let last_invoke_node = rt
+            .block_on(
+                self.store
+                    .latest_node_on_branch(timeline, Some(MessageType::Invoke)),
+            )
             .unwrap_or(None);
         let last_invoke_payload = last_invoke_node.as_ref().and_then(|n| {
             self.store
@@ -180,9 +183,11 @@ impl CoreHarness {
                 .flatten()
                 .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
         });
-        let last_complete_node = self
-            .store
-            .latest_node_on_branch(timeline, Some(MessageType::Complete))
+        let last_complete_node = rt
+            .block_on(
+                self.store
+                    .latest_node_on_branch(timeline, Some(MessageType::Complete)),
+            )
             .unwrap_or(None);
         let last_complete = last_complete_node
             .as_ref()

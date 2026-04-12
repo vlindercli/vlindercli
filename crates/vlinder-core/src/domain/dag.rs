@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
@@ -283,6 +284,7 @@ pub trait DagWorker: Send {
 }
 
 /// Persistence layer for DAG nodes.
+#[async_trait]
 pub trait DagStore: Send + Sync {
     /// Insert a typed invoke node. Writes to `dag_nodes` + `invoke_nodes`.
     fn insert_invoke_node(
@@ -321,7 +323,7 @@ pub trait DagStore: Send + Sync {
 
     /// Insert a typed request node. Writes to `dag_nodes` + `request_nodes`.
     #[allow(clippy::too_many_arguments)]
-    fn insert_request_node(
+    async fn insert_request_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -508,7 +510,7 @@ pub trait DagStore: Send + Sync {
     ) -> Result<Vec<Branch>, String>;
 
     /// Get the most recent `DagNode` on a branch, optionally filtered by message type.
-    fn latest_node_on_branch(
+    async fn latest_node_on_branch(
         &self,
         branch_id: super::BranchId,
         message_type: Option<MessageType>,
@@ -605,6 +607,7 @@ impl InMemoryDagStore {
     }
 }
 
+#[async_trait]
 impl DagStore for InMemoryDagStore {
     fn insert_invoke_node(
         &self,
@@ -659,7 +662,7 @@ impl DagStore for InMemoryDagStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_request_node(
+    async fn insert_request_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -862,7 +865,7 @@ impl DagStore for InMemoryDagStore {
             .collect())
     }
 
-    fn latest_node_on_branch(
+    async fn latest_node_on_branch(
         &self,
         branch_id: super::BranchId,
         message_type: Option<MessageType>,

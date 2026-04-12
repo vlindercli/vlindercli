@@ -115,7 +115,11 @@ impl MessageQueue for InMemoryQueue {
         Err(QueueError::Timeout)
     }
 
-    fn send_request(&self, key: DataRoutingKey, msg: RequestMessage) -> Result<(), QueueError> {
+    async fn send_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+    ) -> Result<(), QueueError> {
         let mut q = self
             .requests
             .lock()

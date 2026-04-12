@@ -417,7 +417,7 @@ mod tests {
             serde_json::to_vec(&store_payload).unwrap(),
             Some("state-vec".to_string()),
         );
-        queue.send_request(store_key, store_msg).unwrap();
+        block_on(queue.send_request(store_key, store_msg)).unwrap();
         handler.tick();
         let (_key, store_resp, ack) = block_on(queue.receive_response(
             &submission,
@@ -449,7 +449,7 @@ mod tests {
             serde_json::to_vec(&search_payload).unwrap(),
             Some("state-vec2".to_string()),
         );
-        queue.send_request(search_key, search_msg).unwrap();
+        block_on(queue.send_request(search_key, search_msg)).unwrap();
         handler.tick();
         let (_key, search_resp, ack) = block_on(queue.receive_response(
             &submission,
@@ -503,7 +503,7 @@ mod tests {
         );
         let store_msg = make_request_msg(serde_json::to_vec(&store_payload).unwrap(), None);
 
-        queue.send_request(store_key, store_msg).unwrap();
+        block_on(queue.send_request(store_key, store_msg)).unwrap();
         assert!(handler.tick());
         let (_key, response, ack) = block_on(queue.receive_response(
             &submission,
@@ -529,7 +529,7 @@ mod tests {
         );
         let search_msg = make_request_msg(serde_json::to_vec(&search_payload).unwrap(), None);
 
-        queue.send_request(search_key, search_msg).unwrap();
+        block_on(queue.send_request(search_key, search_msg)).unwrap();
         assert!(handler.tick());
         let (_key, response, ack) = block_on(queue.receive_response(
             &submission,

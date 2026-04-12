@@ -4,6 +4,7 @@ use std::sync::Arc;
 use clap::{Subcommand, ValueEnum};
 
 use crate::config::CliConfig;
+use tokio::runtime::Runtime;
 use vlinder_core::domain::{
     Agent, AgentManifest, AgentStatus, BranchId, DagNodeId, DagStore, Registry,
 };
@@ -369,15 +370,19 @@ fn resolve_branch_tip(
     }
 
     // Find the tip — latest node on branch, falling back to fork_point
-    let tip_hash = store
-        .latest_node_on_branch(branch.id, None)
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to query latest node on branch: {e}");
-            std::process::exit(1);
-        })
-        .map(|n| n.id)
-        .or_else(|| branch.fork_point.clone())
-        .unwrap_or_else(DagNodeId::root);
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let tip_hash = rt.block_on(async {
+        store
+            .latest_node_on_branch(branch.id, None)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to query latest node on branch: {e}");
+                std::process::exit(1);
+            })
+            .map(|n| n.id)
+            .or_else(|| branch.fork_point.clone())
+            .unwrap_or_else(DagNodeId::root)
+    });
 
     // Read state from the tip node
     let initial_state = if let Ok(Some(node)) = store.get_node(&tip_hash) {

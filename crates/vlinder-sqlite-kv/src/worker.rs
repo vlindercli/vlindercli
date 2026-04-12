@@ -718,7 +718,7 @@ mod tests {
         );
         let put_msg = make_request_msg(serde_json::to_vec(&put_payload).unwrap(), None);
 
-        queue.send_request(put_key, put_msg).unwrap();
+        block_on(queue.send_request(put_key, put_msg)).unwrap();
         assert!(handler.tick());
         let (_key, response, ack) = block_on(queue.receive_response(
             &submission,
@@ -743,7 +743,7 @@ mod tests {
         );
         let get_msg = make_request_msg(serde_json::to_vec(&get_payload).unwrap(), None);
 
-        queue.send_request(get_key, get_msg).unwrap();
+        block_on(queue.send_request(get_key, get_msg)).unwrap();
         assert!(handler.tick());
         let (_key, response, ack) = block_on(queue.receive_response(
             &submission,
@@ -796,7 +796,7 @@ mod tests {
             Some(String::new()), // root state via envelope
         );
 
-        queue.send_request(put_key, put_msg).unwrap();
+        block_on(queue.send_request(put_key, put_msg)).unwrap();
         assert!(handler.tick());
 
         let (_key, response, ack) = block_on(queue.receive_response(
@@ -852,7 +852,7 @@ mod tests {
             Sequence::first(),
         );
         let msg1 = make_request_msg(serde_json::to_vec(&put1).unwrap(), Some(String::new()));
-        queue.send_request(key1, msg1).unwrap();
+        block_on(queue.send_request(key1, msg1)).unwrap();
         handler.tick();
         let (_key, resp1, ack) = block_on(queue.receive_response(
             &submission,
@@ -880,7 +880,7 @@ mod tests {
             serde_json::to_vec(&put2).unwrap(),
             Some(hash1.clone()), // chain from previous state via envelope
         );
-        queue.send_request(key2, msg2).unwrap();
+        block_on(queue.send_request(key2, msg2)).unwrap();
         handler.tick();
         let (_key, resp2, ack) = block_on(queue.receive_response(
             &submission,
@@ -911,7 +911,7 @@ mod tests {
             serde_json::to_vec(&get).unwrap(),
             Some(hash2.clone()), // state via envelope
         );
-        queue.send_request(get_key, get_msg).unwrap();
+        block_on(queue.send_request(get_key, get_msg)).unwrap();
         handler.tick();
         let (_key, resp, ack) = block_on(queue.receive_response(
             &submission,
@@ -960,7 +960,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/a.txt", "content": "aaa"})).unwrap(),
             Some(String::new()),
         );
-        queue.send_request(key1, msg1).unwrap();
+        block_on(queue.send_request(key1, msg1)).unwrap();
         handler.tick();
         let (_key, resp1, ack) = block_on(queue.receive_response(
             &submission,
@@ -987,7 +987,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/b.txt", "content": "bbb"})).unwrap(),
             Some(hash1.clone()),
         );
-        queue.send_request(key2, msg2).unwrap();
+        block_on(queue.send_request(key2, msg2)).unwrap();
         handler.tick();
         let (_key, resp2, ack) = block_on(queue.receive_response(
             &submission,
@@ -1014,7 +1014,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/"})).unwrap(),
             Some(hash2),
         );
-        queue.send_request(list_key2, list_msg2).unwrap();
+        block_on(queue.send_request(list_key2, list_msg2)).unwrap();
         handler.tick();
         let (_key, resp, ack) = block_on(queue.receive_response(
             &submission,
@@ -1041,7 +1041,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/"})).unwrap(),
             Some(hash1),
         );
-        queue.send_request(list_key1, list_msg1).unwrap();
+        block_on(queue.send_request(list_key1, list_msg1)).unwrap();
         handler.tick();
         let (_key, resp, ack) = block_on(queue.receive_response(
             &submission,
@@ -1088,7 +1088,7 @@ mod tests {
             Sequence::first(),
         );
         let put_msg = make_request_msg(serde_json::to_vec(&put_payload).unwrap(), None);
-        queue.send_request(put_key, put_msg).unwrap();
+        block_on(queue.send_request(put_key, put_msg)).unwrap();
         handler.tick();
         let (_key, _resp, ack) = block_on(queue.receive_response(
             &submission,
@@ -1114,7 +1114,7 @@ mod tests {
             serde_json::to_vec(&get_payload).unwrap(),
             Some("hash123".to_string()),
         );
-        queue.send_request(get_key, get_msg).unwrap();
+        block_on(queue.send_request(get_key, get_msg)).unwrap();
         handler.tick();
         let (_key, response, ack) = block_on(queue.receive_response(
             &submission,

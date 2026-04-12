@@ -415,7 +415,7 @@ mod tests {
             payload,
             checkpoint: None,
         };
-        queue.send_request(key, msg).unwrap();
+        block_on(queue.send_request(key, msg)).unwrap();
         (submission, service, operation, sequence)
     }
 
@@ -447,7 +447,7 @@ mod tests {
             payload,
             checkpoint: None,
         };
-        queue.send_request(key, msg).unwrap();
+        block_on(queue.send_request(key, msg)).unwrap();
         (submission, service, operation, sequence)
     }
 

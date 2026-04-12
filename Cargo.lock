@@ -4889,6 +4889,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "termimad",
+ "tokio",
  "toml",
  "tracing",
  "tracing-appender",
@@ -5122,6 +5123,7 @@ dependencies = [
 name = "vlinder-sql-state"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64",
  "chrono",
  "diesel",

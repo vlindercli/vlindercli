@@ -12,6 +12,7 @@ use diesel::prelude::*;
 use diesel::sql_types::{Integer, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 
+use async_trait::async_trait;
 use vlinder_core::domain::session::Session;
 use vlinder_core::domain::{
     Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, SessionId, SessionSummary,
@@ -286,6 +287,7 @@ struct SessionSummaryRow {
     last_type: Option<String>,
 }
 
+#[async_trait]
 impl DagStore for SqliteDagStore {
     fn insert_invoke_node(
         &self,
@@ -400,7 +402,7 @@ impl DagStore for SqliteDagStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_request_node(
+    async fn insert_request_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -911,7 +913,7 @@ impl DagStore for SqliteDagStore {
         Ok(rows.into_iter().map(branch_row_to_domain).collect())
     }
 
-    fn latest_node_on_branch(
+    async fn latest_node_on_branch(
         &self,
         branch_id: BranchId,
         message_type: Option<MessageType>,
@@ -1517,17 +1519,18 @@ mod tests {
     // latest_node_on_branch tests
     // ========================================================================
 
-    #[test]
-    fn latest_node_on_branch_returns_none_for_empty() {
+    #[tokio::test]
+    async fn latest_node_on_branch_returns_none_for_empty() {
         let (store, _dir) = test_store();
         let result = store
             .latest_node_on_branch(BranchId::from(1), None)
+            .await
             .unwrap();
         assert!(result.is_none());
     }
 
-    #[test]
-    fn latest_node_on_branch_returns_most_recent() {
+    #[tokio::test]
+    async fn latest_node_on_branch_returns_most_recent() {
         let (store, _dir) = test_store();
 
         let node1 = test_node(b"first", &DagNodeId::root());
@@ -1550,6 +1553,7 @@ mod tests {
         // No filter — returns the most recent
         let latest = store
             .latest_node_on_branch(BranchId::from(1), None)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(latest.id, node2.id);

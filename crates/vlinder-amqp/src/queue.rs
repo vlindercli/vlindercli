@@ -372,7 +372,11 @@ impl MessageQueue for AmqpQueue {
         self.publish(&rk, msg.id.as_str(), &payload)
     }
 
-    fn send_request(&self, key: DataRoutingKey, msg: RequestMessage) -> Result<(), QueueError> {
+    async fn send_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+    ) -> Result<(), QueueError> {
         let DataMessageKind::Request {
             ref agent,
             service,
@@ -393,7 +397,27 @@ impl MessageQueue for AmqpQueue {
         );
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize request: {e}")))?;
-        self.publish(&rk, msg.id.as_str(), &payload)
+
+        let properties = BasicProperties::default()
+            .with_message_id(msg.id.as_str().into())
+            .with_content_type("application/json".into())
+            .with_delivery_mode(2); // persistent
+
+        self.inner
+            .channel
+            .basic_publish(
+                EXCHANGE_NAME,
+                &rk,
+                BasicPublishOptions::default(),
+                &payload,
+                properties,
+            )
+            .await
+            .map_err(|e| QueueError::SendFailed(format!("publish failed: {e}")))?
+            .await
+            .map_err(|e| QueueError::SendFailed(format!("publish confirm failed: {e}")))?;
+
+        Ok(())
     }
 
     fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {

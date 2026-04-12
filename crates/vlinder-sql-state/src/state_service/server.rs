@@ -554,20 +554,24 @@ impl StateService for StateServiceServer {
             checkpoint: req.checkpoint,
         };
 
-        match self.store.insert_request_node(
-            &dag_id,
-            &parent_id,
-            created_at,
-            &snapshot,
-            &session,
-            &submission,
-            branch,
-            &agent,
-            service,
-            operation,
-            sequence,
-            &msg,
-        ) {
+        match self
+            .store
+            .insert_request_node(
+                &dag_id,
+                &parent_id,
+                created_at,
+                &snapshot,
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence,
+                &msg,
+            )
+            .await
+        {
             Ok(()) => Ok(Response::new(InsertRequestNodeResponse {
                 success: true,
                 error: None,
@@ -756,6 +760,7 @@ impl StateService for StateServiceServer {
                 vlinder_core::domain::BranchId::from(req.branch_id),
                 message_type,
             )
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
         Ok(Response::new(LatestNodeOnBranchResponse { node }))

@@ -108,7 +108,11 @@ pub trait MessageQueue: Send + Sync {
     // -------------------------------------------------------------------------
 
     /// Send a request on the data plane (ADR 121).
-    fn send_request(&self, _key: DataRoutingKey, _msg: RequestMessage) -> Result<(), QueueError> {
+    async fn send_request(
+        &self,
+        _key: DataRoutingKey,
+        _msg: RequestMessage,
+    ) -> Result<(), QueueError> {
         Err(QueueError::SendFailed(
             "send_request not implemented".into(),
         ))
@@ -267,14 +271,15 @@ pub trait MessageQueue: Send + Sync {
 /// Send a message and poll until the correlated reply arrives (ADR 092).
 ///
 /// Single implementation behind `call_service()`.
-async fn send_and_wait<T, Fut>(
-    send: impl FnOnce() -> Result<(), QueueError>,
-    receive: impl Fn() -> Fut,
+async fn send_and_wait<T, FutSend, FutRecv>(
+    send: impl FnOnce() -> FutSend,
+    receive: impl Fn() -> FutRecv,
 ) -> Result<T, QueueError>
 where
-    Fut: Future<Output = Result<(T, Acknowledgement), QueueError>>,
+    FutSend: Future<Output = Result<(), QueueError>>,
+    FutRecv: Future<Output = Result<(T, Acknowledgement), QueueError>>,
 {
-    send()?;
+    send().await?;
     loop {
         match receive().await {
             Ok((reply, ack)) => {
