@@ -1,6 +1,7 @@
 use clap::Subcommand;
 
 use crate::config::CliConfig;
+use tokio::runtime::Runtime;
 use vlinder_core::domain::{
     AgentName, BranchId, DagStore, ForkParams, MessageType, PromoteParams, SessionId,
 };
@@ -110,6 +111,7 @@ fn get(session_id_or_name: &str) {
     let store = require_dag_store(&config);
 
     let session_id = resolve_session_id(&*store, session_id_or_name);
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
     let nodes = store.get_session_nodes(&session_id).unwrap_or_else(|e| {
         eprintln!("Failed to query session: {e}");
         std::process::exit(1);
@@ -143,7 +145,9 @@ fn get(session_id_or_name: &str) {
             let (from, to, operation, checkpoint) = if node.message_type()
                 == vlinder_core::domain::MessageType::Invoke
             {
-                if let Ok(Some((key, _msg))) = store.get_invoke_node(&node.id) {
+                if let Ok(Some((key, _msg))) =
+                    rt.block_on(async { store.get_invoke_node(&node.id).await })
+                {
                     let vlinder_core::domain::DataMessageKind::Invoke { harness, agent, .. } =
                         &key.kind
                     else {
@@ -352,7 +356,8 @@ fn find_agent_name(store: &dyn DagStore, session_id: &SessionId) -> Option<Strin
         .iter()
         .find(|n| n.message_type() == MessageType::Invoke)
         .and_then(|n| {
-            if let Ok(Some((key, _))) = store.get_invoke_node(&n.id) {
+            let rt = Runtime::new().expect("Failed to create tokio runtime");
+            if let Ok(Some((key, _))) = rt.block_on(async { store.get_invoke_node(&n.id).await }) {
                 let vlinder_core::domain::DataMessageKind::Invoke { agent, .. } = &key.kind else {
                     return None;
                 };

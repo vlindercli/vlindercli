@@ -12,6 +12,8 @@ use vlinder_core::domain::{
     RuntimeDiagnostics, RuntimeType,
 };
 
+use async_trait::async_trait;
+
 use crate::config::LambdaRuntimeConfig;
 use crate::lambda_client::{AwsLambdaClient, CreateFunctionRequest, LambdaClient, LambdaError};
 
@@ -35,7 +37,6 @@ pub struct LambdaRuntime {
     functions: HashMap<String, DeployedFunction>,
     config: LambdaRuntimeConfig,
     client: Box<dyn LambdaClient>,
-    rt: tokio::runtime::Runtime,
 }
 
 impl LambdaRuntime {
@@ -73,8 +74,6 @@ impl LambdaRuntime {
             RuntimeType::Lambda.as_str()
         ));
 
-        let rt = tokio::runtime::Runtime::new()
-            .expect("Failed to create tokio runtime for LambdaRuntime");
         Self {
             id,
             queue,
@@ -83,7 +82,6 @@ impl LambdaRuntime {
             functions: HashMap::new(),
             config: config.clone(),
             client,
-            rt,
         }
     }
 
@@ -226,12 +224,12 @@ impl LambdaRuntime {
     /// inside the container deserializes it, runs the `ProviderServer`, and
     /// sends complete to NATS — the daemon only needs to handle invoke-level
     /// failures (Lambda itself couldn't run).
-    fn dispatch_invocations(&self) {
+    async fn dispatch_invocations(&self) {
         for name in self.functions.keys() {
             let agent_id = AgentName::new(name);
 
             // Receive invoke (ADR 121 — data plane).
-            if let Ok((key, invoke, ack)) = self.rt.block_on(self.queue.receive_invoke(&agent_id)) {
+            if let Ok((key, invoke, ack)) = self.queue.receive_invoke(&agent_id).await {
                 let _ = ack();
                 let function_name = format!("vlinder-{name}");
 
@@ -294,6 +292,7 @@ impl LambdaRuntime {
     }
 }
 
+#[async_trait(?Send)]
 impl Runtime for LambdaRuntime {
     fn id(&self) -> &ResourceId {
         &self.id
@@ -303,9 +302,9 @@ impl Runtime for LambdaRuntime {
         RuntimeType::Lambda
     }
 
-    fn tick(&mut self) -> bool {
+    async fn tick(&mut self) -> bool {
         let changed = self.ensure_functions();
-        self.dispatch_invocations();
+        self.dispatch_invocations().await;
         changed
     }
 
@@ -333,10 +332,6 @@ mod tests {
     use std::collections::HashSet;
     use vlinder_core::domain::InMemorySecretStore;
     use vlinder_core::queue::InMemoryQueue;
-
-    fn block_on<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Runtime::new().unwrap().block_on(f)
-    }
 
     // ── Mock client ─────────────────────────────────────────────────
 
@@ -537,17 +532,17 @@ mod tests {
         assert_eq!(runtime.runtime_type(), RuntimeType::Lambda);
     }
 
-    #[test]
-    fn tick_returns_false_when_no_agents() {
+    #[tokio::test]
+    async fn tick_returns_false_when_no_agents() {
         let registry = test_registry();
         let mut runtime = make_runtime(registry, test_repo());
 
-        assert!(!runtime.tick());
+        assert!(!runtime.tick().await);
         assert!(runtime.functions.is_empty());
     }
 
-    #[test]
-    fn tick_deploys_new_agent() {
+    #[tokio::test]
+    async fn tick_deploys_new_agent() {
         let registry = test_registry();
         let repo = test_repo();
         let agent = make_lambda_agent("echo");
@@ -557,16 +552,16 @@ mod tests {
         let mut runtime = make_runtime(registry, repo);
 
         // First tick: deploys the agent → count changed.
-        assert!(runtime.tick());
+        assert!(runtime.tick().await);
         assert_eq!(runtime.functions.len(), 1);
         assert!(runtime.functions.contains_key("echo"));
 
         // Second tick: no change (now Live).
-        assert!(!runtime.tick());
+        assert!(!runtime.tick().await);
     }
 
-    #[test]
-    fn tick_removes_orphan() {
+    #[tokio::test]
+    async fn tick_removes_orphan() {
         let registry = test_registry();
         let repo = test_repo();
         let agent = make_lambda_agent("echo");
@@ -574,17 +569,17 @@ mod tests {
         set_deploying(&*repo, "echo");
 
         let mut runtime = make_runtime(registry.clone(), repo);
-        runtime.tick(); // deploys
+        runtime.tick().await; // deploys
         assert_eq!(runtime.functions.len(), 1);
 
         // Remove from registry → next tick undeploys.
         registry.delete_agent("echo").unwrap();
-        assert!(runtime.tick());
+        assert!(runtime.tick().await);
         assert!(runtime.functions.is_empty());
     }
 
-    #[test]
-    fn shutdown_undeploys_all() {
+    #[tokio::test]
+    async fn shutdown_undeploys_all() {
         let registry = test_registry();
         let repo = test_repo();
         registry.register_agent(make_lambda_agent("alpha")).unwrap();
@@ -593,15 +588,15 @@ mod tests {
         set_deploying(&*repo, "beta");
 
         let mut runtime = make_runtime(registry, repo);
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(runtime.functions.len(), 2);
 
         runtime.shutdown();
         assert!(runtime.functions.is_empty());
     }
 
-    #[test]
-    fn deploy_creates_role_and_function_with_correct_names() {
+    #[tokio::test]
+    async fn deploy_creates_role_and_function_with_correct_names() {
         let registry = test_registry();
         let repo = test_repo();
         let agent = make_lambda_agent("echo");
@@ -614,15 +609,15 @@ mod tests {
         let mut runtime =
             LambdaRuntime::with_client(&config, registry, repo, queue, Box::new(mock));
 
-        runtime.tick();
+        runtime.tick().await;
 
         let deployed = &runtime.functions["echo"];
         assert!(deployed.role_arn.contains("vlinder-agent-echo"));
         assert!(deployed.function_arn.contains("vlinder-echo"));
     }
 
-    #[test]
-    fn invoke_dispatches_to_lambda_consumes_from_queue() {
+    #[tokio::test]
+    async fn invoke_dispatches_to_lambda_consumes_from_queue() {
         use vlinder_core::domain::{
             BranchId, DagNodeId, DataMessageKind, DataRoutingKey, HarnessType, InvokeDiagnostics,
             InvokeMessage, MessageId, SessionId, SubmissionId,
@@ -645,7 +640,7 @@ mod tests {
         );
 
         // Deploy first.
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(runtime.functions.len(), 1);
 
         // Enqueue an invoke message.
@@ -669,21 +664,21 @@ mod tests {
             dag_parent: DagNodeId::root(),
             payload: b"hello lambda".to_vec(),
         };
-        queue.send_invoke(key, msg).unwrap();
+        queue.send_invoke(key, msg).await.unwrap();
 
         // Tick — should dispatch the invocation.
-        runtime.tick();
+        runtime.tick().await;
 
         // The invoke should be consumed.
         let agent_id = AgentName::new("echo");
         assert!(
-            block_on(queue.receive_invoke(&agent_id)).is_err(),
+            queue.receive_invoke(&agent_id).await.is_err(),
             "invoke should have been consumed from the queue"
         );
     }
 
-    #[test]
-    fn invoke_failure_sends_error_complete() {
+    #[tokio::test]
+    async fn invoke_failure_sends_error_complete() {
         use vlinder_core::domain::{
             BranchId, DagNodeId, DataMessageKind, DataRoutingKey, HarnessType, InvokeDiagnostics,
             InvokeMessage, MessageId, SessionId, SubmissionId,
@@ -708,7 +703,7 @@ mod tests {
         );
 
         // Deploy first (create_role/create_function succeed on FailingLambdaClient).
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(runtime.functions.len(), 1);
 
         // Enqueue an invoke message.
@@ -733,17 +728,15 @@ mod tests {
             dag_parent: DagNodeId::root(),
             payload: b"hello".to_vec(),
         };
-        queue.send_invoke(key, msg).unwrap();
+        queue.send_invoke(key, msg).await.unwrap();
 
         // Tick — invoke_function fails, so daemon sends error complete.
-        runtime.tick();
+        runtime.tick().await;
 
-        let (_key, complete, ack) = block_on(queue.receive_complete(
-            &submission,
-            HarnessType::Grpc,
-            &AgentName::new("echo"),
-        ))
-        .expect("should receive error complete from daemon");
+        let (_key, complete, ack) = queue
+            .receive_complete(&submission, HarnessType::Grpc, &AgentName::new("echo"))
+            .await
+            .expect("should receive error complete from daemon");
         ack().unwrap();
         let payload_str = String::from_utf8_lossy(&complete.payload);
         assert!(
@@ -752,8 +745,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn deploy_passes_vpc_config_to_client() {
+    #[tokio::test]
+    async fn deploy_passes_vpc_config_to_client() {
         use std::sync::{Arc as StdArc, Mutex};
 
         #[derive(Default)]
@@ -819,7 +812,7 @@ mod tests {
         let mut runtime =
             LambdaRuntime::with_client(&config, registry, repo, queue, Box::new(client));
 
-        runtime.tick();
+        runtime.tick().await;
 
         let c = captured.lock().unwrap();
         assert_eq!(c.subnet_ids, vec!["subnet-aaa", "subnet-bbb"]);

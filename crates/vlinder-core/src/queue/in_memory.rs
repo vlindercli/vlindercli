@@ -46,7 +46,7 @@ impl Default for InMemoryQueue {
 
 #[async_trait]
 impl MessageQueue for InMemoryQueue {
-    fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
         let mut q = self
             .invokes
             .lock()
@@ -255,10 +255,6 @@ mod tests {
     use crate::domain::RuntimeType;
     use crate::domain::{BranchId, DagNodeId, MessageId, SessionId, SubmissionId};
 
-    fn block_on<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Runtime::new().unwrap().block_on(f)
-    }
-
     fn test_agent_id() -> AgentName {
         AgentName::new("echo-agent")
     }
@@ -297,7 +293,7 @@ mod tests {
         };
         let original_id = msg.id.clone();
 
-        queue.send_invoke(key, msg).unwrap();
+        queue.send_invoke(key, msg).await.unwrap();
 
         // Receive typed message
         let (recv_key, received, ack) = queue.receive_invoke(&test_agent_id()).await.unwrap();
@@ -316,8 +312,8 @@ mod tests {
         ack().unwrap();
     }
 
-    #[test]
-    fn receive_invoke_preserves_all_dimensions() {
+    #[tokio::test]
+    async fn receive_invoke_preserves_all_dimensions() {
         let queue = InMemoryQueue::new();
 
         let submission = test_submission();
@@ -344,9 +340,9 @@ mod tests {
             payload: b"input".to_vec(),
         };
 
-        queue.send_invoke(key, msg).unwrap();
+        queue.send_invoke(key, msg).await.unwrap();
 
-        let (recv_key, _, _) = block_on(queue.receive_invoke(&test_agent_id())).unwrap();
+        let (recv_key, _, _) = queue.receive_invoke(&test_agent_id()).await.unwrap();
 
         // All dimensions preserved for reply construction
         assert_eq!(recv_key.submission, submission);
@@ -386,35 +382,35 @@ mod tests {
         }
     }
 
-    #[test]
-    fn send_and_receive_invoke() {
+    #[tokio::test]
+    async fn send_and_receive_invoke() {
         let queue = InMemoryQueue::new();
         let key = test_data_routing_key();
         let msg = test_invoke();
 
-        queue.send_invoke(key, msg.clone()).unwrap();
+        queue.send_invoke(key, msg.clone()).await.unwrap();
 
-        let (recv_key, recv_msg, ack) = block_on(queue.receive_invoke(&test_agent_id())).unwrap();
+        let (recv_key, recv_msg, ack) = queue.receive_invoke(&test_agent_id()).await.unwrap();
 
         assert_eq!(recv_msg, msg);
         assert_eq!(recv_key.submission, test_submission());
         ack().unwrap();
     }
 
-    #[test]
-    fn receive_invoke_times_out_for_wrong_agent() {
+    #[tokio::test]
+    async fn receive_invoke_times_out_for_wrong_agent() {
         let queue = InMemoryQueue::new();
         let key = test_data_routing_key();
         let msg = test_invoke();
 
-        queue.send_invoke(key, msg).unwrap();
+        queue.send_invoke(key, msg).await.unwrap();
 
-        let result = block_on(queue.receive_invoke(&AgentName::new("other-agent")));
+        let result = queue.receive_invoke(&AgentName::new("other-agent")).await;
         assert!(matches!(result, Err(QueueError::Timeout)));
     }
 
-    #[test]
-    fn multiple_invoke_messages_delivered_in_order() {
+    #[tokio::test]
+    async fn multiple_invoke_messages_delivered_in_order() {
         let queue = InMemoryQueue::new();
 
         let key = test_data_routing_key();
@@ -439,13 +435,13 @@ mod tests {
             payload: b"second".to_vec(),
         };
 
-        queue.send_invoke(key.clone(), msg1.clone()).unwrap();
-        queue.send_invoke(key, msg2.clone()).unwrap();
+        queue.send_invoke(key.clone(), msg1.clone()).await.unwrap();
+        queue.send_invoke(key, msg2.clone()).await.unwrap();
 
-        let (_, recv1, _) = block_on(queue.receive_invoke(&test_agent_id())).unwrap();
+        let (_, recv1, _) = queue.receive_invoke(&test_agent_id()).await.unwrap();
         assert_eq!(recv1, msg1);
 
-        let (_, recv2, _) = block_on(queue.receive_invoke(&test_agent_id())).unwrap();
+        let (_, recv2, _) = queue.receive_invoke(&test_agent_id()).await.unwrap();
         assert_eq!(recv2, msg2);
     }
 }

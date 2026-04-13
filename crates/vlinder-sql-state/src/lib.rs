@@ -29,6 +29,8 @@ use std::thread::JoinHandle;
 #[cfg(feature = "server")]
 use std::fmt::Write as _;
 #[cfg(feature = "server")]
+use tokio::runtime::Runtime;
+#[cfg(feature = "server")]
 use vlinder_core::domain::{DagStore, MessageType, SessionId};
 
 /// A running session viewer server.
@@ -125,7 +127,10 @@ fn handle_request(request: tiny_http::Request, store: &dyn DagStore) {
             .ok()
             .and_then(|sid| store.get_session(&sid).ok().flatten());
         if let Some(session) = session {
-            if let Ok(body) = render_session(store, &session) {
+            if let Ok(body) = Runtime::new()
+                .unwrap()
+                .block_on(render_session(store, &session))
+            {
                 let _ = request.respond(html_response(200, &body));
             } else {
                 let body = html_page(
@@ -197,7 +202,7 @@ fn render_index(store: &dyn DagStore) -> String {
 }
 
 #[cfg(feature = "server")]
-fn render_session(
+async fn render_session(
     store: &dyn DagStore,
     session: &vlinder_core::domain::Session,
 ) -> Result<String, String> {
@@ -224,6 +229,7 @@ fn render_session(
         {
             let payload = store
                 .get_invoke_node(&last_invoke.id)
+                .await
                 .ok()
                 .flatten()
                 .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
@@ -237,45 +243,7 @@ fn render_session(
     }
 
     for node in &nodes {
-        match node.message_type() {
-            MessageType::Invoke => {
-                let payload = store
-                    .get_invoke_node(&node.id)
-                    .ok()
-                    .flatten()
-                    .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
-                    .unwrap_or_default();
-                let ts = node.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ = writeln!(
-                    messages,
-                    "<div class=\"msg user\">\
-                     <div class=\"role\">User <span class=\"ts\">{}</span></div>\
-                     <pre>{}</pre>\
-                     </div>",
-                    html_escape(&ts),
-                    html_escape(&payload),
-                );
-            }
-            MessageType::Complete => {
-                let payload = store
-                    .get_complete_node(&node.id)
-                    .ok()
-                    .flatten()
-                    .map(|m| String::from_utf8_lossy(&m.payload).to_string())
-                    .unwrap_or_default();
-                let ts = node.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ = writeln!(
-                    messages,
-                    "<div class=\"msg agent\">\
-                     <div class=\"role\">Agent <span class=\"ts\">{}</span></div>\
-                     <pre>{}</pre>\
-                     </div>",
-                    html_escape(&ts),
-                    html_escape(&payload),
-                );
-            }
-            _ => {} // Skip Request/Response/Delegate — internal protocol messages
-        }
+        render_node(store, node, &mut messages).await?;
     }
 
     let title = format!("{} / {}", agent_name, session.name);
@@ -284,12 +252,61 @@ fn render_session(
         &title,
         &format!(
             "<p><a href=\"/\">&larr; All sessions</a></p>\n\
-         <h1>{}</h1>\n\
-         {}",
+             <h1>{}</h1>\n\
+             {}",
             html_escape(&title),
             messages,
         ),
     ))
+}
+
+async fn render_node(
+    store: &dyn DagStore,
+    node: &vlinder_core::domain::DagNode,
+    messages: &mut String,
+) -> Result<(), String> {
+    match node.message_type() {
+        MessageType::Invoke => {
+            let payload = store
+                .get_invoke_node(&node.id)
+                .await
+                .ok()
+                .flatten()
+                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
+                .unwrap_or_default();
+            let ts = node.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+            let _ = writeln!(
+                messages,
+                "<div class=\"msg user\">\
+                 <div class=\"role\">User <span class=\"ts\">{}</span></div>\
+                 <pre>{}</pre>\
+                 </div>",
+                html_escape(&ts),
+                html_escape(&payload),
+            );
+        }
+        MessageType::Complete => {
+            let payload = store
+                .get_complete_node(&node.id)
+                .await
+                .ok()
+                .flatten()
+                .map(|m| String::from_utf8_lossy(&m.payload).to_string())
+                .unwrap_or_default();
+            let ts = node.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+            let _ = writeln!(
+                messages,
+                "<div class=\"msg agent\">\
+                 <div class=\"role\">Agent <span class=\"ts\">{}</span></div>\
+                 <pre>{}</pre>\
+                 </div>",
+                html_escape(&ts),
+                html_escape(&payload),
+            );
+        }
+        _ => {} // Skip Request/Response/Delegate — internal protocol messages
+    }
+    Ok(())
 }
 
 // =============================================================================

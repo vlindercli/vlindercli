@@ -296,7 +296,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_complete_node(
+    async fn get_complete_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::CompleteMessage>, String> {
@@ -305,9 +305,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_complete_node(request).await })
+        let response = client
+            .get_complete_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
@@ -677,7 +677,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_invoke_node(
+    async fn get_invoke_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<
@@ -692,9 +692,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_invoke_node(request).await })
+        let response = client
+            .get_invoke_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {

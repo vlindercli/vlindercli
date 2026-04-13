@@ -5012,6 +5012,7 @@ dependencies = [
 name = "vlinder-lambda-runtime"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "aws-config",
  "aws-sdk-iam",
  "aws-sdk-lambda",
@@ -5057,11 +5058,13 @@ dependencies = [
 name = "vlinder-podman-runtime"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "dirs",
  "semver",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "tracing",
  "ureq 3.2.0",
  "vlinder-core",

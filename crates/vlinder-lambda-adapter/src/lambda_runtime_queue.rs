@@ -44,9 +44,9 @@ impl MessageQueue for LambdaRuntimeQueue {
     // Invoke — from Lambda Runtime API, not from the queue
     // -------------------------------------------------------------------------
 
-    fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
         // Lambda functions don't send invokes — the daemon or event source does.
-        self.inner.send_invoke(key, msg)
+        self.inner.send_invoke(key, msg).await
     }
 
     async fn receive_invoke(

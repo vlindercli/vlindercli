@@ -355,11 +355,14 @@ impl MessageQueue for RecordingQueue {
     // Send methods — record DAG node, then forward
     // -------------------------------------------------------------------------
 
-    fn send_invoke(&self, key: DataRoutingKey, mut msg: InvokeMessage) -> Result<(), QueueError> {
-        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
-        let dag_id = rt.block_on(self.record_invoke(&key, &msg));
+    async fn send_invoke(
+        &self,
+        key: DataRoutingKey,
+        mut msg: InvokeMessage,
+    ) -> Result<(), QueueError> {
+        let dag_id = self.record_invoke(&key, &msg).await;
         msg.dag_id = dag_id;
-        self.inner.send_invoke(key, msg)
+        self.inner.send_invoke(key, msg).await
     }
 
     async fn receive_invoke(
@@ -746,10 +749,6 @@ mod tests {
     };
     use crate::queue::InMemoryQueue;
 
-    fn block_on<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Runtime::new().unwrap().block_on(f)
-    }
-
     fn test_store() -> Arc<dyn DagStore> {
         let store = Arc::new(InMemoryDagStore::new());
         // Seed "main" branch (id=1) — mirrors production setup.
@@ -818,15 +817,15 @@ mod tests {
         (key, msg)
     }
 
-    #[test]
-    fn send_invoke_records_dag_node() {
+    #[tokio::test]
+    async fn send_invoke_records_dag_node() {
         let store = test_store();
         let queue = test_queue(Arc::clone(&store));
 
         let (key, msg) = test_invoke();
         let sid = key.session.clone();
 
-        queue.send_invoke(key, msg).unwrap();
+        queue.send_invoke(key, msg).await.unwrap();
 
         let nodes = store.get_session_nodes(&sid).unwrap();
         assert_eq!(nodes.len(), 1);
@@ -849,8 +848,8 @@ mod tests {
         assert_eq!(nodes[0].message_type(), MessageType::Complete);
     }
 
-    #[test]
-    fn same_timeline_chains_across_sessions() {
+    #[tokio::test]
+    async fn same_timeline_chains_across_sessions() {
         let store = test_store();
         let queue = test_queue(Arc::clone(&store));
 
@@ -869,8 +868,8 @@ mod tests {
         key2.session = ses_bbb.clone();
         msg2.payload = b"hello-bbb".to_vec();
 
-        queue.send_invoke(key1, msg1).unwrap();
-        queue.send_invoke(key2, msg2).unwrap();
+        queue.send_invoke(key1, msg1).await.unwrap();
+        queue.send_invoke(key2, msg2).await.unwrap();
 
         let nodes1 = store.get_session_nodes(&ses_aaa).unwrap();
         let nodes2 = store.get_session_nodes(&ses_bbb).unwrap();
@@ -882,8 +881,8 @@ mod tests {
         assert_eq!(nodes2[0].parent_id, nodes1[0].id);
     }
 
-    #[test]
-    fn receive_methods_delegate_through() {
+    #[tokio::test]
+    async fn receive_methods_delegate_through() {
         let store = test_store();
         let inner = Arc::new(InMemoryQueue::new());
         let queue = RecordingQueue::new(
@@ -893,16 +892,16 @@ mod tests {
 
         // Send a message through the inner queue's trait method
         let (key, msg) = test_invoke();
-        inner.send_invoke(key, msg).unwrap();
+        inner.send_invoke(key, msg).await.unwrap();
 
         // Receive through the recording queue — should delegate to inner
-        let result = block_on(queue.receive_invoke(&test_agent_id()));
+        let result = queue.receive_invoke(&test_agent_id()).await;
         assert!(result.is_ok());
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
-    fn dag_store_error_does_not_block_send() {
+    async fn dag_store_error_does_not_block_send() {
         // Use a store that always fails on insert
         struct FailStore;
         #[async_trait]
@@ -995,19 +994,19 @@ mod tests {
 
         // Send should still succeed despite store failure
         let (key, msg) = test_invoke();
-        let result = queue.send_invoke(key, msg);
+        let result = queue.send_invoke(key, msg).await;
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn invoke_with_dag_parent_overrides_chain() {
+    #[tokio::test]
+    async fn invoke_with_dag_parent_overrides_chain() {
         let store = test_store();
         let queue = test_queue(Arc::clone(&store));
 
         // Send a normal invoke first to populate the chain
         let (key1, msg1) = test_invoke();
         let sid = key1.session.clone();
-        queue.send_invoke(key1, msg1).unwrap();
+        queue.send_invoke(key1, msg1).await.unwrap();
 
         let nodes = store.get_session_nodes(&sid).unwrap();
         assert_eq!(nodes.len(), 1);
@@ -1016,7 +1015,7 @@ mod tests {
         // Send a second invoke (same session) — normally chains off first
         let (key2, mut msg2) = test_invoke();
         msg2.payload = b"second".to_vec();
-        queue.send_invoke(key2, msg2).unwrap();
+        queue.send_invoke(key2, msg2).await.unwrap();
 
         let nodes = store.get_session_nodes(&sid).unwrap();
         assert_eq!(nodes.len(), 2);
@@ -1027,7 +1026,7 @@ mod tests {
         let (key3, mut msg3) = test_invoke();
         msg3.payload = b"forked".to_vec();
         msg3.dag_parent = first_id.clone();
-        queue.send_invoke(key3, msg3).unwrap();
+        queue.send_invoke(key3, msg3).await.unwrap();
 
         let nodes = store.get_session_nodes(&sid).unwrap();
         assert_eq!(nodes.len(), 3);

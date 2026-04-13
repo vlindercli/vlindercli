@@ -716,7 +716,7 @@ impl DagStore for SqliteDagStore {
         Ok(rows.into_iter().map(dag_node_row_to_domain).collect())
     }
 
-    fn get_invoke_node(
+    async fn get_invoke_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<
@@ -798,7 +798,7 @@ impl DagStore for SqliteDagStore {
         Ok(result)
     }
 
-    fn get_complete_node(
+    async fn get_complete_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::CompleteMessage>, String> {

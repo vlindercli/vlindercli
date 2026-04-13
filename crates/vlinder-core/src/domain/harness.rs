@@ -175,21 +175,25 @@ impl CoreHarness {
             .latest_node_on_branch(timeline, Some(MessageType::Invoke))
             .await
             .unwrap_or(None);
-        let last_invoke_payload = last_invoke_node.as_ref().and_then(|n| {
-            self.store
+        let last_invoke_payload = match last_invoke_node {
+            Some(n) => self
+                .store
                 .get_invoke_node(&n.id)
+                .await
                 .ok()
                 .flatten()
-                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
-        });
+                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string()),
+            None => None,
+        };
         let last_complete_node = self
             .store
             .latest_node_on_branch(timeline, Some(MessageType::Complete))
             .await
             .unwrap_or(None);
-        let last_complete = last_complete_node
-            .as_ref()
-            .and_then(|n| self.store.get_complete_node(&n.id).ok().flatten());
+        let last_complete = match last_complete_node {
+            Some(n) => self.store.get_complete_node(&n.id).await.ok().flatten(),
+            None => None,
+        };
         let last_complete_payload = last_complete
             .as_ref()
             .map(|m| String::from_utf8_lossy(&m.payload).to_string());
@@ -286,6 +290,7 @@ impl Harness for CoreHarness {
         let agent = crate::domain::agent_routing_key(agent_id);
         self.queue
             .send_invoke(key, msg)
+            .await
             .map_err(|e| format!("queue error: {e}"))?;
 
         let result = loop {

@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
+async-trait = "0.1"
 tracing = "0.1"
 aws-config = "1"
 aws-sdk-lambda = "1"

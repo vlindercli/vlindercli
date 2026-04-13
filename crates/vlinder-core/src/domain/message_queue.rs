@@ -72,7 +72,7 @@ pub trait MessageQueue: Send + Sync {
     ///
     /// Routing key and payload are separate: the key goes into the subject,
     /// the payload goes into the NATS message body.
-    fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError>;
+    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError>;
 
     /// Receive an invoke from the data plane (ADR 121).
     ///
@@ -442,7 +442,7 @@ mod routing_contract_proofs {
 
     #[async_trait]
     impl MessageQueue for FilteredQueue {
-        fn send_invoke(&self, _: DataRoutingKey, _: InvokeMessage) -> Result<(), QueueError> {
+        async fn send_invoke(&self, _: DataRoutingKey, _: InvokeMessage) -> Result<(), QueueError> {
             Ok(())
         }
         async fn receive_invoke(
@@ -508,7 +508,7 @@ mod routing_contract_proofs {
 
     #[async_trait]
     impl MessageQueue for UnfilteredQueue {
-        fn send_invoke(&self, _: DataRoutingKey, _: InvokeMessage) -> Result<(), QueueError> {
+        async fn send_invoke(&self, _: DataRoutingKey, _: InvokeMessage) -> Result<(), QueueError> {
             Ok(())
         }
         async fn receive_invoke(

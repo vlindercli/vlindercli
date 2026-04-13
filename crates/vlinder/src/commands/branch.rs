@@ -1,6 +1,7 @@
 use clap::Subcommand;
 
 use crate::config::CliConfig;
+use tokio::runtime::Runtime;
 use vlinder_core::domain::{DagStore, SessionId};
 
 use super::connect::open_dag_store;
@@ -105,6 +106,8 @@ fn get(session_id_or_name: &str, branch_name: &str) {
         std::process::exit(1);
     }
 
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+
     // Get all session nodes and filter to those on this branch's timeline
     let nodes = store.get_session_nodes(&session_id).unwrap_or_else(|e| {
         eprintln!("Failed to query session nodes: {e}");
@@ -142,7 +145,9 @@ fn get(session_id_or_name: &str, branch_name: &str) {
             let (from, to, operation, checkpoint) = if node.message_type()
                 == vlinder_core::domain::MessageType::Invoke
             {
-                if let Ok(Some((key, _msg))) = store.get_invoke_node(&node.id) {
+                if let Ok(Some((key, _msg))) =
+                    rt.block_on(async { store.get_invoke_node(&node.id).await })
+                {
                     let vlinder_core::domain::DataMessageKind::Invoke { harness, agent, .. } =
                         &key.kind
                     else {

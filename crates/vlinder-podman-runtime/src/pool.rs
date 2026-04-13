@@ -16,6 +16,8 @@ use vlinder_core::domain::{
     ResourceId, Runtime, RuntimeType,
 };
 
+use async_trait::async_trait;
+
 use crate::config::PodmanRuntimeConfig;
 use crate::podman_client::{remove_s3_credentials, write_s3_credentials, PodmanClient, RunTarget};
 
@@ -511,6 +513,7 @@ impl Drop for ContainerRuntime {
     }
 }
 
+#[async_trait(?Send)]
 impl Runtime for ContainerRuntime {
     fn id(&self) -> &ResourceId {
         &self.id
@@ -520,7 +523,7 @@ impl Runtime for ContainerRuntime {
         RuntimeType::Container
     }
 
-    fn tick(&mut self) -> bool {
+    async fn tick(&mut self) -> bool {
         let before = self.pods.len();
         self.ensure_containers();
         self.pods.len() != before
@@ -682,11 +685,11 @@ mod tests {
         assert_eq!(runtime.runtime_type(), RuntimeType::Container);
     }
 
-    #[test]
-    fn tick_returns_false_when_no_agents() {
+    #[tokio::test]
+    async fn tick_returns_false_when_no_agents() {
         let mut runtime = test_runtime();
 
-        assert!(!runtime.tick());
+        assert!(!runtime.tick().await);
     }
 
     // ── S3 mount volume naming (ADR 107) ──
@@ -760,40 +763,40 @@ mod tests {
         runtime.repo.get_derived_status(name).unwrap().unwrap()
     }
 
-    #[test]
-    fn deploy_transitions_to_live() {
+    #[tokio::test]
+    async fn deploy_transitions_to_live() {
         let mut runtime = test_runtime();
         register_test_agent(&mut runtime, "my-agent");
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
     }
 
-    #[test]
-    fn redeploy_transitions_existing_agent_to_live() {
+    #[tokio::test]
+    async fn redeploy_transitions_existing_agent_to_live() {
         let mut runtime = test_runtime();
         register_test_agent(&mut runtime, "my-agent");
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
 
         // Re-deploy: set back to Deploying
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
     }
 
-    #[test]
-    fn delete_transitions_to_deleted() {
+    #[tokio::test]
+    async fn delete_transitions_to_deleted() {
         let mut runtime = test_runtime();
         register_test_agent(&mut runtime, "my-agent");
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy first
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
 
         // Delete — mark as deleting via readiness check
@@ -802,12 +805,12 @@ mod tests {
                 .deleting();
         runtime.repo.append_readiness_check(&check).unwrap();
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deleting);
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Deleted);
     }
 
-    #[test]
-    fn failed_start_transitions_to_failed() {
+    #[tokio::test]
+    async fn failed_start_transitions_to_failed() {
         use crate::podman_client::PodmanError;
 
         struct FailingPodmanClient;
@@ -857,30 +860,30 @@ mod tests {
         register_test_agent(&mut runtime, "my-agent");
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Failed);
     }
 
-    #[test]
-    fn orphan_pod_is_removed() {
+    #[tokio::test]
+    async fn orphan_pod_is_removed() {
         let mut runtime = test_runtime();
         register_test_agent(&mut runtime, "my-agent");
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy
-        runtime.tick();
+        runtime.tick().await;
         assert!(runtime.pods.contains_key("my-agent"));
 
         // Remove from registry (simulate external deletion)
         runtime.registry().delete_agent("my-agent").unwrap();
 
         // Tick should clean up the orphaned pod
-        runtime.tick();
+        runtime.tick().await;
         assert!(!runtime.pods.contains_key("my-agent"));
     }
 
-    #[test]
-    fn crashed_pod_is_recreated() {
+    #[tokio::test]
+    async fn crashed_pod_is_recreated() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         struct CrashablePodmanClient {
@@ -935,7 +938,7 @@ mod tests {
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy — pod is alive
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
         assert!(runtime.pods.contains_key("my-agent"));
 
@@ -944,7 +947,7 @@ mod tests {
 
         // Re-deploy — should detect the dead pod and recreate
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
         assert!(runtime.pods.contains_key("my-agent"));
     }

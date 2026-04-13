@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::worker_role::WorkerRole;
+use tokio::runtime::Runtime as TokioRuntime;
 use vlinder_core::domain::Registry;
 
 /// Helper to get gRPC registry address with http:// prefix.
@@ -395,11 +396,12 @@ fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
     }
 
     let mut runtime = ContainerRuntime::new(&podman_config, registry, repo, podman);
+    let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
 
     tracing::info!("Container agent worker ready");
 
     while !shutdown.load(Ordering::Relaxed) {
-        runtime.tick();
+        rt.block_on(async { runtime.tick().await });
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
@@ -456,8 +458,9 @@ fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
         "Lambda agent worker ready"
     );
 
+    let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
     while !shutdown.load(Ordering::Relaxed) {
-        runtime.tick();
+        rt.block_on(async { runtime.tick().await });
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }

@@ -468,7 +468,7 @@ pub trait DagStore: Send + Sync {
     ///
     /// Returns the routing key and invoke message from the `invoke_nodes` table.
     /// Returns `None` if the hash doesn't exist or isn't an invoke node.
-    fn get_invoke_node(
+    async fn get_invoke_node(
         &self,
         dag_hash: &super::DagNodeId,
     ) -> Result<Option<(super::DataRoutingKey, super::InvokeMessage)>, String> {
@@ -477,7 +477,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Retrieve typed complete data by DAG node hash.
-    fn get_complete_node(
+    async fn get_complete_node(
         &self,
         dag_hash: &super::DagNodeId,
     ) -> Result<Option<super::CompleteMessage>, String> {
@@ -723,7 +723,7 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn get_complete_node(
+    async fn get_complete_node(
         &self,
         _dag_hash: &super::DagNodeId,
     ) -> Result<Option<super::CompleteMessage>, String> {

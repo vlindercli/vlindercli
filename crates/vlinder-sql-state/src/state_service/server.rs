@@ -283,6 +283,7 @@ impl StateService for StateServiceServer {
         let result = self
             .store
             .get_invoke_node(&dag_hash)
+            .await
             .map_err(Status::internal)?;
 
         let node = result.map(|(key, msg)| {
@@ -326,6 +327,7 @@ impl StateService for StateServiceServer {
         let result = self
             .store
             .get_complete_node(&dag_hash)
+            .await
             .map_err(Status::internal)?;
 
         let node = result.map(|msg| CompleteNodeProto {

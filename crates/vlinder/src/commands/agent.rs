@@ -388,15 +388,13 @@ fn resolve_branch_tip(
     // Read state from the tip node
     let initial_state = if let Ok(Some(node)) = store.get_node(&tip_hash) {
         let state = if node.message_type() == vlinder_core::domain::MessageType::Invoke {
-            store
-                .get_invoke_node(&node.id)
+            rt.block_on(async { store.get_invoke_node(&node.id).await })
                 .ok()
                 .flatten()
                 .and_then(|(_, msg)| msg.state)
                 .unwrap_or_default()
         } else if node.message_type() == vlinder_core::domain::MessageType::Complete {
-            store
-                .get_complete_node(&node.id)
+            rt.block_on(async { store.get_complete_node(&node.id).await })
                 .ok()
                 .flatten()
                 .and_then(|m| m.state)

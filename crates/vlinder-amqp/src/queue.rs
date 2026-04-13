@@ -178,34 +178,32 @@ impl AmqpQueue {
     }
 
     /// Publish a JSON-serialized message to the topic exchange.
-    fn publish(
+    async fn publish(
         &self,
         routing_key: &str,
         message_id: &str,
         payload: &[u8],
     ) -> Result<(), QueueError> {
-        self.inner.runtime.block_on(async {
-            let properties = BasicProperties::default()
-                .with_message_id(message_id.into())
-                .with_content_type("application/json".into())
-                .with_delivery_mode(2); // persistent
+        let properties = BasicProperties::default()
+            .with_message_id(message_id.into())
+            .with_content_type("application/json".into())
+            .with_delivery_mode(2); // persistent
 
-            self.inner
-                .channel
-                .basic_publish(
-                    EXCHANGE_NAME,
-                    routing_key,
-                    BasicPublishOptions::default(),
-                    payload,
-                    properties,
-                )
-                .await
-                .map_err(|e| QueueError::SendFailed(format!("publish failed: {e}")))?
-                .await
-                .map_err(|e| QueueError::SendFailed(format!("publish confirm failed: {e}")))?;
+        self.inner
+            .channel
+            .basic_publish(
+                EXCHANGE_NAME,
+                routing_key,
+                BasicPublishOptions::default(),
+                payload,
+                properties,
+            )
+            .await
+            .map_err(|e| QueueError::SendFailed(format!("publish failed: {e}")))?
+            .await
+            .map_err(|e| QueueError::SendFailed(format!("publish confirm failed: {e}")))?;
 
-            Ok(())
-        })
+        Ok(())
     }
 }
 
@@ -226,11 +224,11 @@ impl MessageQueue for AmqpQueue {
         Ok(())
     }
 
-    fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
         let rk = routing::invoke_routing_key(&key);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize invoke: {e}")))?;
-        self.publish(&rk, msg.id.as_str(), &payload)
+        self.publish(&rk, msg.id.as_str(), &payload).await
     }
 
     async fn receive_invoke(
@@ -369,7 +367,9 @@ impl MessageQueue for AmqpQueue {
         );
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize complete: {e}")))?;
-        self.publish(&rk, msg.id.as_str(), &payload)
+        self.inner
+            .runtime
+            .block_on(self.publish(&rk, msg.id.as_str(), &payload))
     }
 
     async fn send_request(
@@ -441,7 +441,9 @@ impl MessageQueue for AmqpQueue {
         );
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize response: {e}")))?;
-        self.publish(&rk, msg.id.as_str(), &payload)
+        self.inner
+            .runtime
+            .block_on(self.publish(&rk, msg.id.as_str(), &payload))
     }
 
     fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
@@ -451,7 +453,9 @@ impl MessageQueue for AmqpQueue {
         let rk = routing::fork_routing_key(&key, agent_name);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize fork: {e}")))?;
-        self.publish(&rk, msg.id.as_str(), &payload)
+        self.inner
+            .runtime
+            .block_on(self.publish(&rk, msg.id.as_str(), &payload))
     }
 
     fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {
@@ -461,7 +465,9 @@ impl MessageQueue for AmqpQueue {
         let rk = routing::promote_routing_key(&key, agent_name, msg.branch_id);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize promote: {e}")))?;
-        self.publish(&rk, msg.id.as_str(), &payload)
+        self.inner
+            .runtime
+            .block_on(self.publish(&rk, msg.id.as_str(), &payload))
     }
 
     fn send_session_start(
@@ -480,7 +486,9 @@ impl MessageQueue for AmqpQueue {
         let rk = routing::deploy_agent_routing_key(&key);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize deploy: {e}")))?;
-        self.publish(&rk, key.submission.as_str(), &payload)
+        self.inner
+            .runtime
+            .block_on(self.publish(&rk, key.submission.as_str(), &payload))
     }
 
     fn send_delete_agent(
@@ -491,6 +499,8 @@ impl MessageQueue for AmqpQueue {
         let rk = routing::delete_agent_routing_key(&key);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize delete: {e}")))?;
-        self.publish(&rk, key.submission.as_str(), &payload)
+        self.inner
+            .runtime
+            .block_on(self.publish(&rk, key.submission.as_str(), &payload))
     }
 }

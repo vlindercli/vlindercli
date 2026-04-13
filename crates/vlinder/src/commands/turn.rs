@@ -3,6 +3,7 @@ use clap::Subcommand;
 use crate::config::CliConfig;
 
 use super::connect::open_dag_store;
+use tokio::runtime::Runtime;
 
 #[derive(Subcommand, Debug, PartialEq)]
 pub enum TurnCommand {
@@ -27,6 +28,8 @@ fn get(submission_id: &str) {
         std::process::exit(1);
     });
 
+    let rt = Runtime::new().unwrap();
+
     let nodes = store
         .get_nodes_by_submission(submission_id)
         .unwrap_or_else(|e| {
@@ -42,7 +45,7 @@ fn get(submission_id: &str) {
     for node in &nodes {
         let (from, to, operation, checkpoint, state, payload) =
             if node.message_type() == vlinder_core::domain::MessageType::Invoke {
-                if let Ok(Some((key, msg))) = store.get_invoke_node(&node.id) {
+                if let Ok(Some((key, msg))) = rt.block_on(store.get_invoke_node(&node.id)) {
                     let vlinder_core::domain::DataMessageKind::Invoke { harness, agent, .. } =
                         &key.kind
                     else {
@@ -60,7 +63,7 @@ fn get(submission_id: &str) {
                     continue;
                 }
             } else if node.message_type() == vlinder_core::domain::MessageType::Complete {
-                if let Ok(Some(msg)) = store.get_complete_node(&node.id) {
+                if let Ok(Some(msg)) = rt.block_on(store.get_complete_node(&node.id)) {
                     (
                         "agent".to_string(),
                         "harness".to_string(),
