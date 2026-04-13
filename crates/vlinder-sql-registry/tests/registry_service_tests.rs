@@ -123,7 +123,11 @@ fn grpc_list_agents() {
         client.register_agent(agent).unwrap();
     }
 
-    let agents = client.get_agents();
+    // Use a separate runtime to drive the async get_agents call.
+    // GrpcRegistryClient::connect already created its own runtime (block_on),
+    // so we cannot be inside a tokio context here.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let agents = rt.block_on(client.get_agents());
     assert_eq!(agents.len(), 2);
 }
 

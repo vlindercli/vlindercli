@@ -87,7 +87,14 @@ impl LambdaRuntime {
 
     /// Reconcile deployed functions with registry state.
     fn ensure_functions(&mut self) -> bool {
-        let agents = self.registry.get_agents_by_runtime(RuntimeType::Lambda);
+        let registry = Arc::clone(&self.registry);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let agents = rt.block_on(registry.get_agents_by_runtime(RuntimeType::Lambda));
+            let _ = tx.send(agents);
+        });
+        let agents = rx.recv().unwrap();
         let desired: HashMap<String, &Agent> = agents.iter().map(|a| (a.name.clone(), a)).collect();
         let before = self.functions.len();
 

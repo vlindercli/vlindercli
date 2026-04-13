@@ -125,7 +125,9 @@ fn dispatch_loop(
                     continue;
                 };
 
-                match shared::dispatch_invoke(queue, registry, agent_port, &key, &invoke) {
+                match rt.block_on(shared::dispatch_invoke(
+                    queue, registry, agent_port, &key, &invoke,
+                )) {
                     Ok(result) => {
                         let region = std::env::var("AWS_REGION")
                             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))

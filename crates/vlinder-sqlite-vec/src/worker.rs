@@ -86,8 +86,8 @@ impl SqliteVecWorker {
         }
 
         let agent = self
-            .registry
-            .get_agent_by_name(agent_id)
+            .rt
+            .block_on(self.registry.get_agent_by_name(agent_id))
             .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
         let uri = agent
             .vector_storage

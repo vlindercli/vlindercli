@@ -201,14 +201,16 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
 
                 let registry_clone = Arc::clone(&registry);
                 let manifest = deploy_msg.manifest.clone();
-                let reg_result =
-                    std::thread::spawn(move || registry_clone.register_manifest(manifest))
-                        .join()
-                        .unwrap_or_else(|_| {
-                            Err(vlinder_core::domain::RegistrationError::Persistence(
-                                "registry thread panicked".to_string(),
-                            ))
-                        });
+                let handle = rt.handle().clone();
+                let reg_result = std::thread::spawn(move || {
+                    handle.block_on(registry_clone.register_manifest(manifest))
+                })
+                .join()
+                .unwrap_or_else(|_| {
+                    Err(vlinder_core::domain::RegistrationError::Persistence(
+                        "registry thread panicked".to_string(),
+                    ))
+                });
 
                 match reg_result {
                     Ok(_agent) => {

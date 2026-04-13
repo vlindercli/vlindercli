@@ -2,7 +2,12 @@
 
 This file is for Claude Code (Opus) used as a high-level collaborator — drafting ADRs, making design decisions, investigating failures, steering the project. Mechanical code execution is often delegated to a cheaper executor agent (Pi with Qwen3-Coder or similar), which reads `AGENTS.md`, not this file.
 
-When you write specs or step-by-step instructions for the executor, assume `AGENTS.md` is already loaded into its context. Don't re-state the executor's general rules — do include scope fences, file paths, line numbers, explicit "do not" lists, and anything that goes beyond the general guidance.
+When you write specs or step-by-step instructions for the executor, assume `AGENTS.md` is already loaded into its context. Don't re-state the executor's general rules — do include scope fences and anything that goes beyond the general guidance.
+
+### Writing executor specs
+- Describe WHAT to do, not HOW step-by-step. Capable executors can trace code, follow compilers, and make mechanical decisions. Over-specification wastes spec tokens and anchors the executor to the architect's assumptions.
+- Follow the runtime errors, don't speculate. When debugging async cascade issues, fix what the runtime tells you is broken. Don't preemptively change 13 methods because you think they'll all need it — change one, run, see what breaks next.
+- Review the executor's work by reading the CODE first. Form your own opinion about correctness before reading the executor's session logs or reasoning. Logs bias the reviewer toward the executor's perspective.
 
 ## TL;DR
 

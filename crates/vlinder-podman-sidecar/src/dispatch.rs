@@ -26,7 +26,7 @@ pub struct DispatchContext {
 }
 
 /// Handle a single invocation: dispatch to agent and send complete.
-pub fn handle_invoke(
+pub async fn handle_invoke(
     ctx: &DispatchContext,
     health: &mut HealthWindow,
     key: &DataRoutingKey,
@@ -37,7 +37,7 @@ pub fn handle_invoke(
         return;
     };
 
-    match shared::dispatch_invoke(&ctx.queue, &ctx.registry, ctx.container_port, key, msg) {
+    match shared::dispatch_invoke(&ctx.queue, &ctx.registry, ctx.container_port, key, msg).await {
         Ok(result) => {
             let diagnostics = health::build_diagnostics(
                 health,

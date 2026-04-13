@@ -367,7 +367,17 @@ impl GitDagWorker {
         let _ = root_tb.remove("models");
 
         if let Some(ref registry) = self.registry {
-            if let Some(agent) = registry.get_agent_by_name(agent_name) {
+            // Call async registry method in a separate thread to avoid nested runtime
+            let registry_clone = Arc::clone(registry);
+            let registry_for_models = Arc::clone(registry);
+            let agent_name = agent_name.to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                let agent = rt.block_on(registry_clone.get_agent_by_name(&agent_name));
+                let _ = tx.send(agent);
+            });
+            if let Some(agent) = rx.recv().unwrap() {
                 if let Ok(agent_toml) = toml::to_string_pretty(&agent) {
                     if let Ok(oid) = self.write_blob(agent_toml.as_bytes()) {
                         let _ = root_tb.insert("agent.toml", oid, FileMode::Blob.into());
@@ -376,7 +386,7 @@ impl GitDagWorker {
 
                 if !agent.requirements.models.is_empty() {
                     if let Ok(models_oid) =
-                        self.build_models_subtree(registry, &agent.requirements.models)
+                        self.build_models_subtree(&registry_for_models, &agent.requirements.models)
                     {
                         let _ = root_tb.insert("models", models_oid, FileMode::Tree.into());
                     }

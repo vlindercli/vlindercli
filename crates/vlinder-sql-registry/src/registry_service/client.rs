@@ -8,6 +8,8 @@ use vlinder_core::domain::{
     Registry, ResourceId, RuntimeType, SubmissionId, VectorStorageType,
 };
 
+use async_trait::async_trait;
+
 /// Registry implementation that makes gRPC calls to a remote server.
 pub struct GrpcRegistryClient {
     client: RegistryClient<Channel>,
@@ -126,6 +128,7 @@ pub fn ping_registry(addr: &str) -> Option<(u32, u32, u32)> {
     })
 }
 
+#[async_trait]
 impl Registry for GrpcRegistryClient {
     fn id(&self) -> ResourceId {
         self.id.clone()
@@ -169,13 +172,11 @@ impl Registry for GrpcRegistryClient {
         response.into_inner().agent.and_then(|a| a.try_into().ok())
     }
 
-    fn get_agents(&self) -> Vec<Agent> {
+    async fn get_agents(&self) -> Vec<Agent> {
         let request = proto::ListAgentsRequest {};
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_agents(request).await });
+        let response = client.list_agents(request).await;
 
         match response {
             Ok(resp) => resp
@@ -188,16 +189,13 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_agent_by_name(&self, name: &str) -> Option<Agent> {
+    async fn get_agent_by_name(&self, name: &str) -> Option<Agent> {
         let request = proto::GetAgentByNameRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_agent_by_name(request).await })
-            .ok()?;
+        let response = client.get_agent_by_name(request).await.ok()?;
 
         response.into_inner().agent.and_then(|a| a.try_into().ok())
     }

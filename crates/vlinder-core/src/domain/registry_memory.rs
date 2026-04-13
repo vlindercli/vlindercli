@@ -5,6 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use async_trait::async_trait;
+
 use super::{
     ensure_agent_identity, Agent, AgentManifest, Fleet, Job, JobId, JobStatus, Model, ModelType,
     ObjectStorageType, Provider, RegistrationError, Registry, ResourceId, RuntimeType, SecretStore,
@@ -107,6 +109,7 @@ impl InMemoryRegistry {
     }
 }
 
+#[async_trait]
 impl Registry for InMemoryRegistry {
     fn id(&self) -> ResourceId {
         self.registry_id.clone()
@@ -246,7 +249,7 @@ impl Registry for InMemoryRegistry {
         Ok(())
     }
 
-    fn register_manifest(&self, manifest: AgentManifest) -> Result<Agent, RegistrationError> {
+    async fn register_manifest(&self, manifest: AgentManifest) -> Result<Agent, RegistrationError> {
         let agent_id = self.agent_id_internal(&manifest.name);
 
         // Check idempotency: does an agent with this name already exist?
@@ -285,7 +288,7 @@ impl Registry for InMemoryRegistry {
         state.agents.get(id).cloned()
     }
 
-    fn get_agents(&self) -> Vec<Agent> {
+    async fn get_agents(&self) -> Vec<Agent> {
         let state = self.state.read().unwrap();
         state.agents.values().cloned().collect()
     }
@@ -565,8 +568,8 @@ mod tests {
         ResourceId::new("http://127.0.0.1:9000/agents/test-agent")
     }
 
-    #[test]
-    fn registry_has_api_endpoint() {
+    #[tokio::test]
+    async fn registry_has_api_endpoint() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Registry exposes an HTTP API endpoint
@@ -575,8 +578,8 @@ mod tests {
         assert!(id.as_str().starts_with("http://127.0.0.1:"));
     }
 
-    #[test]
-    fn job_id_includes_registry_id() {
+    #[tokio::test]
+    async fn job_id_includes_registry_id() {
         let registry = InMemoryRegistry::new(test_secret_store());
         let agent_id = test_agent_id();
 
@@ -587,8 +590,8 @@ mod tests {
         assert!(job_id.as_str().contains("/jobs/"));
     }
 
-    #[test]
-    fn job_lifecycle() {
+    #[tokio::test]
+    async fn job_lifecycle() {
         let registry = InMemoryRegistry::new(test_secret_store());
         let agent_id = test_agent_id();
 
@@ -617,8 +620,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pending_jobs_filters_by_status() {
+    #[tokio::test]
+    async fn pending_jobs_filters_by_status() {
         let registry = InMemoryRegistry::new(test_secret_store());
         let agent_id = test_agent_id();
 
@@ -639,8 +642,8 @@ mod tests {
 
     // --- Object storage tests ---
 
-    #[test]
-    fn register_object_storage_types() {
+    #[tokio::test]
+    async fn register_object_storage_types() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Initially nothing available
@@ -660,8 +663,8 @@ mod tests {
 
     // --- Vector storage tests ---
 
-    #[test]
-    fn register_vector_storage_types() {
+    #[tokio::test]
+    async fn register_vector_storage_types() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Initially nothing available
@@ -681,8 +684,8 @@ mod tests {
 
     // --- Inference engine tests ---
 
-    #[test]
-    fn register_inference_engine_types() {
+    #[tokio::test]
+    async fn register_inference_engine_types() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Initially nothing available
@@ -702,8 +705,8 @@ mod tests {
 
     // --- Embedding engine tests ---
 
-    #[test]
-    fn register_embedding_engine_types() {
+    #[tokio::test]
+    async fn register_embedding_engine_types() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Initially nothing available
@@ -747,8 +750,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn restore_agent_bypasses_validation() {
+    #[tokio::test]
+    async fn restore_agent_bypasses_validation() {
         let registry = InMemoryRegistry::new(test_secret_store());
         // No runtimes, storage, or models registered — register_agent would fail
         let agent = minimal_agent("echo");
@@ -760,15 +763,15 @@ mod tests {
         // restore_agent should succeed despite no capabilities
         registry.restore_agent(agent).unwrap();
 
-        let agents = registry.get_agents();
+        let agents = registry.get_agents().await;
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].name, "echo");
         // ID should be reassigned by the registry
         assert!(agents[0].id.as_str().contains("/agents/echo"));
     }
 
-    #[test]
-    fn restore_agent_rejects_duplicate() {
+    #[tokio::test]
+    async fn restore_agent_rejects_duplicate() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         registry.restore_agent(minimal_agent("echo")).unwrap();
@@ -799,51 +802,51 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_manifest_returns_agent_with_registry_id() {
+    #[tokio::test]
+    async fn register_manifest_returns_agent_with_registry_id() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let manifest = minimal_manifest("echo");
-        let agent = registry.register_manifest(manifest).unwrap();
+        let agent = registry.register_manifest(manifest).await.unwrap();
 
         assert_eq!(agent.name, "echo");
         assert!(agent.id.as_str().contains("/agents/echo"));
         assert!(agent.public_key.is_some());
     }
 
-    #[test]
-    fn register_manifest_idempotent_same_manifest() {
+    #[tokio::test]
+    async fn register_manifest_idempotent_same_manifest() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let manifest = minimal_manifest("echo");
-        let agent1 = registry.register_manifest(manifest.clone()).unwrap();
-        let agent2 = registry.register_manifest(manifest).unwrap();
+        let agent1 = registry.register_manifest(manifest.clone()).await.unwrap();
+        let agent2 = registry.register_manifest(manifest).await.unwrap();
 
         assert_eq!(agent1.id, agent2.id);
         assert_eq!(agent1.name, agent2.name);
     }
 
-    #[test]
-    fn register_manifest_rejects_different_manifest_same_name() {
+    #[tokio::test]
+    async fn register_manifest_rejects_different_manifest_same_name() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let manifest1 = minimal_manifest("echo");
-        registry.register_manifest(manifest1).unwrap();
+        registry.register_manifest(manifest1).await.unwrap();
 
         let mut manifest2 = minimal_manifest("echo");
         manifest2.description = "different description".to_string();
 
-        let result = registry.register_manifest(manifest2);
+        let result = registry.register_manifest(manifest2).await;
         assert!(matches!(result, Err(RegistrationError::ConfigMismatch(_))));
     }
 
     // --- register_agent idempotency ---
 
-    #[test]
-    fn register_agent_idempotent_same_config() {
+    #[tokio::test]
+    async fn register_agent_idempotent_same_config() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
@@ -852,8 +855,8 @@ mod tests {
         registry.register_agent(agent).unwrap(); // should succeed
     }
 
-    #[test]
-    fn register_agent_rejects_different_config_same_name() {
+    #[tokio::test]
+    async fn register_agent_rejects_different_config_same_name() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
@@ -888,20 +891,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn get_fleets_empty_initially() {
+    #[tokio::test]
+    async fn get_fleets_empty_initially() {
         let registry = InMemoryRegistry::new(test_secret_store());
         assert!(registry.get_fleets().is_empty());
     }
 
-    #[test]
-    fn get_fleet_returns_none_for_unknown() {
+    #[tokio::test]
+    async fn get_fleet_returns_none_for_unknown() {
         let registry = InMemoryRegistry::new(test_secret_store());
         assert!(registry.get_fleet("nonexistent").is_none());
     }
 
-    #[test]
-    fn register_fleet_with_valid_agents() {
+    #[tokio::test]
+    async fn register_fleet_with_valid_agents() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("alpha")).unwrap();
         registry.restore_agent(minimal_agent("beta")).unwrap();
@@ -914,8 +917,8 @@ mod tests {
         assert_eq!(stored.agents.len(), 2);
     }
 
-    #[test]
-    fn register_fleet_assigns_registry_id() {
+    #[tokio::test]
+    async fn register_fleet_assigns_registry_id() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("solo")).unwrap();
 
@@ -929,8 +932,8 @@ mod tests {
         assert!(!stored.id.as_str().contains("pending-registration"));
     }
 
-    #[test]
-    fn register_fleet_validates_agents_exist() {
+    #[tokio::test]
+    async fn register_fleet_validates_agents_exist() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("real")).unwrap();
 
@@ -955,8 +958,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_fleet_validates_entry_in_agents() {
+    #[tokio::test]
+    async fn register_fleet_validates_entry_in_agents() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("worker")).unwrap();
         registry.restore_agent(minimal_agent("entry-only")).unwrap();
@@ -982,8 +985,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_fleet_idempotent_same_config() {
+    #[tokio::test]
+    async fn register_fleet_idempotent_same_config() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("a")).unwrap();
 
@@ -994,8 +997,8 @@ mod tests {
         registry.register_fleet(fleet2).unwrap(); // should succeed
     }
 
-    #[test]
-    fn register_fleet_rejects_config_mismatch_different_entry() {
+    #[tokio::test]
+    async fn register_fleet_rejects_config_mismatch_different_entry() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("a")).unwrap();
         registry.restore_agent(minimal_agent("b")).unwrap();
@@ -1012,8 +1015,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn register_fleet_rejects_config_mismatch_different_agents() {
+    #[tokio::test]
+    async fn register_fleet_rejects_config_mismatch_different_agents() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("a")).unwrap();
         registry.restore_agent(minimal_agent("b")).unwrap();
@@ -1031,8 +1034,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn register_fleet_single_agent() {
+    #[tokio::test]
+    async fn register_fleet_single_agent() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("solo")).unwrap();
 
@@ -1044,8 +1047,8 @@ mod tests {
         assert_eq!(stored.entry, registry.agent_id("solo").unwrap());
     }
 
-    #[test]
-    fn register_fleet_multiple_fleets() {
+    #[tokio::test]
+    async fn register_fleet_multiple_fleets() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("a")).unwrap();
         registry.restore_agent(minimal_agent("b")).unwrap();
@@ -1062,8 +1065,8 @@ mod tests {
         assert!(registry.get_fleet("fleet-2").is_some());
     }
 
-    #[test]
-    fn get_fleet_returns_correct_data() {
+    #[tokio::test]
+    async fn get_fleet_returns_correct_data() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("x")).unwrap();
         registry.restore_agent(minimal_agent("y")).unwrap();
@@ -1080,26 +1083,26 @@ mod tests {
 
     // --- delete_agent tests ---
 
-    #[test]
-    fn delete_agent_succeeds() {
+    #[tokio::test]
+    async fn delete_agent_succeeds() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("echo")).unwrap();
-        assert_eq!(registry.get_agents().len(), 1);
+        assert_eq!(registry.get_agents().await.len(), 1);
 
         let deleted = registry.delete_agent("echo").unwrap();
         assert!(deleted);
-        assert!(registry.get_agents().is_empty());
+        assert!(registry.get_agents().await.is_empty());
     }
 
-    #[test]
-    fn delete_agent_nonexistent_returns_false() {
+    #[tokio::test]
+    async fn delete_agent_nonexistent_returns_false() {
         let registry = InMemoryRegistry::new(test_secret_store());
         let deleted = registry.delete_agent("nope").unwrap();
         assert!(!deleted);
     }
 
-    #[test]
-    fn delete_agent_blocked_by_fleet() {
+    #[tokio::test]
+    async fn delete_agent_blocked_by_fleet() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("alpha")).unwrap();
         registry.restore_agent(minimal_agent("beta")).unwrap();
@@ -1111,25 +1114,25 @@ mod tests {
         assert!(matches!(result, Err(RegistrationError::AgentInUse(_, _))));
 
         // Agent should still exist
-        assert!(registry.get_agent_by_name("alpha").is_some());
+        assert!(registry.get_agent_by_name("alpha").await.is_some());
     }
 
-    #[test]
-    fn delete_agent_cleans_up_manifest() {
+    #[tokio::test]
+    async fn delete_agent_cleans_up_manifest() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let manifest = minimal_manifest("echo");
-        registry.register_manifest(manifest).unwrap();
-        assert!(registry.get_agent_by_name("echo").is_some());
+        registry.register_manifest(manifest).await.unwrap();
+        assert!(registry.get_agent_by_name("echo").await.is_some());
 
         let deleted = registry.delete_agent("echo").unwrap();
         assert!(deleted);
-        assert!(registry.get_agent_by_name("echo").is_none());
+        assert!(registry.get_agent_by_name("echo").await.is_none());
 
         // Re-registering should work (manifest was cleaned up)
         let manifest2 = minimal_manifest("echo");
-        registry.register_manifest(manifest2).unwrap();
-        assert!(registry.get_agent_by_name("echo").is_some());
+        registry.register_manifest(manifest2).await.unwrap();
+        assert!(registry.get_agent_by_name("echo").await.is_some());
     }
 }

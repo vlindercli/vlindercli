@@ -26,14 +26,14 @@ fn load_agent(name: &str) -> Agent {
 // Agent Registration Tests
 // ============================================================================
 
-#[test]
-fn agent_registration() {
+#[tokio::test]
+async fn agent_registration() {
     let registry = InMemoryRegistry::new(test_secret_store());
     registry.register_runtime(RuntimeType::Container);
 
     // Agent not found initially
     assert!(registry.agent_id("echo-agent").is_none());
-    assert!(registry.get_agent_by_name("echo-agent").is_none());
+    assert!(registry.get_agent_by_name("echo-agent").await.is_none());
 
     // Register agent — registry assigns identity
     let agent = load_agent("echo-agent");

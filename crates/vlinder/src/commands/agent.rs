@@ -227,10 +227,12 @@ pub(super) fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Registry) 
         }
     }
 
-    registry.register_manifest(manifest).unwrap_or_else(|e| {
-        eprintln!("Failed to deploy agent: {e}");
-        std::process::exit(1);
-    })
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    rt.block_on(registry.register_manifest(manifest))
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to deploy agent: {e}");
+            std::process::exit(1);
+        })
 }
 
 fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&str>) {
@@ -238,7 +240,8 @@ fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&
     let registry = connect_registry(&config);
 
     // Look up already-deployed agent by name (ADR 103)
-    let Some(agent) = registry.get_agent_by_name(name) else {
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let Some(agent) = rt.block_on(registry.get_agent_by_name(name)) else {
         eprintln!("Agent '{name}' not found — deploy it first with: vlinder agent deploy");
         std::process::exit(1);
     };
@@ -447,7 +450,8 @@ fn list() {
     let registry = open_registry(&config);
     let Some(registry) = registry else { return };
 
-    let agents = registry.get_agents();
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let agents = rt.block_on(registry.get_agents());
     if agents.is_empty() {
         println!("No agents deployed.");
         return;
@@ -468,7 +472,8 @@ fn get(name: &str) {
     let registry = open_registry(&config);
     let Some(registry) = registry else { return };
 
-    let Some(agent) = registry.get_agent_by_name(name) else {
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let Some(agent) = rt.block_on(registry.get_agent_by_name(name)) else {
         eprintln!("Agent '{name}' not found");
         return;
     };

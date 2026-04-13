@@ -429,8 +429,11 @@ impl ContainerRuntime {
     }
 
     /// Reconcile pods with the registry: remove orphans, start missing.
-    fn ensure_containers(&mut self) {
-        let agents = self.registry.get_agents_by_runtime(RuntimeType::Container);
+    async fn ensure_containers(&mut self) {
+        let agents = self
+            .registry
+            .get_agents_by_runtime(RuntimeType::Container)
+            .await;
 
         // Collect agent names from registry
         let agent_names: std::collections::HashSet<&str> =
@@ -525,7 +528,7 @@ impl Runtime for ContainerRuntime {
 
     async fn tick(&mut self) -> bool {
         let before = self.pods.len();
-        self.ensure_containers();
+        self.ensure_containers().await;
         self.pods.len() != before
     }
 
@@ -718,7 +721,7 @@ mod tests {
 
     use vlinder_core::domain::{AgentManifest, AgentName, AgentStatus, RequirementsConfig};
 
-    fn register_test_agent(runtime: &mut ContainerRuntime, name: &str) {
+    async fn register_test_agent(runtime: &mut ContainerRuntime, name: &str) {
         let manifest = AgentManifest {
             name: name.to_string(),
             description: "test agent".to_string(),
@@ -735,7 +738,11 @@ mod tests {
             vector_storage: None,
         };
         runtime.registry().register_runtime(RuntimeType::Container);
-        runtime.registry().register_manifest(manifest).unwrap();
+        runtime
+            .registry()
+            .register_manifest(manifest)
+            .await
+            .unwrap();
         // Create pending readiness check (mirrors PersistentRegistry.register_agent)
         let check = ReadinessCheck::pending(AgentName::new(name), RuntimeType::Container.as_str());
         runtime.repo.append_readiness_check(&check).unwrap();
@@ -766,7 +773,7 @@ mod tests {
     #[tokio::test]
     async fn deploy_transitions_to_live() {
         let mut runtime = test_runtime();
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         runtime.tick().await;
@@ -776,7 +783,7 @@ mod tests {
     #[tokio::test]
     async fn redeploy_transitions_existing_agent_to_live() {
         let mut runtime = test_runtime();
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         runtime.tick().await;
@@ -792,7 +799,7 @@ mod tests {
     #[tokio::test]
     async fn delete_transitions_to_deleted() {
         let mut runtime = test_runtime();
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy first
@@ -857,7 +864,7 @@ mod tests {
             test_repo(),
             Box::new(FailingPodmanClient),
         );
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         runtime.tick().await;
@@ -867,7 +874,7 @@ mod tests {
     #[tokio::test]
     async fn orphan_pod_is_removed() {
         let mut runtime = test_runtime();
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy
@@ -934,7 +941,7 @@ mod tests {
             test_repo(),
             Box::new(CrashablePodmanClient { pod_alive }),
         );
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy — pod is alive

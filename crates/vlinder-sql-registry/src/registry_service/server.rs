@@ -82,6 +82,7 @@ impl RegistryService for RegistryServer {
         let agent = self
             .registry
             .get_agent_by_name(&req.name)
+            .await
             .map(std::convert::Into::into);
 
         Ok(Response::new(GetAgentResponse { agent }))
@@ -147,6 +148,7 @@ impl RegistryService for RegistryServer {
         let agents = self
             .registry
             .get_agents()
+            .await
             .into_iter()
             .filter(|a| {
                 self.repo

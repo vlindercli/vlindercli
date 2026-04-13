@@ -16,12 +16,14 @@ use vlinder_core::domain::{
     SecretStore, SubmissionId, VectorStorageType,
 };
 
+use async_trait::async_trait;
+
 /// Registry with write-through persistence.
 ///
 /// The `RegistryRepository` is the source of truth. `InMemoryRegistry` is the read cache.
 /// All writes go to the repository first (fail-fast), then update the cache.
 pub struct PersistentRegistry {
-    inner: InMemoryRegistry,
+    inner: Arc<InMemoryRegistry>,
     repo: Arc<dyn RegistryRepository>,
 }
 
@@ -36,7 +38,7 @@ impl PersistentRegistry {
         config: &RegistryConfig,
         secret_store: Arc<dyn SecretStore>,
     ) -> Result<Self, RegistrationError> {
-        let inner = InMemoryRegistry::new(secret_store);
+        let inner = Arc::new(InMemoryRegistry::new(secret_store));
 
         // Register engine capabilities BEFORE loading models so validation works
         for engine in &config.inference_engines {
@@ -72,6 +74,7 @@ impl PersistentRegistry {
 // Registry trait delegation
 // ============================================================================
 
+#[async_trait]
 impl Registry for PersistentRegistry {
     fn id(&self) -> ResourceId {
         self.inner.id()
@@ -114,8 +117,8 @@ impl Registry for PersistentRegistry {
         self.inner.get_agent(id)
     }
 
-    fn get_agents(&self) -> Vec<Agent> {
-        self.inner.get_agents()
+    async fn get_agents(&self) -> Vec<Agent> {
+        self.inner.get_agents().await
     }
 
     fn select_runtime(&self, agent: &Agent) -> Option<RuntimeType> {
@@ -158,13 +161,16 @@ impl Registry for PersistentRegistry {
             return Ok(false);
         };
 
-        // Check for dependent agents before deleting
-        let dependent: Vec<String> = self
-            .inner
-            .get_agents_requiring_model(&model.name)
-            .into_iter()
-            .map(|a| a.name)
-            .collect();
+        // Check for dependent agents before deleting (async call)
+        let inner = Arc::clone(&self.inner);
+        let model_name = model.name.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let agents = rt.block_on(inner.get_agents_requiring_model(&model_name));
+            let _ = tx.send(agents);
+        });
+        let dependent: Vec<String> = rx.recv().unwrap().into_iter().map(|a| a.name).collect();
 
         if !dependent.is_empty() {
             return Err(RegistrationError::ModelInUse(name.to_string(), dependent));
@@ -184,8 +190,16 @@ impl Registry for PersistentRegistry {
     }
 
     fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
-        // Check if agent exists
-        let Some(_agent) = self.inner.get_agent_by_name(name) else {
+        // Check if agent exists (async call)
+        let inner = Arc::clone(&self.inner);
+        let agent_name = name.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let agent = rt.block_on(inner.get_agent_by_name(&agent_name));
+            let _ = tx.send(agent);
+        });
+        let Some(_agent) = rx.recv().unwrap() else {
             return Ok(false);
         };
 
@@ -377,8 +391,8 @@ mod tests {
         assert_eq!(models[0].name, "phi3");
     }
 
-    #[test]
-    fn delete_model_removes_from_both() {
+    #[tokio::test]
+    async fn delete_model_removes_from_both() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
@@ -467,8 +481,8 @@ mod tests {
         registry
     }
 
-    #[test]
-    fn register_agent_persists_to_disk() {
+    #[tokio::test]
+    async fn register_agent_persists_to_disk() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
@@ -476,7 +490,7 @@ mod tests {
         registry.register_agent(test_agent("echo")).unwrap();
 
         // Verify in-memory
-        let agent = registry.get_agent_by_name("echo");
+        let agent = registry.get_agent_by_name("echo").await;
         assert!(agent.is_some());
 
         // Verify on disk: open a fresh store and check
@@ -486,8 +500,8 @@ mod tests {
         assert_eq!(agents[0].name, "echo");
     }
 
-    #[test]
-    fn agents_survive_restart() {
+    #[tokio::test]
+    async fn agents_survive_restart() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
@@ -500,7 +514,7 @@ mod tests {
         // Second "session": agent should be loaded via restore_agent
         {
             let registry = open_registry(&db_path);
-            let agent = registry.get_agent_by_name("echo");
+            let agent = registry.get_agent_by_name("echo").await;
             assert!(agent.is_some(), "agent should survive restart");
             assert_eq!(agent.unwrap().name, "echo");
         }
@@ -508,20 +522,20 @@ mod tests {
 
     // --- delete_agent tests ---
 
-    #[test]
-    fn delete_agent_removes_from_both() {
+    #[tokio::test]
+    async fn delete_agent_removes_from_both() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
         let registry = open_with_runtime(&db_path);
         registry.register_agent(test_agent("echo")).unwrap();
-        assert!(registry.get_agent_by_name("echo").is_some());
+        assert!(registry.get_agent_by_name("echo").await.is_some());
 
         let deleted = registry.delete_agent("echo").unwrap();
         assert!(deleted);
 
         // Gone from in-memory
-        assert!(registry.get_agent_by_name("echo").is_none());
+        assert!(registry.get_agent_by_name("echo").await.is_none());
 
         // Gone from disk
         let repo = open_repo(&db_path);

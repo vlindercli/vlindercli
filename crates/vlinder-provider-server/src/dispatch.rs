@@ -37,7 +37,7 @@ pub struct DispatchResult {
 ///
 /// The caller is responsible for building diagnostics, sending
 /// the `CompleteMessage`, and acknowledging the invoke.
-pub fn dispatch_invoke(
+pub async fn dispatch_invoke(
     queue: &Arc<dyn MessageQueue + Send + Sync>,
     registry: &Arc<dyn Registry>,
     agent_port: u16,
@@ -52,6 +52,7 @@ pub fn dispatch_invoke(
 
     let agent_info = registry
         .get_agent_by_name(agent.as_str())
+        .await
         .ok_or_else(|| format!("agent '{}' not found in registry", agent.as_str()))?;
 
     let hosts = build_hosts(&agent_info);

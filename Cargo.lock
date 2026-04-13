@@ -4959,6 +4959,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "toml",
  "tracing",
  "vlinder-core",
@@ -5110,6 +5111,7 @@ dependencies = [
 name = "vlinder-sql-registry"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "prost",
  "serde_json",

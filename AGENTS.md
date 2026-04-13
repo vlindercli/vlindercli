@@ -61,6 +61,9 @@ Do not add changes beyond the in-scope list, even if they look related. Do not i
 - Anchor every `old_string` with at least 3 lines of context (target line plus surrounding lines). Single-line `old_string`s are where byte-exact matching fails — near-duplicates elsewhere in the file break uniqueness.
 - A failed Edit match means your `old_string` is wrong. Re-Read the file and fix the input. Do NOT retry the identical Edit, and do NOT reach for `replace_all` as a workaround.
 - If the file changed between your Read and your Edit (a formatter, a pre-commit hook, another process), re-Read before retrying. A stale cache is not a valid Edit target.
+- Do NOT use batch-edit tools for code modifications. `ast-grep --rewrite`, Python scripts, sed, awk — none of these understand semantic context. ast-grep for SEARCH is fine; ast-grep for REWRITE produces corrupted output (pattern variables left in source, broken syntax). Use the Edit tool for every change. Correctness is the only constraint — not speed, not tokens. If the Edit tool feels slow, use it anyway.
+- Do NOT claim verification commands passed without running them after your LAST edit and reading the output. An intermediate pass does not count. Paste the last line of each command's output as proof.
+- If you feel pressure to batch-automate repetitive edits — stop and describe the changes to the human instead. They may apply them faster and more correctly via their IDE.
 
 ### Scope
 - Do exactly what the spec says. Do not add features, refactor unrelated code, or "improve" things that weren't in scope.
@@ -80,6 +83,7 @@ Do not add changes beyond the in-scope list, even if they look related. Do not i
 - `just build-everything` for a full rebuild (cargo + sidecar image). Only when the spec asks for it.
 - Use `justfile` for build, setup, and fixture operations — `just --list` to see recipes.
 - If a recipe is missing, add it to the justfile rather than doing it ad-hoc.
+- **Feature-gate awareness.** The sidecar container image builds with `cargo build -p vlinder-podman-sidecar` which omits the `server` feature from `vlinder-sql-state`. After changes that touch crates used by the sidecar, verify with `cargo check -p vlinder-sql-state --no-default-features`. Code outside `#[cfg(feature = "server")]` must compile standalone.
 
 ## Feedback Loop
 
@@ -112,7 +116,11 @@ A task is NOT complete until you have personally verified workspace-wide green s
 2. `cargo test --workspace` (skip only if the task has no test surface)
 3. `cargo clippy --workspace --all-targets -- -D warnings`
 
+**Paste proof.** Include the last line of each command's output in your report (`Finished ...` for check/clippy, test summary for test). If you can't paste it, you didn't run it.
+
 Scoped `cargo check -p <crate>` during iteration is fine and encouraged — see the Feedback Loop section. But **it is never sufficient as the final check**. Trait-impl mismatches, cross-crate cascades, and lifetime bound errors from macro expansion only surface under workspace-wide checks. A scoped check that passes can still leave the workspace red.
+
+**For cross-crate trait changes, follow the iteration loop:** change the signature → `cargo check --workspace` → fix the first error → `cargo check --workspace` → fix the next error → repeat until zero errors. Do not batch-fix from memory. Each fix gets its own verification round.
 
 **Anti-patterns — if you catch yourself doing any of these, you are NOT done:**
 
@@ -131,7 +139,7 @@ Your final report should describe **what you did**, not what still needs doing. 
 Tools for specific situations. Default to `cargo check` and `rg` for the common case; reach for these only when the common case is not enough.
 
 - `rustc --explain E0XXX` — read the full explanation for an error code before guessing at a fix. Do this when a borrow-checker or trait-resolution error is not immediately obvious. Cheap, often decisive.
-- `ast-grep -p '<pattern>' -l rust` — structural code search when you need a syntactic pattern rather than a literal string. Examples:
+- `ast-grep -p '<pattern>' -l rust` — structural code SEARCH when you need a syntactic pattern rather than a literal string. **Do NOT use `ast-grep --rewrite`** — rewrites don't understand semantic context and produce corrupted output (pattern variables left in source). For modifications, use the Edit tool. Examples of valid search:
   - `ast-grep -p '$EXPR.unwrap()' -l rust` — find all `.unwrap()` calls.
   - `ast-grep -p 'impl $TRAIT for $TYPE { $$$ }' -l rust` — find all trait impls.
   - `ast-grep -p 'fn $NAME($$$) -> Result<$$$> { $$$ }' -l rust` — find all fallible functions.

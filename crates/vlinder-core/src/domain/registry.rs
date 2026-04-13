@@ -17,6 +17,8 @@ use crate::domain::{
     VectorStorageType,
 };
 
+use async_trait::async_trait;
+
 /// Unique identifier for a submitted job.
 ///
 /// Format: `<registry_id>/jobs/<uuid>`
@@ -199,6 +201,7 @@ impl std::fmt::Display for RegistrationError {
 ///
 /// All methods take `&self` — implementations handle internal synchronization.
 /// Returns owned values (not references) for network compatibility.
+#[async_trait]
 pub trait Registry: Send + Sync {
     /// URI where this registry exposes its API.
     fn id(&self) -> ResourceId;
@@ -216,12 +219,12 @@ pub trait Registry: Send + Sync {
     ///
     /// Idempotent: same manifest → returns existing agent.
     /// Different manifest for same name → `ConfigMismatch` error.
-    fn register_manifest(&self, manifest: AgentManifest) -> Result<Agent, RegistrationError> {
+    async fn register_manifest(&self, manifest: AgentManifest) -> Result<Agent, RegistrationError> {
         let name = manifest.name.clone();
         let agent = Agent::from_manifest(manifest)
             .map_err(|e| RegistrationError::Persistence(format!("{e:?}")))?;
         self.register_agent(agent)?;
-        self.get_agent_by_name(&name).ok_or_else(|| {
+        self.get_agent_by_name(&name).await.ok_or_else(|| {
             RegistrationError::Persistence(format!("agent '{name}' not found after registration"))
         })
     }
@@ -233,19 +236,20 @@ pub trait Registry: Send + Sync {
     fn get_agent(&self, id: &ResourceId) -> Option<Agent>;
 
     /// Get all registered agents.
-    fn get_agents(&self) -> Vec<Agent>;
+    async fn get_agents(&self) -> Vec<Agent>;
 
     /// Get an agent by name.
-    fn get_agent_by_name(&self, name: &str) -> Option<Agent> {
-        self.get_agents().into_iter().find(|a| a.name == name)
+    async fn get_agent_by_name(&self, name: &str) -> Option<Agent> {
+        self.get_agents().await.into_iter().find(|a| a.name == name)
     }
 
     /// Select the appropriate runtime for an agent.
     fn select_runtime(&self, agent: &Agent) -> Option<RuntimeType>;
 
     /// Get all agents assigned to a specific runtime type.
-    fn get_agents_by_runtime(&self, runtime: RuntimeType) -> Vec<Agent> {
+    async fn get_agents_by_runtime(&self, runtime: RuntimeType) -> Vec<Agent> {
         self.get_agents()
+            .await
             .into_iter()
             .filter(|a| self.select_runtime(a) == Some(runtime))
             .collect()
@@ -257,9 +261,10 @@ pub trait Registry: Send + Sync {
     /// `[requirements.models]`). This method looks up that alias, finds the
     /// registered model by registry name (ADR 094), and returns the provider
     /// as a routing string.
-    fn resolve_model_backend(&self, agent_name: &str, model: &str) -> Result<String, String> {
+    async fn resolve_model_backend(&self, agent_name: &str, model: &str) -> Result<String, String> {
         let agent = self
             .get_agent_by_name(agent_name)
+            .await
             .ok_or_else(|| format!("agent '{agent_name}' not found in registry"))?;
         let model_name = agent.requirements.models.get(model).ok_or_else(|| {
             format!(
@@ -277,8 +282,9 @@ pub trait Registry: Send + Sync {
     }
 
     /// Get all agents whose model requirements reference the given model name.
-    fn get_agents_requiring_model(&self, model_name: &str) -> Vec<Agent> {
+    async fn get_agents_requiring_model(&self, model_name: &str) -> Vec<Agent> {
         self.get_agents()
+            .await
             .into_iter()
             .filter(|a| {
                 a.requirements

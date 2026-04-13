@@ -98,7 +98,12 @@ impl Sidecar {
                     session = %key.session,
                     "Dispatching invoke to container"
                 );
-                dispatch::handle_invoke(&self.dispatch, &mut self.health, &key, &invoke);
+                rt.block_on(dispatch::handle_invoke(
+                    &self.dispatch,
+                    &mut self.health,
+                    &key,
+                    &invoke,
+                ));
             } else {
                 std::thread::sleep(Duration::from_millis(50));
             }
