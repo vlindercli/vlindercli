@@ -958,7 +958,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn seal_branch(
+    async fn seal_branch(
         &self,
         id: BranchId,
         broken_at: chrono::DateTime<chrono::Utc>,

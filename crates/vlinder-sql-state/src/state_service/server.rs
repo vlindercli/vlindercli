@@ -820,6 +820,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .seal_branch(vlinder_core::domain::BranchId::from(req.id), broken_at)
+            .await
         {
             Ok(()) => Ok(Response::new(SealBranchResponse {
                 success: true,

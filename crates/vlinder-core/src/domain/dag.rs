@@ -521,7 +521,11 @@ pub trait DagStore: Send + Sync {
     fn rename_branch(&self, id: super::BranchId, new_name: &str) -> Result<(), String>;
 
     /// Mark a branch as broken (sealed). Sets `broken_at` to the given timestamp.
-    fn seal_branch(&self, id: super::BranchId, broken_at: DateTime<Utc>) -> Result<(), String>;
+    async fn seal_branch(
+        &self,
+        id: super::BranchId,
+        broken_at: DateTime<Utc>,
+    ) -> Result<(), String>;
 
     /// Update a session's default branch.
     fn update_session_default_branch(
@@ -890,7 +894,11 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn seal_branch(&self, id: super::BranchId, broken_at: DateTime<Utc>) -> Result<(), String> {
+    async fn seal_branch(
+        &self,
+        id: super::BranchId,
+        broken_at: DateTime<Utc>,
+    ) -> Result<(), String> {
         let mut branches = self.branches.lock().unwrap();
         let branch = branches
             .iter_mut()

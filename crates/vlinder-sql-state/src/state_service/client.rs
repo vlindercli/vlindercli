@@ -812,7 +812,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn seal_branch(
+    async fn seal_branch(
         &self,
         id: vlinder_core::domain::BranchId,
         broken_at: chrono::DateTime<chrono::Utc>,
@@ -822,9 +822,9 @@ impl DagStore for GrpcStateClient {
             broken_at: broken_at.to_rfc3339(),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.seal_branch(request).await })
+        let response = client
+            .seal_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         if resp.success {

@@ -512,7 +512,7 @@ impl MessageQueue for RecordingQueue {
 
         if let Some(old) = old_main {
             let sealed_name = format!("broken-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
-            if let Err(e) = self.store.seal_branch(old.id, chrono::Utc::now()) {
+            if let Err(e) = self.store.seal_branch(old.id, chrono::Utc::now()).await {
                 tracing::warn!(error = %e, branch = old.id.as_i64(), "Failed to seal old main");
             }
             if let Err(e) = self.store.rename_branch(old.id, &sealed_name) {
@@ -997,7 +997,7 @@ mod tests {
             fn rename_branch(&self, _: crate::domain::BranchId, _: &str) -> Result<(), String> {
                 Ok(())
             }
-            fn seal_branch(
+            async fn seal_branch(
                 &self,
                 _: crate::domain::BranchId,
                 _: chrono::DateTime<chrono::Utc>,
