@@ -492,9 +492,12 @@ impl MessageQueue for RecordingQueue {
         Ok(())
     }
 
-    fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {
-        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
-        rt.block_on(self.record_promote(&key, &msg));
+    async fn send_promote(
+        &self,
+        key: SessionRoutingKey,
+        msg: PromoteMessage,
+    ) -> Result<(), QueueError> {
+        self.record_promote(&key, &msg).await;
 
         // Promote: seal old main, rename promoted branch to "main"
         let branch_to_promote = self.store.get_branch(msg.branch_id).ok().flatten();
@@ -528,7 +531,7 @@ impl MessageQueue for RecordingQueue {
             }
         }
 
-        let _ = self.inner.send_promote(key, msg);
+        let _ = self.inner.send_promote(key, msg).await;
         Ok(())
     }
 
@@ -674,9 +677,10 @@ impl RecordingQueue {
 
         let id = hash_dag_node(&[], &parent_id, &MessageType::Promote, &[], &key.session);
 
-        if let Err(e) =
-            self.store
-                .insert_promote_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
+        if let Err(e) = self
+            .store
+            .insert_promote_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
+            .await
         {
             tracing::warn!(
                 dag_id = %id,

@@ -124,21 +124,18 @@ impl HarnessService for HarnessServer {
         request: Request<PromoteTimelineRequest>,
     ) -> Result<Response<PromoteTimelineResponse>, Status> {
         let req = request.into_inner();
-        let harness = Arc::clone(&self.harness);
+        let params = PromoteParams {
+            agent_name: AgentName::new(req.agent_name),
+        };
+        let session_id = SessionId::try_from(req.session_id)
+            .map_err(|e| Status::invalid_argument(format!("invalid session_id: {e}")))?;
+        let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
 
-        let result = tokio::task::spawn_blocking(move || {
-            let params = PromoteParams {
-                agent_name: AgentName::new(req.agent_name),
-            };
-            let session_id = SessionId::try_from(req.session_id)
-                .map_err(|e| format!("invalid session_id: {e}"))?;
-            let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
-            harness.promote_timeline(params, session_id, timeline)
-        })
-        .await
-        .map_err(|e| Status::internal(format!("spawn_blocking failed: {e}")))?;
-
-        match result {
+        match self
+            .harness
+            .promote_timeline(params, session_id, timeline)
+            .await
+        {
             Ok(()) => Ok(Response::new(PromoteTimelineResponse { error: None })),
             Err(e) => Ok(Response::new(PromoteTimelineResponse { error: Some(e) })),
         }

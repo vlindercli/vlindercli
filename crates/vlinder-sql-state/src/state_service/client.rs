@@ -554,7 +554,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn insert_promote_node(
+    async fn insert_promote_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -586,9 +586,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_promote_node(request).await })
+        let response = client
+            .insert_promote_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();

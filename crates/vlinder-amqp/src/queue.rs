@@ -459,16 +459,18 @@ impl MessageQueue for AmqpQueue {
         self.publish(&rk, msg.id.as_str(), &payload).await
     }
 
-    fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {
+    async fn send_promote(
+        &self,
+        key: SessionRoutingKey,
+        msg: PromoteMessage,
+    ) -> Result<(), QueueError> {
         let SessionMessageKind::Promote { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Promote kind".into()));
         };
         let rk = routing::promote_routing_key(&key, agent_name, msg.branch_id);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize promote: {e}")))?;
-        self.inner
-            .runtime
-            .block_on(self.publish(&rk, msg.id.as_str(), &payload))
+        self.publish(&rk, msg.id.as_str(), &payload).await
     }
 
     fn send_session_start(

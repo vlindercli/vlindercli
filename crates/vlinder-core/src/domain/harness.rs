@@ -63,7 +63,7 @@ pub trait Harness {
     ///
     /// Fire-and-forget: both SQL (via `RecordingQueue`) and git (via
     /// `GitDagWorker`) react to the message. No response is expected.
-    fn promote_timeline(
+    async fn promote_timeline(
         &self,
         params: PromoteParams,
         session_id: SessionId,
@@ -341,7 +341,7 @@ impl Harness for CoreHarness {
             .map_err(|e| format!("queue error: {e}"))
     }
 
-    fn promote_timeline(
+    async fn promote_timeline(
         &self,
         params: PromoteParams,
         session_id: SessionId,
@@ -358,6 +358,7 @@ impl Harness for CoreHarness {
 
         self.queue
             .send_promote(key, msg)
+            .await
             .map_err(|e| format!("queue error: {e}"))
     }
 }

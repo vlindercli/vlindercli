@@ -287,8 +287,8 @@ fn promote(session_id_or_name: &str, branch_name: &str) {
         agent_name: AgentName::new(agent_name),
     };
 
-    harness
-        .promote_timeline(params, session_id, branch.id)
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    rt.block_on(harness.promote_timeline(params, session_id, branch.id))
         .unwrap_or_else(|e| {
             eprintln!("Failed to promote timeline: {e}");
             std::process::exit(1);

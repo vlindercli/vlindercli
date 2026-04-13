@@ -182,7 +182,11 @@ pub trait MessageQueue: Send + Sync {
     }
 
     /// Send a promote on the session plane.
-    fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError>;
+    async fn send_promote(
+        &self,
+        key: SessionRoutingKey,
+        msg: PromoteMessage,
+    ) -> Result<(), QueueError>;
 
     /// Receive a promote from the session plane.
     async fn receive_promote(
@@ -471,7 +475,11 @@ mod routing_contract_proofs {
         async fn send_fork(&self, _: SessionRoutingKey, _: ForkMessage) -> Result<(), QueueError> {
             Ok(())
         }
-        fn send_promote(&self, _: SessionRoutingKey, _: PromoteMessage) -> Result<(), QueueError> {
+        async fn send_promote(
+            &self,
+            _: SessionRoutingKey,
+            _: PromoteMessage,
+        ) -> Result<(), QueueError> {
             Ok(())
         }
         fn send_session_start(
@@ -537,7 +545,11 @@ mod routing_contract_proofs {
         async fn send_fork(&self, _: SessionRoutingKey, _: ForkMessage) -> Result<(), QueueError> {
             Ok(())
         }
-        fn send_promote(&self, _: SessionRoutingKey, _: PromoteMessage) -> Result<(), QueueError> {
+        async fn send_promote(
+            &self,
+            _: SessionRoutingKey,
+            _: PromoteMessage,
+        ) -> Result<(), QueueError> {
             Ok(())
         }
         fn send_session_start(

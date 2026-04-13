@@ -384,7 +384,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Insert a typed promote node. Writes to `dag_nodes` + `promote_nodes`.
-    fn insert_promote_node(
+    async fn insert_promote_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,

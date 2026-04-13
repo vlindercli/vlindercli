@@ -221,7 +221,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn send_promote(
+    async fn send_promote(
         &self,
         _key: SessionRoutingKey,
         _msg: PromoteMessage,

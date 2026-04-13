@@ -1084,7 +1084,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn insert_promote_node(
+    async fn insert_promote_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,

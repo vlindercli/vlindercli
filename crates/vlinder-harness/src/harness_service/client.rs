@@ -131,7 +131,7 @@ impl Harness for GrpcHarnessClient {
         }
     }
 
-    fn promote_timeline(
+    async fn promote_timeline(
         &self,
         params: PromoteParams,
         session_id: SessionId,
@@ -144,9 +144,9 @@ impl Harness for GrpcHarnessClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.promote_timeline(request).await })
+        let response = client
+            .promote_timeline(request)
+            .await
             .map_err(|e| format!("gRPC error: {e}"))?;
 
         let resp = response.into_inner();

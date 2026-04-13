@@ -507,7 +507,11 @@ impl MessageQueue for NatsQueue {
         Ok(())
     }
 
-    fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {
+    async fn send_promote(
+        &self,
+        key: SessionRoutingKey,
+        msg: PromoteMessage,
+    ) -> Result<(), QueueError> {
         let SessionMessageKind::Promote { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Promote kind".into()));
         };
@@ -515,19 +519,17 @@ impl MessageQueue for NatsQueue {
         let body = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize promote: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, body.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-            Ok(())
-        })
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, body.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        Ok(())
     }
 
     fn send_session_start(
