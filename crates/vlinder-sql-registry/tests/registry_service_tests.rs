@@ -90,7 +90,8 @@ fn grpc_register_and_get_agent() {
 
     // Retrieve via gRPC using registry-assigned ID
     let agent_id = registry.agent_id("test-agent").unwrap();
-    let retrieved = client.get_agent(&agent_id);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let retrieved = rt.block_on(client.get_agent(&agent_id));
     assert!(retrieved.is_some());
     assert_eq!(retrieved.unwrap().name, "test-agent");
 }
@@ -158,7 +159,8 @@ fn grpc_job_lifecycle() {
 
     // Create a job via gRPC using registry-assigned ID
     let agent_id = registry.agent_id("job-test-agent").unwrap();
-    let job_id = client.create_job(SubmissionId::new(), agent_id, "hello".to_string());
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let job_id = rt.block_on(client.create_job(SubmissionId::new(), agent_id, "hello".to_string()));
 
     // Job should be pending
     let pending = client.pending_jobs();
@@ -166,7 +168,7 @@ fn grpc_job_lifecycle() {
     assert_eq!(pending[0].input, "hello");
 
     // Get specific job
-    let job = client.get_job(&job_id);
+    let job = rt.block_on(client.get_job(&job_id));
     assert!(job.is_some());
     assert_eq!(job.unwrap().input, "hello");
 }

@@ -233,7 +233,7 @@ pub trait Registry: Send + Sync {
     fn agent_id(&self, name: &str) -> Option<ResourceId>;
 
     /// Get an agent by ID.
-    fn get_agent(&self, id: &ResourceId) -> Option<Agent>;
+    async fn get_agent(&self, id: &ResourceId) -> Option<Agent>;
 
     /// Get all registered agents.
     async fn get_agents(&self) -> Vec<Agent>;
@@ -322,7 +322,7 @@ pub trait Registry: Send + Sync {
     // --- Job operations ---
 
     /// Create a new job with submission tracking (ADR 044).
-    fn create_job(
+    async fn create_job(
         &self,
         submission_id: super::SubmissionId,
         agent_id: ResourceId,
@@ -330,10 +330,10 @@ pub trait Registry: Send + Sync {
     ) -> JobId;
 
     /// Get a job by ID.
-    fn get_job(&self, id: &JobId) -> Option<Job>;
+    async fn get_job(&self, id: &JobId) -> Option<Job>;
 
     /// Update job status.
-    fn update_job_status(&self, id: &JobId, status: JobStatus);
+    async fn update_job_status(&self, id: &JobId, status: JobStatus);
 
     /// Get all pending jobs.
     fn pending_jobs(&self) -> Vec<Job>;

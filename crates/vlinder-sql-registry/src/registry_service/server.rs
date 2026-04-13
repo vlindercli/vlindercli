@@ -68,7 +68,11 @@ impl RegistryService for RegistryServer {
             .ok_or_else(|| Status::invalid_argument("missing agent id"))?
             .into();
 
-        let agent = self.registry.get_agent(&id).map(std::convert::Into::into);
+        let agent = self
+            .registry
+            .get_agent(&id)
+            .await
+            .map(std::convert::Into::into);
 
         Ok(Response::new(GetAgentResponse { agent }))
     }
@@ -301,7 +305,8 @@ impl RegistryService for RegistryServer {
 
         let job_id = self
             .registry
-            .create_job(submission_id.clone(), agent_id, req.input);
+            .create_job(submission_id.clone(), agent_id, req.input)
+            .await;
 
         Ok(Response::new(CreateJobResponse {
             job_id: Some(job_id.into()),
@@ -319,7 +324,11 @@ impl RegistryService for RegistryServer {
             .ok_or_else(|| Status::invalid_argument("missing job id"))?
             .into();
 
-        let job = self.registry.get_job(&job_id).map(std::convert::Into::into);
+        let job = self
+            .registry
+            .get_job(&job_id)
+            .await
+            .map(std::convert::Into::into);
 
         Ok(Response::new(GetJobResponse { job }))
     }
@@ -342,7 +351,7 @@ impl RegistryService for RegistryServer {
             (Err(_), _) => return Err(Status::invalid_argument("invalid status")),
         };
 
-        self.registry.update_job_status(&job_id, status);
+        self.registry.update_job_status(&job_id, status).await;
 
         Ok(Response::new(UpdateJobStatusResponse { success: true }))
     }

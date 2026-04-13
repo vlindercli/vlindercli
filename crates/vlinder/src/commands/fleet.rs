@@ -186,7 +186,8 @@ pub fn run(name: &str, prompt: Option<&str>) {
     let entry_agent_name = agent_routing_key(&entry_agent_id);
 
     // Build fleet context for the entry agent
-    let fleet_context = build_fleet_context(&*registry, &fleet);
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let fleet_context = rt.block_on(build_fleet_context(&*registry, &fleet));
 
     // Connect harness via gRPC — the daemon owns queue and registry
     let harness = connect_harness(&config);
@@ -229,7 +230,10 @@ pub fn run(name: &str, prompt: Option<&str>) {
 ///
 /// Lists all non-entry agents with their descriptions so the entry agent
 /// knows what it can delegate to.
-fn build_fleet_context(registry: &dyn vlinder_core::domain::Registry, fleet: &Fleet) -> String {
+async fn build_fleet_context(
+    registry: &dyn vlinder_core::domain::Registry,
+    fleet: &Fleet,
+) -> String {
     let mut lines = vec![
         format!("Fleet: {}", fleet.name),
         "Available agents for delegation (use /delegate endpoint):".to_string(),
@@ -239,7 +243,7 @@ fn build_fleet_context(registry: &dyn vlinder_core::domain::Registry, fleet: &Fl
         if *agent_id == fleet.entry {
             continue;
         }
-        if let Some(agent) = registry.get_agent(agent_id) {
+        if let Some(agent) = registry.get_agent(agent_id).await {
             lines.push(format!("- {}: {}", agent.name, agent.description));
         }
     }

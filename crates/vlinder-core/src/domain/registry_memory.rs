@@ -283,7 +283,7 @@ impl Registry for InMemoryRegistry {
             .clone())
     }
 
-    fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
+    async fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
         let state = self.state.read().unwrap();
         state.agents.get(id).cloned()
     }
@@ -464,7 +464,7 @@ impl Registry for InMemoryRegistry {
 
     // --- Job operations ---
 
-    fn create_job(
+    async fn create_job(
         &self,
         submission_id: SubmissionId,
         agent_id: ResourceId,
@@ -483,12 +483,12 @@ impl Registry for InMemoryRegistry {
         id
     }
 
-    fn get_job(&self, id: &JobId) -> Option<Job> {
+    async fn get_job(&self, id: &JobId) -> Option<Job> {
         let state = self.state.read().unwrap();
         state.jobs.get(id).cloned()
     }
 
-    fn update_job_status(&self, id: &JobId, status: JobStatus) {
+    async fn update_job_status(&self, id: &JobId, status: JobStatus) {
         let mut state = self.state.write().unwrap();
         if let Some(job) = state.jobs.get_mut(id) {
             job.status = status;
@@ -583,7 +583,9 @@ mod tests {
         let registry = InMemoryRegistry::new(test_secret_store());
         let agent_id = test_agent_id();
 
-        let job_id = registry.create_job(SubmissionId::new(), agent_id, "test".to_string());
+        let job_id = registry
+            .create_job(SubmissionId::new(), agent_id, "test".to_string())
+            .await;
 
         // JobId format: <registry_id>/jobs/<uuid>
         assert!(job_id.as_str().starts_with(registry.id().as_str()));
@@ -596,26 +598,31 @@ mod tests {
         let agent_id = test_agent_id();
 
         // Create job
-        let job_id =
-            registry.create_job(SubmissionId::new(), agent_id.clone(), "hello".to_string());
+        let job_id = registry
+            .create_job(SubmissionId::new(), agent_id.clone(), "hello".to_string())
+            .await;
 
         // Initial state is Pending
-        let job = registry.get_job(&job_id).unwrap();
+        let job = registry.get_job(&job_id).await.unwrap();
         assert_eq!(job.status, JobStatus::Pending);
         assert_eq!(job.agent_id, agent_id);
         assert_eq!(job.input, "hello");
 
         // Update to Running
-        registry.update_job_status(&job_id, JobStatus::Running);
+        registry
+            .update_job_status(&job_id, JobStatus::Running)
+            .await;
         assert_eq!(
-            registry.get_job(&job_id).unwrap().status,
+            registry.get_job(&job_id).await.unwrap().status,
             JobStatus::Running
         );
 
         // Update to Completed
-        registry.update_job_status(&job_id, JobStatus::Completed("result".to_string()));
+        registry
+            .update_job_status(&job_id, JobStatus::Completed("result".to_string()))
+            .await;
         assert_eq!(
-            registry.get_job(&job_id).unwrap().status,
+            registry.get_job(&job_id).await.unwrap().status,
             JobStatus::Completed("result".to_string())
         );
     }
@@ -625,16 +632,24 @@ mod tests {
         let registry = InMemoryRegistry::new(test_secret_store());
         let agent_id = test_agent_id();
 
-        let job1 = registry.create_job(SubmissionId::new(), agent_id.clone(), "a".to_string());
-        let job2 = registry.create_job(SubmissionId::new(), agent_id.clone(), "b".to_string());
-        let _job3 = registry.create_job(SubmissionId::new(), agent_id.clone(), "c".to_string());
+        let job1 = registry
+            .create_job(SubmissionId::new(), agent_id.clone(), "a".to_string())
+            .await;
+        let job2 = registry
+            .create_job(SubmissionId::new(), agent_id.clone(), "b".to_string())
+            .await;
+        let _job3 = registry
+            .create_job(SubmissionId::new(), agent_id.clone(), "c".to_string())
+            .await;
 
         // All three are pending
         assert_eq!(registry.pending_jobs().len(), 3);
 
         // Mark one as running, one as completed
-        registry.update_job_status(&job1, JobStatus::Running);
-        registry.update_job_status(&job2, JobStatus::Completed("done".to_string()));
+        registry.update_job_status(&job1, JobStatus::Running).await;
+        registry
+            .update_job_status(&job2, JobStatus::Completed("done".to_string()))
+            .await;
 
         // Only one pending now
         assert_eq!(registry.pending_jobs().len(), 1);

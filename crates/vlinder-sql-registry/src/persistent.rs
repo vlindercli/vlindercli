@@ -113,8 +113,8 @@ impl Registry for PersistentRegistry {
         self.inner.agent_id(name)
     }
 
-    fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
-        self.inner.get_agent(id)
+    async fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
+        self.inner.get_agent(id).await
     }
 
     async fn get_agents(&self) -> Vec<Agent> {
@@ -249,21 +249,21 @@ impl Registry for PersistentRegistry {
 
     // --- Job operations (delegate directly) ---
 
-    fn create_job(
+    async fn create_job(
         &self,
         submission_id: SubmissionId,
         agent_id: ResourceId,
         input: String,
     ) -> JobId {
-        self.inner.create_job(submission_id, agent_id, input)
+        self.inner.create_job(submission_id, agent_id, input).await
     }
 
-    fn get_job(&self, id: &JobId) -> Option<Job> {
-        self.inner.get_job(id)
+    async fn get_job(&self, id: &JobId) -> Option<Job> {
+        self.inner.get_job(id).await
     }
 
-    fn update_job_status(&self, id: &JobId, status: JobStatus) {
-        self.inner.update_job_status(id, status);
+    async fn update_job_status(&self, id: &JobId, status: JobStatus) {
+        self.inner.update_job_status(id, status).await;
     }
 
     fn pending_jobs(&self) -> Vec<Job> {

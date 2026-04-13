@@ -158,16 +158,13 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
+    async fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
         let request = proto::GetAgentRequest {
             id: Some(id.into()),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_agent(request).await })
-            .ok()?;
+        let response = client.get_agent(request).await.ok()?;
 
         response.into_inner().agent.and_then(|a| a.try_into().ok())
     }
@@ -328,7 +325,7 @@ impl Registry for GrpcRegistryClient {
 
     // --- Job operations ---
 
-    fn create_job(
+    async fn create_job(
         &self,
         submission_id: SubmissionId,
         agent_id: ResourceId,
@@ -341,9 +338,7 @@ impl Registry for GrpcRegistryClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.create_job(request).await });
+        let response = client.create_job(request).await;
 
         match response {
             Ok(resp) => resp.into_inner().job_id.map_or_else(
@@ -354,21 +349,18 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_job(&self, id: &JobId) -> Option<Job> {
+    async fn get_job(&self, id: &JobId) -> Option<Job> {
         let request = proto::GetJobRequest {
             id: Some(id.into()),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_job(request).await })
-            .ok()?;
+        let response = client.get_job(request).await.ok()?;
 
         response.into_inner().job.and_then(|j| j.try_into().ok())
     }
 
-    fn update_job_status(&self, id: &JobId, status: JobStatus) {
+    async fn update_job_status(&self, id: &JobId, status: JobStatus) {
         // Extract output from Completed/Failed status
         let output = match &status {
             JobStatus::Completed(result) => Some(result.clone()),
@@ -383,9 +375,7 @@ impl Registry for GrpcRegistryClient {
         };
 
         let mut client = self.client.clone();
-        let _ = self
-            .runtime
-            .block_on(async { client.update_job_status(request).await });
+        let _ = client.update_job_status(request).await;
     }
 
     fn pending_jobs(&self) -> Vec<Job> {

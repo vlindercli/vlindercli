@@ -41,7 +41,7 @@ async fn agent_registration() {
 
     // Now found by name and registry-assigned id
     let agent_id = registry.agent_id("echo-agent").unwrap();
-    let agent = registry.get_agent(&agent_id).unwrap();
+    let agent = registry.get_agent(&agent_id).await.unwrap();
     assert_eq!(agent.name, "echo-agent");
 
     // Identity provisioned: public key is 32 bytes (Ed25519)

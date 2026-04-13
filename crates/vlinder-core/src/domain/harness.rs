@@ -164,6 +164,7 @@ impl CoreHarness {
         let agent = self
             .registry
             .get_agent(agent_id)
+            .await
             .ok_or_else(|| format!("agent not deployed: {agent_id}"))?;
         let runtime = self
             .registry
@@ -208,9 +209,10 @@ impl CoreHarness {
             .and_then(|m| m.state.as_ref().map(std::string::ToString::to_string))
             .or_else(|| initial_state.map(std::string::ToString::to_string));
 
-        let job_id =
-            self.registry
-                .create_job(submission.clone(), agent_id.clone(), input.to_string());
+        let job_id = self
+            .registry
+            .create_job(submission.clone(), agent_id.clone(), input.to_string())
+            .await;
 
         let key = DataRoutingKey {
             session: session_id.clone(),
@@ -283,7 +285,9 @@ impl Harness for CoreHarness {
                 &dag_parent,
             )
             .await?;
-        self.registry.update_job_status(&job_id, JobStatus::Running);
+        self.registry
+            .update_job_status(&job_id, JobStatus::Running)
+            .await;
 
         let harness = self.harness_type();
         let submission = key.submission.clone();
@@ -311,7 +315,8 @@ impl Harness for CoreHarness {
         };
 
         self.registry
-            .update_job_status(&job_id, JobStatus::Completed(result.clone()));
+            .update_job_status(&job_id, JobStatus::Completed(result.clone()))
+            .await;
         Ok(result)
     }
 
