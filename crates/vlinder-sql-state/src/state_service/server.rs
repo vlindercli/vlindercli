@@ -443,6 +443,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .insert_invoke_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+            .await
         {
             Ok(()) => Ok(Response::new(InsertInvokeNodeResponse {
                 success: true,

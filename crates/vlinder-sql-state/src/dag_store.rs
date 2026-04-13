@@ -289,7 +289,7 @@ struct SessionSummaryRow {
 
 #[async_trait]
 impl DagStore for SqliteDagStore {
-    fn insert_invoke_node(
+    async fn insert_invoke_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,

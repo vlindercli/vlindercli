@@ -94,6 +94,7 @@ impl RecordingQueue {
         if let Err(e) = self
             .store
             .insert_invoke_node(&id, &parent_id, Utc::now(), &state, key, msg)
+            .await
         {
             let DataMessageKind::Invoke { agent, .. } = &key.kind else {
                 unreachable!()

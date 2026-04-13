@@ -287,7 +287,7 @@ pub trait DagWorker: Send {
 #[async_trait]
 pub trait DagStore: Send + Sync {
     /// Insert a typed invoke node. Writes to `dag_nodes` + `invoke_nodes`.
-    fn insert_invoke_node(
+    async fn insert_invoke_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -609,7 +609,7 @@ impl InMemoryDagStore {
 
 #[async_trait]
 impl DagStore for InMemoryDagStore {
-    fn insert_invoke_node(
+    async fn insert_invoke_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,

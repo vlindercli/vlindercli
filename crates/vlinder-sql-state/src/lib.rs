@@ -413,7 +413,7 @@ mod tests {
         SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap()
     }
 
-    fn test_store_with_session() -> Arc<InMemoryDagStore> {
+    async fn test_store_with_session() -> Arc<InMemoryDagStore> {
         let store = Arc::new(InMemoryDagStore::new());
         let sid = sess_id();
 
@@ -448,6 +448,7 @@ mod tests {
                 &invoke_key,
                 &invoke_msg,
             )
+            .await
             .unwrap();
 
         // Insert a complete node via the typed API
@@ -516,9 +517,9 @@ mod tests {
         server.stop();
     }
 
-    #[test]
-    fn index_lists_sessions() {
-        let store = test_store_with_session();
+    #[tokio::test]
+    async fn index_lists_sessions() {
+        let store = test_store_with_session().await;
         let server = SessionServer::start(store, 0).unwrap();
         let port = server.port();
 
@@ -535,9 +536,9 @@ mod tests {
         server.stop();
     }
 
-    #[test]
-    fn session_page_renders_history() {
-        let store = test_store_with_session();
+    #[tokio::test]
+    async fn session_page_renders_history() {
+        let store = test_store_with_session().await;
         let server = SessionServer::start(store, 0).unwrap();
         let port = server.port();
 
