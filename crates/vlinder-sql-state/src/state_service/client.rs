@@ -834,7 +834,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn update_session_default_branch(
+    async fn update_session_default_branch(
         &self,
         session_id: &vlinder_core::domain::SessionId,
         branch_id: vlinder_core::domain::BranchId,
@@ -844,9 +844,9 @@ impl DagStore for GrpcStateClient {
             branch_id: branch_id.as_i64(),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.update_session_default_branch(request).await })
+        let response = client
+            .update_session_default_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         if resp.success {

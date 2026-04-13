@@ -844,10 +844,14 @@ impl StateService for StateServiceServer {
     ) -> Result<Response<UpdateSessionDefaultBranchResponse>, Status> {
         let req = request.into_inner();
         let session_id = SessionId::try_from(req.session_id).map_err(Status::invalid_argument)?;
-        match self.store.update_session_default_branch(
-            &session_id,
-            vlinder_core::domain::BranchId::from(req.branch_id),
-        ) {
+        match self
+            .store
+            .update_session_default_branch(
+                &session_id,
+                vlinder_core::domain::BranchId::from(req.branch_id),
+            )
+            .await
+        {
             Ok(()) => Ok(Response::new(UpdateSessionDefaultBranchResponse {
                 success: true,
                 error: None,

@@ -528,7 +528,7 @@ pub trait DagStore: Send + Sync {
     ) -> Result<(), String>;
 
     /// Update a session's default branch.
-    fn update_session_default_branch(
+    async fn update_session_default_branch(
         &self,
         session_id: &super::SessionId,
         branch_id: super::BranchId,
@@ -908,7 +908,7 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn update_session_default_branch(
+    async fn update_session_default_branch(
         &self,
         session_id: &super::SessionId,
         branch_id: super::BranchId,

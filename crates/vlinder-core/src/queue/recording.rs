@@ -527,6 +527,7 @@ impl MessageQueue for RecordingQueue {
             if let Err(e) = self
                 .store
                 .update_session_default_branch(&key.session, promoted.id)
+                .await
             {
                 tracing::warn!(error = %e, "Failed to update session default branch");
             }
@@ -555,18 +556,17 @@ impl MessageQueue for RecordingQueue {
         if let Err(e) = self.store.create_session(&session) {
             tracing::warn!(error = %e, "Failed to persist session");
         }
-        let default_branch = {
-            let rt = Runtime::new().expect("Failed to create tokio runtime for send_session_start");
-            rt.block_on(self.store.create_branch("main", &key.session, None))
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "Failed to create default branch");
-                    placeholder_branch
-                })
-        };
-        if let Err(e) = self
-            .store
-            .update_session_default_branch(&key.session, default_branch)
-        {
+        let rt = Runtime::new().expect("Failed to create tokio runtime for send_session_start");
+        let default_branch = rt
+            .block_on(self.store.create_branch("main", &key.session, None))
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to create default branch");
+                placeholder_branch
+            });
+        if let Err(e) = rt.block_on(
+            self.store
+                .update_session_default_branch(&key.session, default_branch),
+        ) {
             tracing::warn!(error = %e, "Failed to update session default branch");
         }
 
@@ -1008,7 +1008,7 @@ mod tests {
             ) -> Result<(), String> {
                 Ok(())
             }
-            fn update_session_default_branch(
+            async fn update_session_default_branch(
                 &self,
                 _: &crate::domain::SessionId,
                 _: crate::domain::BranchId,

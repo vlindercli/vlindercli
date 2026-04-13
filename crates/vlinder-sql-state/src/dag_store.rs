@@ -980,7 +980,7 @@ impl DagStore for SqliteDagStore {
     // Session CRUD
     // -------------------------------------------------------------------------
 
-    fn update_session_default_branch(
+    async fn update_session_default_branch(
         &self,
         session_id: &SessionId,
         branch_id: BranchId,
