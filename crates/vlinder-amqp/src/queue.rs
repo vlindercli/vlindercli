@@ -420,7 +420,11 @@ impl MessageQueue for AmqpQueue {
         Ok(())
     }
 
-    fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {
+    async fn send_response(
+        &self,
+        key: DataRoutingKey,
+        msg: ResponseMessage,
+    ) -> Result<(), QueueError> {
         let DataMessageKind::Response {
             ref agent,
             service,
@@ -441,9 +445,7 @@ impl MessageQueue for AmqpQueue {
         );
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize response: {e}")))?;
-        self.inner
-            .runtime
-            .block_on(self.publish(&rk, msg.id.as_str(), &payload))
+        self.publish(&rk, msg.id.as_str(), &payload).await
     }
 
     fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {

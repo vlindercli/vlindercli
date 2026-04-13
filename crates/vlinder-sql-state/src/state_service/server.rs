@@ -633,20 +633,24 @@ impl StateService for StateServiceServer {
             checkpoint: req.checkpoint,
         };
 
-        match self.store.insert_response_node(
-            &dag_id,
-            &parent_id,
-            created_at,
-            &snapshot,
-            &session,
-            &submission,
-            branch,
-            &agent,
-            service,
-            operation,
-            sequence,
-            &msg,
-        ) {
+        match self
+            .store
+            .insert_response_node(
+                &dag_id,
+                &parent_id,
+                created_at,
+                &snapshot,
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence,
+                &msg,
+            )
+            .await
+        {
             Ok(()) => Ok(Response::new(InsertResponseNodeResponse {
                 success: true,
                 error: None,

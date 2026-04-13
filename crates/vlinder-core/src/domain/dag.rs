@@ -347,7 +347,7 @@ pub trait DagStore: Send + Sync {
 
     /// Insert a typed response node. Writes to `dag_nodes` + `response_nodes`.
     #[allow(clippy::too_many_arguments)]
-    fn insert_response_node(
+    async fn insert_response_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -693,7 +693,7 @@ impl DagStore for InMemoryDagStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_response_node(
+    async fn insert_response_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,

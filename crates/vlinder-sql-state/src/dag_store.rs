@@ -462,7 +462,7 @@ impl DagStore for SqliteDagStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_response_node(
+    async fn insert_response_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,

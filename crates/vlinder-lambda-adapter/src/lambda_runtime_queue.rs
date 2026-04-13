@@ -134,8 +134,12 @@ impl MessageQueue for LambdaRuntimeQueue {
         self.inner.receive_request(service, operation).await
     }
 
-    fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {
-        self.inner.send_response(key, msg)
+    async fn send_response(
+        &self,
+        key: DataRoutingKey,
+        msg: ResponseMessage,
+    ) -> Result<(), QueueError> {
+        self.inner.send_response(key, msg).await
     }
 
     async fn receive_response(

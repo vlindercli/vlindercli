@@ -237,7 +237,9 @@ impl KvWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self.queue.send_response(response_key, response);
+                let _ = self
+                    .rt
+                    .block_on(self.queue.send_response(response_key, response));
                 let _ = ack();
                 true
             }
@@ -274,7 +276,9 @@ impl KvWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self.queue.send_response(response_key, response);
+                let _ = self
+                    .rt
+                    .block_on(self.queue.send_response(response_key, response));
                 let _ = ack();
                 true
             }
@@ -311,7 +315,9 @@ impl KvWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self.queue.send_response(response_key, response);
+                let _ = self
+                    .rt
+                    .block_on(self.queue.send_response(response_key, response));
                 let _ = ack();
                 true
             }
@@ -347,7 +353,9 @@ impl KvWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self.queue.send_response(response_key, response);
+                let _ = self
+                    .rt
+                    .block_on(self.queue.send_response(response_key, response));
                 let _ = ack();
                 true
             }

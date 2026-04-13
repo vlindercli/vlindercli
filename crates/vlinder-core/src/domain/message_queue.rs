@@ -132,7 +132,11 @@ pub trait MessageQueue: Send + Sync {
     // -------------------------------------------------------------------------
 
     /// Send a response on the data plane (ADR 121).
-    fn send_response(&self, _key: DataRoutingKey, _msg: ResponseMessage) -> Result<(), QueueError> {
+    async fn send_response(
+        &self,
+        _key: DataRoutingKey,
+        _msg: ResponseMessage,
+    ) -> Result<(), QueueError> {
         Err(QueueError::SendFailed(
             "send_response not implemented".into(),
         ))

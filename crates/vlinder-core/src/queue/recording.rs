@@ -306,20 +306,24 @@ impl RecordingQueue {
             return;
         };
 
-        if let Err(e) = self.store.insert_response_node(
-            &id,
-            &parent_id,
-            Utc::now(),
-            &state,
-            &key.session,
-            &key.submission,
-            key.branch,
-            agent,
-            *service,
-            *operation,
-            *sequence,
-            msg,
-        ) {
+        if let Err(e) = self
+            .store
+            .insert_response_node(
+                &id,
+                &parent_id,
+                Utc::now(),
+                &state,
+                &key.session,
+                &key.submission,
+                key.branch,
+                agent,
+                *service,
+                *operation,
+                *sequence,
+                msg,
+            )
+            .await
+        {
             tracing::warn!(
                 dag_id = %id,
                 submission = %key.submission,
@@ -389,14 +393,13 @@ impl MessageQueue for RecordingQueue {
         self.inner.send_request(key, msg).await
     }
 
-    fn send_response(
+    async fn send_response(
         &self,
         key: DataRoutingKey,
         msg: crate::domain::ResponseMessage,
     ) -> Result<(), QueueError> {
-        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
-        rt.block_on(self.record_response(&key, &msg));
-        self.inner.send_response(key, msg)
+        self.record_response(&key, &msg).await;
+        self.inner.send_response(key, msg).await
     }
 
     // -------------------------------------------------------------------------
