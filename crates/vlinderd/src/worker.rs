@@ -199,25 +199,14 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                 let agent_name = deploy_msg.manifest.name.clone();
                 tracing::info!(agent = %agent_name, "Processing deploy-agent");
 
-                let registry_clone = Arc::clone(&registry);
                 let manifest = deploy_msg.manifest.clone();
-                // Inline the register_manifest logic to avoid a nested-runtime
-                // panic: GrpcRegistryClient::register_agent uses its own
-                // Runtime::block_on, so the calling thread must NOT already be
-                // inside a tokio runtime context.
-                let reg_result = std::thread::spawn(move || {
+                let reg_result = (|| {
                     let agent =
                         vlinder_core::domain::Agent::from_manifest(manifest).map_err(|e| {
                             vlinder_core::domain::RegistrationError::Persistence(format!("{e:?}"))
                         })?;
-                    registry_clone.register_agent(agent)
-                })
-                .join()
-                .unwrap_or_else(|_| {
-                    Err(vlinder_core::domain::RegistrationError::Persistence(
-                        "registry thread panicked".to_string(),
-                    ))
-                });
+                    rt.block_on(registry.register_agent(agent))
+                })();
 
                 match reg_result {
                     Ok(()) => {

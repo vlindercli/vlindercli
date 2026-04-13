@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use async_nats::jetstream::{self, kv};
+use async_trait::async_trait;
 use tokio::runtime::Runtime;
 
 use vlinder_core::domain::{SecretStore, SecretStoreError};
@@ -19,7 +20,8 @@ pub struct NatsSecretStore {
 }
 
 struct NatsSecretStoreInner {
-    runtime: Runtime,
+    /// Kept alive so the NATS client's background connection tasks continue running.
+    _runtime: Runtime,
     kv: kv::Store,
 }
 
@@ -52,55 +54,51 @@ impl NatsSecretStore {
         })?;
 
         Ok(Self {
-            inner: Arc::new(NatsSecretStoreInner { runtime, kv }),
+            inner: Arc::new(NatsSecretStoreInner {
+                _runtime: runtime,
+                kv,
+            }),
         })
     }
 }
 
+#[async_trait]
 impl SecretStore for NatsSecretStore {
-    fn put(&self, name: &str, value: &[u8]) -> Result<(), SecretStoreError> {
+    async fn put(&self, name: &str, value: &[u8]) -> Result<(), SecretStoreError> {
         let value = value.to_vec();
-        self.inner.runtime.block_on(async {
-            self.inner
-                .kv
-                .put(name, value.into())
-                .await
-                .map_err(|e| SecretStoreError::StoreFailed(e.to_string()))?;
-            Ok(())
-        })
+        self.inner
+            .kv
+            .put(name, value.into())
+            .await
+            .map_err(|e| SecretStoreError::StoreFailed(e.to_string()))?;
+        Ok(())
     }
 
-    fn get(&self, name: &str) -> Result<Vec<u8>, SecretStoreError> {
-        self.inner.runtime.block_on(async {
-            self.inner
-                .kv
-                .get(name)
-                .await
-                .map_err(|e| SecretStoreError::StoreFailed(e.to_string()))?
-                .map(|bytes| bytes.to_vec())
-                .ok_or_else(|| SecretStoreError::NotFound(name.to_string()))
-        })
+    async fn get(&self, name: &str) -> Result<Vec<u8>, SecretStoreError> {
+        self.inner
+            .kv
+            .get(name)
+            .await
+            .map_err(|e| SecretStoreError::StoreFailed(e.to_string()))?
+            .map(|bytes| bytes.to_vec())
+            .ok_or_else(|| SecretStoreError::NotFound(name.to_string()))
     }
 
-    fn exists(&self, name: &str) -> Result<bool, SecretStoreError> {
-        self.inner.runtime.block_on(async {
-            let result = self
-                .inner
-                .kv
-                .get(name)
-                .await
-                .map_err(|e| SecretStoreError::StoreFailed(e.to_string()))?;
-            Ok(result.is_some())
-        })
+    async fn exists(&self, name: &str) -> Result<bool, SecretStoreError> {
+        let result = self
+            .inner
+            .kv
+            .get(name)
+            .await
+            .map_err(|e| SecretStoreError::StoreFailed(e.to_string()))?;
+        Ok(result.is_some())
     }
 
-    fn delete(&self, name: &str) -> Result<(), SecretStoreError> {
-        self.inner.runtime.block_on(async {
-            self.inner
-                .kv
-                .delete(name)
-                .await
-                .map_err(|e| SecretStoreError::DeleteFailed(e.to_string()))
-        })
+    async fn delete(&self, name: &str) -> Result<(), SecretStoreError> {
+        self.inner
+            .kv
+            .delete(name)
+            .await
+            .map_err(|e| SecretStoreError::DeleteFailed(e.to_string()))
     }
 }

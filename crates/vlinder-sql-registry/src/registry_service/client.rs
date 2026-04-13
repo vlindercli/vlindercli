@@ -136,16 +136,16 @@ impl Registry for GrpcRegistryClient {
 
     // --- Agent operations ---
 
-    fn register_agent(&self, agent: Agent) -> Result<(), RegistrationError> {
+    async fn register_agent(&self, agent: Agent) -> Result<(), RegistrationError> {
         let proto_agent: proto::Agent = agent.into();
         let request = proto::RegisterAgentRequest {
             agent: Some(proto_agent),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.register_agent(request).await })
+        let response = client
+            .register_agent(request)
+            .await
             .map_err(|e| RegistrationError::Remote(e.to_string()))?;
 
         let resp = response.into_inner();

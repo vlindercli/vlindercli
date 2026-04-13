@@ -58,15 +58,15 @@ pub fn private_key_name(agent_name: &str) -> String {
 /// key is stored.
 ///
 /// Returns the public half of the key pair.
-pub fn ensure_agent_identity(
+pub async fn ensure_agent_identity(
     agent_name: &str,
     store: &dyn SecretStore,
 ) -> Result<AgentIdentity, IdentityError> {
     let key_name = private_key_name(agent_name);
 
-    if store.exists(&key_name)? {
+    if store.exists(&key_name).await? {
         // Derive public key from existing private key
-        let private_bytes = store.get(&key_name)?;
+        let private_bytes = store.get(&key_name).await?;
         let seed: [u8; 32] = private_bytes.try_into().map_err(|v: Vec<u8>| {
             IdentityError::InvalidKey(format!("expected 32 bytes, got {}", v.len()))
         })?;
@@ -77,7 +77,7 @@ pub fn ensure_agent_identity(
         // Generate new key pair
         let signing_key = SigningKey::generate(&mut OsRng);
         let private_bytes = signing_key.to_bytes();
-        store.put(&key_name, &private_bytes)?;
+        store.put(&key_name, &private_bytes).await?;
         let public_key = signing_key.verifying_key().to_bytes();
         Ok(AgentIdentity { public_key })
     }
@@ -94,48 +94,51 @@ mod tests {
         assert_eq!(private_key_name("my-agent"), "agents/my-agent/private-key");
     }
 
-    #[test]
-    fn generate_stores_private_key() {
+    #[tokio::test]
+    async fn generate_stores_private_key() {
         let store = InMemorySecretStore::new();
 
-        let identity = ensure_agent_identity("echo", &store).unwrap();
+        let identity = ensure_agent_identity("echo", &store).await.unwrap();
 
         // Private key should be in the store
-        assert!(store.exists("agents/echo/private-key").unwrap());
+        assert!(store.exists("agents/echo/private-key").await.unwrap());
 
         // Public key is 32 bytes
         assert_eq!(identity.public_key.len(), 32);
     }
 
-    #[test]
-    fn idempotent_returns_same_public_key() {
+    #[tokio::test]
+    async fn idempotent_returns_same_public_key() {
         let store = InMemorySecretStore::new();
 
-        let first = ensure_agent_identity("echo", &store).unwrap();
-        let second = ensure_agent_identity("echo", &store).unwrap();
+        let first = ensure_agent_identity("echo", &store).await.unwrap();
+        let second = ensure_agent_identity("echo", &store).await.unwrap();
 
         assert_eq!(first.public_key, second.public_key);
     }
 
-    #[test]
-    fn different_agents_get_different_keys() {
+    #[tokio::test]
+    async fn different_agents_get_different_keys() {
         let store = InMemorySecretStore::new();
 
-        let alice = ensure_agent_identity("alice", &store).unwrap();
-        let bob = ensure_agent_identity("bob", &store).unwrap();
+        let alice = ensure_agent_identity("alice", &store).await.unwrap();
+        let bob = ensure_agent_identity("bob", &store).await.unwrap();
 
         assert_ne!(alice.public_key, bob.public_key);
     }
 
-    #[test]
-    fn derives_public_key_from_stored_private() {
+    #[tokio::test]
+    async fn derives_public_key_from_stored_private() {
         let store = InMemorySecretStore::new();
 
         // Manually store a known 32-byte key
         let known_seed = [42u8; 32];
-        store.put("agents/manual/private-key", &known_seed).unwrap();
+        store
+            .put("agents/manual/private-key", &known_seed)
+            .await
+            .unwrap();
 
-        let identity = ensure_agent_identity("manual", &store).unwrap();
+        let identity = ensure_agent_identity("manual", &store).await.unwrap();
 
         // Verify the derived public key matches what ed25519-dalek produces
         let expected_signing_key = SigningKey::from_bytes(&known_seed);
@@ -143,14 +146,17 @@ mod tests {
         assert_eq!(identity.public_key, expected_public);
     }
 
-    #[test]
-    fn rejects_invalid_key_length() {
+    #[tokio::test]
+    async fn rejects_invalid_key_length() {
         let store = InMemorySecretStore::new();
 
         // Store a 16-byte value (invalid — Ed25519 needs exactly 32)
-        store.put("agents/bad/private-key", &[0u8; 16]).unwrap();
+        store
+            .put("agents/bad/private-key", &[0u8; 16])
+            .await
+            .unwrap();
 
-        let result = ensure_agent_identity("bad", &store);
+        let result = ensure_agent_identity("bad", &store).await;
         assert!(matches!(result, Err(IdentityError::InvalidKey(_))));
     }
 }

@@ -82,9 +82,9 @@ impl Registry for PersistentRegistry {
 
     // --- Agent operations (write-through for mutations) ---
 
-    fn register_agent(&self, agent: Agent) -> Result<(), RegistrationError> {
+    async fn register_agent(&self, agent: Agent) -> Result<(), RegistrationError> {
         // Validate in-memory first (runtime, storage, model checks), then persist
-        self.inner.register_agent(agent.clone())?;
+        self.inner.register_agent(agent.clone()).await?;
 
         // Write to disk (agent already validated and cached)
         self.repo
@@ -487,7 +487,7 @@ mod tests {
         let db_path = temp.path().join("state.db");
 
         let registry = open_with_runtime(&db_path);
-        registry.register_agent(test_agent("echo")).unwrap();
+        registry.register_agent(test_agent("echo")).await.unwrap();
 
         // Verify in-memory
         let agent = registry.get_agent_by_name("echo").await;
@@ -508,7 +508,7 @@ mod tests {
         // First "session": register an agent
         {
             let registry = open_with_runtime(&db_path);
-            registry.register_agent(test_agent("echo")).unwrap();
+            registry.register_agent(test_agent("echo")).await.unwrap();
         }
 
         // Second "session": agent should be loaded via restore_agent
@@ -528,7 +528,7 @@ mod tests {
         let db_path = temp.path().join("state.db");
 
         let registry = open_with_runtime(&db_path);
-        registry.register_agent(test_agent("echo")).unwrap();
+        registry.register_agent(test_agent("echo")).await.unwrap();
         assert!(registry.get_agent_by_name("echo").await.is_some());
 
         let deleted = registry.delete_agent("echo").unwrap();

@@ -691,7 +691,10 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(registry.register_agent(agent))
+            .unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -767,7 +770,10 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(registry.register_agent(agent))
+            .unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -829,7 +835,10 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(registry.register_agent(agent))
+            .unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -936,7 +945,10 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(registry.register_agent(agent))
+            .unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -1066,7 +1078,10 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(registry.register_agent(agent))
+            .unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),

@@ -553,7 +553,7 @@ mod tests {
         let registry = test_registry();
         let repo = test_repo();
         let agent = make_lambda_agent("echo");
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         set_deploying(&*repo, "echo");
 
         let mut runtime = make_runtime(registry, repo);
@@ -572,7 +572,7 @@ mod tests {
         let registry = test_registry();
         let repo = test_repo();
         let agent = make_lambda_agent("echo");
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         set_deploying(&*repo, "echo");
 
         let mut runtime = make_runtime(registry.clone(), repo);
@@ -589,8 +589,14 @@ mod tests {
     async fn shutdown_undeploys_all() {
         let registry = test_registry();
         let repo = test_repo();
-        registry.register_agent(make_lambda_agent("alpha")).unwrap();
-        registry.register_agent(make_lambda_agent("beta")).unwrap();
+        registry
+            .register_agent(make_lambda_agent("alpha"))
+            .await
+            .unwrap();
+        registry
+            .register_agent(make_lambda_agent("beta"))
+            .await
+            .unwrap();
         set_deploying(&*repo, "alpha");
         set_deploying(&*repo, "beta");
 
@@ -607,7 +613,7 @@ mod tests {
         let registry = test_registry();
         let repo = test_repo();
         let agent = make_lambda_agent("echo");
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         set_deploying(&*repo, "echo");
 
         let mock = MockLambdaClient::new();
@@ -633,7 +639,7 @@ mod tests {
         let registry = test_registry();
         let repo = test_repo();
         let agent = make_lambda_agent("echo");
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         set_deploying(&*repo, "echo");
 
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
@@ -694,7 +700,7 @@ mod tests {
         let registry = test_registry();
         let repo = test_repo();
         let agent = make_lambda_agent("echo");
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         set_deploying(&*repo, "echo");
 
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
@@ -803,7 +809,7 @@ mod tests {
         let registry = test_registry();
         let repo = test_repo();
         let agent = make_lambda_agent("echo");
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         set_deploying(&*repo, "echo");
 
         let captured = StdArc::new(Mutex::new(CapturedVpc::default()));

@@ -105,15 +105,7 @@ impl RegistryService for RegistryServer {
             .try_into()
             .map_err(|e: String| Status::invalid_argument(e))?;
 
-        // TECH DEBT: spawn_blocking works around nested tokio runtime panic.
-        // NatsSecretStore owns its own Runtime and calls block_on() — panics
-        // when called from a tokio worker thread (this gRPC handler).
-        // Real fix: secret store should be a separate process, and/or the
-        // Registry trait should be async. See TODO.md.
-        let registry = Arc::clone(&self.registry);
-        let result = tokio::task::spawn_blocking(move || registry.register_agent(domain_agent))
-            .await
-            .map_err(|e| Status::internal(format!("task join error: {e}")))?;
+        let result = self.registry.register_agent(domain_agent).await;
 
         match result {
             Ok(()) => Ok(Response::new(RegisterAgentResponse {

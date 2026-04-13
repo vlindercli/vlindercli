@@ -1143,7 +1143,8 @@ mod tests {
         Arc::new(InMemorySecretStore::new())
     }
 
-    fn test_worker_with_registry() -> (GitDagWorker, tempfile::TempDir, Arc<InMemoryRegistry>) {
+    async fn test_worker_with_registry() -> (GitDagWorker, tempfile::TempDir, Arc<InMemoryRegistry>)
+    {
         let tmp = tempfile::TempDir::new().unwrap();
         let registry = Arc::new(InMemoryRegistry::new(test_secret_store()));
         registry.register_runtime(RuntimeType::Container);
@@ -1159,7 +1160,7 @@ mod tests {
         "#,
         )
         .unwrap();
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
 
         let worker = GitDagWorker::open(
             tmp.path(),
@@ -1438,18 +1439,18 @@ mod tests {
 
     // --- Rich tree tests (ADR 070) ---
 
-    #[test]
-    fn commit_tree_contains_agent_toml_when_registry_available() {
-        let (mut worker, tmp, _registry) = test_worker_with_registry();
+    #[tokio::test]
+    async fn commit_tree_contains_agent_toml_when_registry_available() {
+        let (mut worker, tmp, _registry) = test_worker_with_registry().await;
         send_complete(&mut worker, b"hello", 1000);
 
         let content = git(tmp.path(), &["show", "main:agent.toml"]).unwrap();
         assert!(content.contains("support-agent"), "agent.toml: {content}");
     }
 
-    #[test]
-    fn commit_tree_contains_platform_toml() {
-        let (mut worker, tmp, _registry) = test_worker_with_registry();
+    #[tokio::test]
+    async fn commit_tree_contains_platform_toml() {
+        let (mut worker, tmp, _registry) = test_worker_with_registry().await;
         send_complete(&mut worker, b"hello", 1000);
 
         let content = git(tmp.path(), &["show", "main:platform.toml"]).unwrap();

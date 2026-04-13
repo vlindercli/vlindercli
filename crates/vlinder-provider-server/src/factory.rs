@@ -54,14 +54,16 @@ fn resolve_from_secrets(secret_url: &str) -> Option<NatsConfig> {
         }
     };
 
-    let Ok(nats_url_bytes) = client.get("sidecar.nats.url") else {
+    let rt = tokio::runtime::Runtime::new().ok()?;
+
+    let Ok(nats_url_bytes) = rt.block_on(client.get("sidecar.nats.url")) else {
         return None;
     };
 
     let nats_url = String::from_utf8(nats_url_bytes).ok()?;
 
-    let creds_content = client
-        .get("sidecar.nats.creds")
+    let creds_content = rt
+        .block_on(client.get("sidecar.nats.creds"))
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok());
 

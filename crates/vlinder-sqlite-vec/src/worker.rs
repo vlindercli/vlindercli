@@ -389,7 +389,10 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_vector_storage(VectorStorageType::SqliteVec);
         let agent = test_agent_with_vector_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(registry.register_agent(agent))
+            .unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = SqliteVecWorker::new(
             Arc::clone(&queue),
@@ -477,7 +480,10 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_vector_storage(VectorStorageType::SqliteVec);
         let agent = test_agent_with_vector_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(registry.register_agent(agent))
+            .unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = SqliteVecWorker::new(
             Arc::clone(&queue),

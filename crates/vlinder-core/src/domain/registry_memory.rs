@@ -118,132 +118,142 @@ impl Registry for InMemoryRegistry {
     // --- Agent operations ---
 
     #[allow(clippy::too_many_lines)]
-    fn register_agent(&self, mut agent: Agent) -> Result<(), RegistrationError> {
-        let mut state = self.state.write().unwrap();
-
-        // Idempotency: same config → Ok, different config same name → error
+    async fn register_agent(&self, mut agent: Agent) -> Result<(), RegistrationError> {
         let agent_id = self.agent_id_internal(&agent.name);
-        if let Some(existing) = state.agents.get(&agent_id) {
-            if existing.config() == agent.config() {
-                return Ok(());
-            }
-            return Err(RegistrationError::DuplicateName(agent.name.clone()));
-        }
 
-        // Validate runtime is available
-        if self.select_runtime_internal(&agent, &state).is_none() {
-            return Err(RegistrationError::NoRuntime(ResourceId::new(format!(
-                "runtime:{}",
-                agent.runtime.as_str()
-            ))));
-        }
+        // Phase 1: validate under lock, then drop the guard before await
+        {
+            let state = self.state.read().unwrap();
 
-        // Validate object storage if declared
-        if let Some(ref uri) = agent.object_storage {
-            let scheme = uri.scheme().unwrap_or("unknown");
-            let storage_type = ObjectStorageType::from_scheme(uri.scheme())
-                .ok_or_else(|| RegistrationError::UnknownObjectStorageScheme(scheme.to_string()))?;
-            if !state.available_object_storage.contains(&storage_type) {
-                return Err(RegistrationError::ObjectStorageUnavailable(storage_type));
-            }
-        }
-
-        // Validate vector storage if declared
-        if let Some(ref uri) = agent.vector_storage {
-            let scheme = uri.scheme().unwrap_or("unknown");
-            let storage_type = VectorStorageType::from_scheme(uri.scheme())
-                .ok_or_else(|| RegistrationError::UnknownVectorStorageScheme(scheme.to_string()))?;
-            if !state.available_vector_storage.contains(&storage_type) {
-                return Err(RegistrationError::VectorStorageUnavailable(storage_type));
-            }
-        }
-
-        // Validate all declared models are registered and their engines are available (ADR 094)
-        for (model_alias, model_name) in &agent.requirements.models {
-            let model = state.models.values().find(|m| m.name == *model_name);
-            let Some(model) = model else {
-                return Err(RegistrationError::ModelNotRegistered(
-                    model_alias.clone(),
-                    model_name.clone(),
-                ));
-            };
-
-            match model.model_type {
-                ModelType::Inference => {
-                    if !state.available_inference_engines.contains(&model.provider) {
-                        return Err(RegistrationError::InferenceEngineUnavailable(
-                            model.provider,
-                            model.name.clone(),
-                        ));
-                    }
-                    if !agent
-                        .requirements
-                        .services
-                        .contains_key(&ServiceType::Infer)
-                    {
-                        return Err(RegistrationError::InferenceServiceNotDeclared(
-                            model_alias.clone(),
-                        ));
-                    }
+            // Idempotency: same config → Ok, different config same name → error
+            if let Some(existing) = state.agents.get(&agent_id) {
+                if existing.config() == agent.config() {
+                    return Ok(());
                 }
-                ModelType::Embedding => {
-                    if !state.available_embedding_engines.contains(&model.provider) {
-                        return Err(RegistrationError::EmbeddingEngineUnavailable(
-                            model.provider,
-                            model.name.clone(),
-                        ));
-                    }
-                    if !agent
-                        .requirements
-                        .services
-                        .contains_key(&ServiceType::Embed)
-                    {
-                        return Err(RegistrationError::EmbeddingServiceNotDeclared(
-                            model_alias.clone(),
-                        ));
-                    }
+                return Err(RegistrationError::DuplicateName(agent.name.clone()));
+            }
+
+            // Validate runtime is available
+            if self.select_runtime_internal(&agent, &state).is_none() {
+                return Err(RegistrationError::NoRuntime(ResourceId::new(format!(
+                    "runtime:{}",
+                    agent.runtime.as_str()
+                ))));
+            }
+
+            // Validate object storage if declared
+            if let Some(ref uri) = agent.object_storage {
+                let scheme = uri.scheme().unwrap_or("unknown");
+                let storage_type =
+                    ObjectStorageType::from_scheme(uri.scheme()).ok_or_else(|| {
+                        RegistrationError::UnknownObjectStorageScheme(scheme.to_string())
+                    })?;
+                if !state.available_object_storage.contains(&storage_type) {
+                    return Err(RegistrationError::ObjectStorageUnavailable(storage_type));
                 }
             }
-        }
 
-        // Validate services have corresponding models
-        if agent
-            .requirements
-            .services
-            .contains_key(&ServiceType::Infer)
-        {
-            let has_inference_model = agent.requirements.models.values().any(|name| {
-                state
-                    .models
-                    .values()
-                    .any(|m| m.name == *name && m.model_type == ModelType::Inference)
-            });
-            if !has_inference_model {
-                return Err(RegistrationError::InferenceServiceWithoutModel);
+            // Validate vector storage if declared
+            if let Some(ref uri) = agent.vector_storage {
+                let scheme = uri.scheme().unwrap_or("unknown");
+                let storage_type =
+                    VectorStorageType::from_scheme(uri.scheme()).ok_or_else(|| {
+                        RegistrationError::UnknownVectorStorageScheme(scheme.to_string())
+                    })?;
+                if !state.available_vector_storage.contains(&storage_type) {
+                    return Err(RegistrationError::VectorStorageUnavailable(storage_type));
+                }
             }
-        }
-        if agent
-            .requirements
-            .services
-            .contains_key(&ServiceType::Embed)
-        {
-            let has_embedding_model = agent.requirements.models.values().any(|name| {
-                state
-                    .models
-                    .values()
-                    .any(|m| m.name == *name && m.model_type == ModelType::Embedding)
-            });
-            if !has_embedding_model {
-                return Err(RegistrationError::EmbeddingServiceWithoutModel);
-            }
-        }
 
-        // Provision identity (ADR 084): generate Ed25519 key pair, store private key
+            // Validate all declared models are registered and their engines are available (ADR 094)
+            for (model_alias, model_name) in &agent.requirements.models {
+                let model = state.models.values().find(|m| m.name == *model_name);
+                let Some(model) = model else {
+                    return Err(RegistrationError::ModelNotRegistered(
+                        model_alias.clone(),
+                        model_name.clone(),
+                    ));
+                };
+
+                match model.model_type {
+                    ModelType::Inference => {
+                        if !state.available_inference_engines.contains(&model.provider) {
+                            return Err(RegistrationError::InferenceEngineUnavailable(
+                                model.provider,
+                                model.name.clone(),
+                            ));
+                        }
+                        if !agent
+                            .requirements
+                            .services
+                            .contains_key(&ServiceType::Infer)
+                        {
+                            return Err(RegistrationError::InferenceServiceNotDeclared(
+                                model_alias.clone(),
+                            ));
+                        }
+                    }
+                    ModelType::Embedding => {
+                        if !state.available_embedding_engines.contains(&model.provider) {
+                            return Err(RegistrationError::EmbeddingEngineUnavailable(
+                                model.provider,
+                                model.name.clone(),
+                            ));
+                        }
+                        if !agent
+                            .requirements
+                            .services
+                            .contains_key(&ServiceType::Embed)
+                        {
+                            return Err(RegistrationError::EmbeddingServiceNotDeclared(
+                                model_alias.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Validate services have corresponding models
+            if agent
+                .requirements
+                .services
+                .contains_key(&ServiceType::Infer)
+            {
+                let has_inference_model = agent.requirements.models.values().any(|name| {
+                    state
+                        .models
+                        .values()
+                        .any(|m| m.name == *name && m.model_type == ModelType::Inference)
+                });
+                if !has_inference_model {
+                    return Err(RegistrationError::InferenceServiceWithoutModel);
+                }
+            }
+            if agent
+                .requirements
+                .services
+                .contains_key(&ServiceType::Embed)
+            {
+                let has_embedding_model = agent.requirements.models.values().any(|name| {
+                    state
+                        .models
+                        .values()
+                        .any(|m| m.name == *name && m.model_type == ModelType::Embedding)
+                });
+                if !has_embedding_model {
+                    return Err(RegistrationError::EmbeddingServiceWithoutModel);
+                }
+            }
+        } // guard dropped here — safe to await
+
+        // Phase 2: async identity provisioning (no lock held)
         let identity = ensure_agent_identity(&agent.name, self.secret_store.as_ref())
+            .await
             .map_err(|e| RegistrationError::IdentityFailed(e.to_string()))?;
         agent.public_key = Some(identity.public_key.to_vec());
 
-        // Assign registry identity and store
+        // Phase 3: re-acquire write lock and insert
+        let mut state = self.state.write().unwrap();
         agent.id = agent_id.clone();
         state.agents.insert(agent_id, agent);
         Ok(())
@@ -271,7 +281,7 @@ impl Registry for InMemoryRegistry {
         // New agent: convert manifest → agent, validate via register_agent
         let agent = Agent::from_manifest(manifest.clone())
             .map_err(|e| RegistrationError::Persistence(format!("{e:?}")))?;
-        self.register_agent(agent)?;
+        self.register_agent(agent).await?;
 
         // Store manifest alongside the agent
         let mut state = self.state.write().unwrap();
@@ -772,7 +782,7 @@ mod tests {
         let agent = minimal_agent("echo");
 
         // register_agent should fail (no container runtime registered)
-        let result = registry.register_agent(agent.clone());
+        let result = registry.register_agent(agent.clone()).await;
         assert!(result.is_err());
 
         // restore_agent should succeed despite no capabilities
@@ -866,8 +876,8 @@ mod tests {
         registry.register_runtime(RuntimeType::Container);
 
         let agent = minimal_agent("echo");
-        registry.register_agent(agent.clone()).unwrap();
-        registry.register_agent(agent).unwrap(); // should succeed
+        registry.register_agent(agent.clone()).await.unwrap();
+        registry.register_agent(agent).await.unwrap(); // should succeed
     }
 
     #[tokio::test]
@@ -876,12 +886,12 @@ mod tests {
         registry.register_runtime(RuntimeType::Container);
 
         let agent1 = minimal_agent("echo");
-        registry.register_agent(agent1).unwrap();
+        registry.register_agent(agent1).await.unwrap();
 
         let mut agent2 = minimal_agent("echo");
         agent2.executable = "localhost/echo:v2".to_string();
 
-        let result = registry.register_agent(agent2);
+        let result = registry.register_agent(agent2).await;
         assert!(matches!(result, Err(RegistrationError::DuplicateName(_))));
     }
 

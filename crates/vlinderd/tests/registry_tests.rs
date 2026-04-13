@@ -37,7 +37,7 @@ async fn agent_registration() {
 
     // Register agent — registry assigns identity
     let agent = load_agent("echo-agent");
-    registry.register_agent(agent).unwrap();
+    registry.register_agent(agent).await.unwrap();
 
     // Now found by name and registry-assigned id
     let agent_id = registry.agent_id("echo-agent").unwrap();
@@ -108,8 +108,9 @@ fn register_model_test_agent(registry: &InMemoryRegistry) {
     registry.register_embedding_engine(Provider::Ollama);
     registry.register_model(phi3).unwrap();
     registry.register_model(nomic).unwrap();
-    registry
-        .register_agent(load_agent("model-test-agent"))
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(registry.register_agent(load_agent("model-test-agent")))
         .unwrap();
 }
 
@@ -212,8 +213,8 @@ fn register_model_rejected_without_embedding_engine() {
 // Service Declaration Validation
 // ============================================================================
 
-#[test]
-fn register_agent_rejected_when_inference_model_has_no_service() {
+#[tokio::test]
+async fn register_agent_rejected_when_inference_model_has_no_service() {
     let registry = InMemoryRegistry::new(test_secret_store());
     registry.register_runtime(RuntimeType::Container);
     registry.register_inference_engine(Provider::Ollama);
@@ -242,7 +243,7 @@ fn register_agent_rejected_when_inference_model_has_no_service() {
     )
     .unwrap();
 
-    let result = registry.register_agent(agent);
+    let result = registry.register_agent(agent).await;
     match result.unwrap_err() {
         RegistrationError::InferenceServiceNotDeclared(model) => {
             assert_eq!(model, "phi3");
@@ -251,8 +252,8 @@ fn register_agent_rejected_when_inference_model_has_no_service() {
     }
 }
 
-#[test]
-fn register_agent_rejected_when_embedding_model_has_no_service() {
+#[tokio::test]
+async fn register_agent_rejected_when_embedding_model_has_no_service() {
     let registry = InMemoryRegistry::new(test_secret_store());
     registry.register_runtime(RuntimeType::Container);
     registry.register_embedding_engine(Provider::Ollama);
@@ -281,7 +282,7 @@ fn register_agent_rejected_when_embedding_model_has_no_service() {
     )
     .unwrap();
 
-    let result = registry.register_agent(agent);
+    let result = registry.register_agent(agent).await;
     match result.unwrap_err() {
         RegistrationError::EmbeddingServiceNotDeclared(model) => {
             assert_eq!(model, "nomic-embed");
@@ -290,8 +291,8 @@ fn register_agent_rejected_when_embedding_model_has_no_service() {
     }
 }
 
-#[test]
-fn register_agent_rejected_when_infer_service_has_no_model() {
+#[tokio::test]
+async fn register_agent_rejected_when_infer_service_has_no_model() {
     let registry = InMemoryRegistry::new(test_secret_store());
     registry.register_runtime(RuntimeType::Container);
 
@@ -311,15 +312,15 @@ fn register_agent_rejected_when_infer_service_has_no_model() {
     )
     .unwrap();
 
-    let result = registry.register_agent(agent);
+    let result = registry.register_agent(agent).await;
     match result.unwrap_err() {
         RegistrationError::InferenceServiceWithoutModel => {}
         other => panic!("expected InferenceServiceWithoutModel, got: {other}"),
     }
 }
 
-#[test]
-fn register_agent_rejected_when_embed_service_has_no_model() {
+#[tokio::test]
+async fn register_agent_rejected_when_embed_service_has_no_model() {
     let registry = InMemoryRegistry::new(test_secret_store());
     registry.register_runtime(RuntimeType::Container);
 
@@ -339,7 +340,7 @@ fn register_agent_rejected_when_embed_service_has_no_model() {
     )
     .unwrap();
 
-    let result = registry.register_agent(agent);
+    let result = registry.register_agent(agent).await;
     match result.unwrap_err() {
         RegistrationError::EmbeddingServiceWithoutModel => {}
         other => panic!("expected EmbeddingServiceWithoutModel, got: {other}"),

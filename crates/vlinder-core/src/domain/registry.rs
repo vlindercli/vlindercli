@@ -210,7 +210,7 @@ pub trait Registry: Send + Sync {
 
     /// Register an agent after validating requirements.
     /// Assigns registry identity `<registry_id>/agents/<name>`.
-    fn register_agent(&self, agent: Agent) -> Result<(), RegistrationError>;
+    async fn register_agent(&self, agent: Agent) -> Result<(), RegistrationError>;
 
     /// Register an agent from its manifest (ADR 102).
     ///
@@ -223,7 +223,7 @@ pub trait Registry: Send + Sync {
         let name = manifest.name.clone();
         let agent = Agent::from_manifest(manifest)
             .map_err(|e| RegistrationError::Persistence(format!("{e:?}")))?;
-        self.register_agent(agent)?;
+        self.register_agent(agent).await?;
         self.get_agent_by_name(&name).await.ok_or_else(|| {
             RegistrationError::Persistence(format!("agent '{name}' not found after registration"))
         })

@@ -86,11 +86,11 @@ fn grpc_register_and_get_agent() {
         public_key: None,
     };
 
-    client.register_agent(agent).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(client.register_agent(agent)).unwrap();
 
     // Retrieve via gRPC using registry-assigned ID
     let agent_id = registry.agent_id("test-agent").unwrap();
-    let rt = tokio::runtime::Runtime::new().unwrap();
     let retrieved = rt.block_on(client.get_agent(&agent_id));
     assert!(retrieved.is_some());
     assert_eq!(retrieved.unwrap().name, "test-agent");
@@ -102,6 +102,7 @@ fn grpc_list_agents() {
     registry.register_runtime(RuntimeType::Container);
     let addr = start_server_background(registry.clone());
     let client = GrpcRegistryClient::connect(&format!("http://{addr}")).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
 
     // Register two agents
     for i in 0..2 {
@@ -121,13 +122,9 @@ fn grpc_list_agents() {
             image_digest: None,
             public_key: None,
         };
-        client.register_agent(agent).unwrap();
+        rt.block_on(client.register_agent(agent)).unwrap();
     }
 
-    // Use a separate runtime to drive the async get_agents call.
-    // GrpcRegistryClient::connect already created its own runtime (block_on),
-    // so we cannot be inside a tokio context here.
-    let rt = tokio::runtime::Runtime::new().unwrap();
     let agents = rt.block_on(client.get_agents());
     assert_eq!(agents.len(), 2);
 }
@@ -155,11 +152,11 @@ fn grpc_job_lifecycle() {
         image_digest: None,
         public_key: None,
     };
-    client.register_agent(agent).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(client.register_agent(agent)).unwrap();
 
     // Create a job via gRPC using registry-assigned ID
     let agent_id = registry.agent_id("job-test-agent").unwrap();
-    let rt = tokio::runtime::Runtime::new().unwrap();
     let job_id = rt.block_on(client.create_job(SubmissionId::new(), agent_id, "hello".to_string()));
 
     // Job should be pending

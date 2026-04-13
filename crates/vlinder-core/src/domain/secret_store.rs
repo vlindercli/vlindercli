@@ -10,24 +10,27 @@
 
 use std::fmt;
 
+use async_trait::async_trait;
+
 // --- SecretStore Trait ---
 
 /// A store for named secrets (ADR 083).
 ///
 /// Implementations must be thread-safe. Secrets are opaque byte blobs —
 /// the store does not interpret, encrypt, or transform the contents.
+#[async_trait]
 pub trait SecretStore: Send + Sync {
     /// Store a secret. Overwrites if it already exists.
-    fn put(&self, name: &str, value: &[u8]) -> Result<(), SecretStoreError>;
+    async fn put(&self, name: &str, value: &[u8]) -> Result<(), SecretStoreError>;
 
     /// Retrieve a secret by name.
-    fn get(&self, name: &str) -> Result<Vec<u8>, SecretStoreError>;
+    async fn get(&self, name: &str) -> Result<Vec<u8>, SecretStoreError>;
 
     /// Check whether a secret exists.
-    fn exists(&self, name: &str) -> Result<bool, SecretStoreError>;
+    async fn exists(&self, name: &str) -> Result<bool, SecretStoreError>;
 
     /// Delete a secret by name.
-    fn delete(&self, name: &str) -> Result<(), SecretStoreError>;
+    async fn delete(&self, name: &str) -> Result<(), SecretStoreError>;
 }
 
 // --- Errors ---
@@ -80,14 +83,15 @@ impl Default for InMemorySecretStore {
     }
 }
 
+#[async_trait]
 impl SecretStore for InMemorySecretStore {
-    fn put(&self, name: &str, value: &[u8]) -> Result<(), SecretStoreError> {
+    async fn put(&self, name: &str, value: &[u8]) -> Result<(), SecretStoreError> {
         let mut secrets = self.secrets.lock().unwrap();
         secrets.insert(name.to_string(), value.to_vec());
         Ok(())
     }
 
-    fn get(&self, name: &str) -> Result<Vec<u8>, SecretStoreError> {
+    async fn get(&self, name: &str) -> Result<Vec<u8>, SecretStoreError> {
         let secrets = self.secrets.lock().unwrap();
         secrets
             .get(name)
@@ -95,12 +99,12 @@ impl SecretStore for InMemorySecretStore {
             .ok_or_else(|| SecretStoreError::NotFound(name.to_string()))
     }
 
-    fn exists(&self, name: &str) -> Result<bool, SecretStoreError> {
+    async fn exists(&self, name: &str) -> Result<bool, SecretStoreError> {
         let secrets = self.secrets.lock().unwrap();
         Ok(secrets.contains_key(name))
     }
 
-    fn delete(&self, name: &str) -> Result<(), SecretStoreError> {
+    async fn delete(&self, name: &str) -> Result<(), SecretStoreError> {
         let mut secrets = self.secrets.lock().unwrap();
         if secrets.remove(name).is_some() {
             Ok(())
