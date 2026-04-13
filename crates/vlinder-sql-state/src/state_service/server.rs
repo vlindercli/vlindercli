@@ -120,6 +120,7 @@ impl StateService for StateServiceServer {
                 &SessionId::try_from(req.session_id).map_err(Status::invalid_argument)?,
                 fork_point.as_ref(),
             )
+            .await
             .map_err(Status::internal)?;
         Ok(Response::new(CreateBranchResponse { id: id.as_i64() }))
     }

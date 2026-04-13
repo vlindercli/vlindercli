@@ -107,7 +107,7 @@ impl DagStore for GrpcStateClient {
     // Branch methods
     // -------------------------------------------------------------------------
 
-    fn create_branch(
+    async fn create_branch(
         &self,
         name: &str,
         session_id: &vlinder_core::domain::SessionId,
@@ -119,9 +119,9 @@ impl DagStore for GrpcStateClient {
             fork_point: fork_point.map(std::string::ToString::to_string),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.create_branch(request).await })
+        let response = client
+            .create_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
         Ok(BranchId::from(response.into_inner().id))
     }

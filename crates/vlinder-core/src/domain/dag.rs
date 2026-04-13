@@ -446,7 +446,7 @@ pub trait DagStore: Send + Sync {
     // -------------------------------------------------------------------------
 
     /// Create a new branch. Returns the auto-generated ID.
-    fn create_branch(
+    async fn create_branch(
         &self,
         name: &str,
         session_id: &super::SessionId,
@@ -769,7 +769,7 @@ impl DagStore for InMemoryDagStore {
             .collect())
     }
 
-    fn create_branch(
+    async fn create_branch(
         &self,
         name: &str,
         session_id: &super::SessionId,

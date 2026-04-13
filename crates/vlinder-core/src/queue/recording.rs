@@ -469,6 +469,7 @@ impl MessageQueue for RecordingQueue {
         match self
             .store
             .create_branch(&msg.branch_name, &key.session, Some(&msg.fork_point))
+            .await
         {
             Ok(id) => {
                 tracing::info!(
@@ -550,13 +551,14 @@ impl MessageQueue for RecordingQueue {
         if let Err(e) = self.store.create_session(&session) {
             tracing::warn!(error = %e, "Failed to persist session");
         }
-        let default_branch = self
-            .store
-            .create_branch("main", &key.session, None)
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Failed to create default branch");
-                placeholder_branch
-            });
+        let default_branch = {
+            let rt = Runtime::new().expect("Failed to create tokio runtime for send_session_start");
+            rt.block_on(self.store.create_branch("main", &key.session, None))
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to create default branch");
+                    placeholder_branch
+                })
+        };
         if let Err(e) = self
             .store
             .update_session_default_branch(&key.session, default_branch)
@@ -764,10 +766,13 @@ mod tests {
     };
     use crate::queue::InMemoryQueue;
 
-    fn test_store() -> Arc<dyn DagStore> {
+    async fn test_store() -> Arc<dyn DagStore> {
         let store = Arc::new(InMemoryDagStore::new());
         // Seed "main" branch (id=1) — mirrors production setup.
-        store.create_branch("main", &test_session(), None).unwrap();
+        store
+            .create_branch("main", &test_session(), None)
+            .await
+            .unwrap();
         store
     }
 
@@ -834,7 +839,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_invoke_records_dag_node() {
-        let store = test_store();
+        let store = test_store().await;
         let queue = test_queue(Arc::clone(&store));
 
         let (key, msg) = test_invoke();
@@ -850,7 +855,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_complete_records_dag_node() {
-        let store = test_store();
+        let store = test_store().await;
         let queue = test_queue(Arc::clone(&store));
 
         let (key, msg) = test_complete();
@@ -865,7 +870,7 @@ mod tests {
 
     #[tokio::test]
     async fn same_timeline_chains_across_sessions() {
-        let store = test_store();
+        let store = test_store().await;
         let queue = test_queue(Arc::clone(&store));
 
         // Two sessions on the same timeline chain sequentially via the
@@ -898,7 +903,7 @@ mod tests {
 
     #[tokio::test]
     async fn receive_methods_delegate_through() {
-        let store = test_store();
+        let store = test_store().await;
         let inner = Arc::new(InMemoryQueue::new());
         let queue = RecordingQueue::new(
             Arc::clone(&inner) as Arc<dyn MessageQueue + Send + Sync>,
@@ -936,7 +941,7 @@ mod tests {
             fn get_children(&self, _: &crate::domain::DagNodeId) -> Result<Vec<DagNode>, String> {
                 Ok(vec![])
             }
-            fn create_branch(
+            async fn create_branch(
                 &self,
                 _: &str,
                 _: &crate::domain::SessionId,
@@ -1018,7 +1023,7 @@ mod tests {
 
     #[tokio::test]
     async fn invoke_with_dag_parent_overrides_chain() {
-        let store = test_store();
+        let store = test_store().await;
         let queue = test_queue(Arc::clone(&store));
 
         // Send a normal invoke first to populate the chain

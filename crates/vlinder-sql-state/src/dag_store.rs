@@ -605,7 +605,7 @@ impl DagStore for SqliteDagStore {
     // Branch methods
     // -------------------------------------------------------------------------
 
-    fn create_branch(
+    async fn create_branch(
         &self,
         name: &str,
         session_id: &SessionId,
@@ -1299,7 +1299,7 @@ mod tests {
     use super::*;
     use vlinder_core::domain::{hash_dag_node, BranchId, Snapshot, SubmissionId};
 
-    fn test_store() -> (SqliteDagStore, tempfile::TempDir) {
+    async fn test_store() -> (SqliteDagStore, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.db");
         let store = SqliteDagStore::open(&path).unwrap();
@@ -1312,7 +1312,7 @@ mod tests {
             created_at: Utc::now(),
         };
         store.create_session(&session).unwrap();
-        store.create_branch("main", &sess(), None).unwrap();
+        store.create_branch("main", &sess(), None).await.unwrap();
         (store, dir)
     }
 
@@ -1342,7 +1342,7 @@ mod tests {
 
     #[tokio::test]
     async fn round_trip_insert_get() {
-        let (store, _dir) = test_store();
+        let (store, _dir) = test_store().await;
         let node = test_node(b"hello", &DagNodeId::root());
 
         store.insert_node(&node).unwrap();
@@ -1354,7 +1354,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_node_returns_none_for_unknown() {
-        let (store, _dir) = test_store();
+        let (store, _dir) = test_store().await;
         assert_eq!(
             store
                 .get_node(&DagNodeId::from("nonexistent".to_string()))
@@ -1366,7 +1366,7 @@ mod tests {
 
     #[tokio::test]
     async fn idempotent_insert() {
-        let (store, _dir) = test_store();
+        let (store, _dir) = test_store().await;
         let node = test_node(b"data", &DagNodeId::root());
 
         store.insert_node(&node).unwrap();
@@ -1376,9 +1376,9 @@ mod tests {
         assert_eq!(retrieved.id, node.id);
     }
 
-    #[test]
-    fn get_children() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_children() {
+        let (store, _dir) = test_store().await;
 
         let parent = test_node(b"parent", &DagNodeId::root());
 
@@ -1409,9 +1409,9 @@ mod tests {
         assert_eq!(root_children[0].id, parent.id);
     }
 
-    #[test]
-    fn different_sessions_are_isolated() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn different_sessions_are_isolated() {
+        let (store, _dir) = test_store().await;
 
         let sess1 =
             SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
@@ -1427,7 +1427,7 @@ mod tests {
             created_at: Utc::now(),
         };
         store.create_session(&session2).unwrap();
-        store.create_branch("main", &sess2, None).unwrap();
+        store.create_branch("main", &sess2, None).await.unwrap();
 
         let id_a = hash_dag_node(b"a", &DagNodeId::root(), &MessageType::Fork, &[], &sess1);
         let node_a = DagNode {
@@ -1471,14 +1471,15 @@ mod tests {
     // Timeline tests (ADR 093)
     // ========================================================================
 
-    #[test]
-    fn create_timeline_returns_auto_id() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn create_timeline_returns_auto_id() {
+        let (store, _dir) = test_store().await;
 
         let session_id = sess();
         let fork = DagNodeId::from("abc123".to_string());
         let id = store
             .create_branch("repair-1", &session_id, Some(&fork))
+            .await
             .unwrap();
         assert!(id.as_i64() >= 1);
 
@@ -1489,24 +1490,25 @@ mod tests {
         assert!(tl.broken_at.is_none());
     }
 
-    #[test]
-    fn create_timeline_with_parent() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn create_timeline_with_parent() {
+        let (store, _dir) = test_store().await;
 
         let session_id = sess();
         // "main" branch already created by test_store()
         let fork = DagNodeId::from("abc123".to_string());
         let fork_id = store
             .create_branch("repair-1", &session_id, Some(&fork))
+            .await
             .unwrap();
 
         let tl = store.get_branch(fork_id).unwrap().unwrap();
         assert_eq!(tl.fork_point, Some(fork));
     }
 
-    #[test]
-    fn get_timeline_by_branch() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_timeline_by_branch() {
+        let (store, _dir) = test_store().await;
         let session_id = sess();
         // "main" branch already created by test_store()
 
@@ -1522,7 +1524,7 @@ mod tests {
 
     #[tokio::test]
     async fn latest_node_on_branch_returns_none_for_empty() {
-        let (store, _dir) = test_store();
+        let (store, _dir) = test_store().await;
         let result = store
             .latest_node_on_branch(BranchId::from(1), None)
             .await
@@ -1532,7 +1534,7 @@ mod tests {
 
     #[tokio::test]
     async fn latest_node_on_branch_returns_most_recent() {
-        let (store, _dir) = test_store();
+        let (store, _dir) = test_store().await;
 
         let node1 = test_node(b"first", &DagNodeId::root());
         store.insert_node(&node1).unwrap();
@@ -1564,9 +1566,9 @@ mod tests {
     // Session CRUD tests
     // ========================================================================
 
-    #[test]
-    fn create_and_get_session() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn create_and_get_session() {
+        let (store, _dir) = test_store().await;
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
             "pensieve",
@@ -1585,9 +1587,9 @@ mod tests {
         assert_eq!(retrieved.name, session.name);
     }
 
-    #[test]
-    fn get_session_by_name() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_session_by_name() {
+        let (store, _dir) = test_store().await;
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
             "pensieve",
@@ -1605,22 +1607,22 @@ mod tests {
         assert_eq!(retrieved.agent, "pensieve");
     }
 
-    #[test]
-    fn get_session_returns_none_for_unknown() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_session_returns_none_for_unknown() {
+        let (store, _dir) = test_store().await;
         let sid = SessionId::try_from("00000000-0000-0000-0000-000000000000".to_string()).unwrap();
         assert!(store.get_session(&sid).unwrap().is_none());
     }
 
-    #[test]
-    fn get_session_by_name_returns_none_for_unknown() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_session_by_name_returns_none_for_unknown() {
+        let (store, _dir) = test_store().await;
         assert!(store.get_session_by_name("nonexistent").unwrap().is_none());
     }
 
-    #[test]
-    fn create_session_is_idempotent() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn create_session_is_idempotent() {
+        let (store, _dir) = test_store().await;
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
             "pensieve",
@@ -1641,7 +1643,7 @@ mod tests {
         // Verify a raw insert with only the slimmed columns round-trips.
         use diesel::connection::SimpleConnection;
 
-        let (store, _dir) = test_store();
+        let (store, _dir) = test_store().await;
         {
             let mut conn = store.conn.lock().unwrap();
             conn.batch_execute(
@@ -1662,7 +1664,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_deploy_agent_node_round_trip() {
-        let (store, _dir) = test_store();
+        let (store, _dir) = test_store().await;
 
         let manifest = vlinder_core::domain::AgentManifest {
             name: "test-agent".to_string(),
@@ -1705,7 +1707,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_delete_agent_node_round_trip() {
-        let (store, _dir) = test_store();
+        let (store, _dir) = test_store().await;
 
         let msg = vlinder_core::domain::DeleteAgentMessage::new(
             vlinder_core::domain::AgentName::new("echo"),
@@ -1735,17 +1737,17 @@ mod tests {
     // Idempotency guard (ADR 125)
     // ========================================================================
 
-    #[test]
-    fn exists_in_submission_returns_false_when_empty() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_false_when_empty() {
+        let (store, _dir) = test_store().await;
         assert!(!store
             .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
             .unwrap());
     }
 
-    #[test]
-    fn exists_in_submission_returns_true_when_matching_node_exists() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_true_when_matching_node_exists() {
+        let (store, _dir) = test_store().await;
 
         let mut node = test_node(b"payload", &DagNodeId::root());
         node.msg_type = MessageType::Complete;
@@ -1756,9 +1758,9 @@ mod tests {
             .unwrap());
     }
 
-    #[test]
-    fn exists_in_submission_returns_false_for_wrong_type() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_false_for_wrong_type() {
+        let (store, _dir) = test_store().await;
 
         let mut node = test_node(b"payload", &DagNodeId::root());
         node.msg_type = MessageType::Invoke;
@@ -1769,9 +1771,9 @@ mod tests {
             .unwrap());
     }
 
-    #[test]
-    fn exists_in_submission_returns_false_for_wrong_branch() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_false_for_wrong_branch() {
+        let (store, _dir) = test_store().await;
 
         let mut node = test_node(b"payload", &DagNodeId::root());
         node.msg_type = MessageType::Complete;
@@ -1782,9 +1784,9 @@ mod tests {
             .unwrap());
     }
 
-    #[test]
-    fn exists_in_submission_returns_false_for_wrong_submission() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_false_for_wrong_submission() {
+        let (store, _dir) = test_store().await;
 
         let mut node = test_node(b"payload", &DagNodeId::root());
         node.msg_type = MessageType::Complete;
