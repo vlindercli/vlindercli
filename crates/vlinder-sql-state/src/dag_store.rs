@@ -636,7 +636,7 @@ impl DagStore for SqliteDagStore {
         Ok(BranchId::from(id))
     }
 
-    fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String> {
+    async fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String> {
         use crate::schema::branches;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1047,7 +1047,8 @@ impl DagStore for SqliteDagStore {
 
         // Look up branch BEFORE locking conn (get_branch_by_name also locks conn)
         let branch_id = self
-            .get_branch_by_name(&msg.branch_name)?
+            .get_branch_by_name(&msg.branch_name)
+            .await?
             .map_or(vlinder_core::domain::BranchId::from(1), |b| b.id);
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1512,10 +1513,14 @@ mod tests {
         let session_id = sess();
         // "main" branch already created by test_store()
 
-        let tl = store.get_branch_by_name("main").unwrap().unwrap();
+        let tl = store.get_branch_by_name("main").await.unwrap().unwrap();
         assert_eq!(tl.session_id, session_id);
 
-        assert!(store.get_branch_by_name("nonexistent").unwrap().is_none());
+        assert!(store
+            .get_branch_by_name("nonexistent")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     // ========================================================================

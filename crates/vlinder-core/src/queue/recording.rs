@@ -505,6 +505,7 @@ impl MessageQueue for RecordingQueue {
         let old_main = self
             .store
             .get_branch_by_name("main")
+            .await
             .ok()
             .flatten()
             .filter(|b| b.session_id == key.session);
@@ -953,7 +954,10 @@ mod tests {
             ) -> Result<crate::domain::BranchId, String> {
                 Ok(crate::domain::BranchId::from(0))
             }
-            fn get_branch_by_name(&self, _: &str) -> Result<Option<crate::domain::Branch>, String> {
+            async fn get_branch_by_name(
+                &self,
+                _: &str,
+            ) -> Result<Option<crate::domain::Branch>, String> {
                 Ok(None)
             }
             async fn get_branch(

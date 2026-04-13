@@ -133,6 +133,7 @@ impl StateService for StateServiceServer {
         let branch = self
             .store
             .get_branch_by_name(&req.name)
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
         Ok(Response::new(GetBranchResponse { branch }))

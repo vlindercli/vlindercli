@@ -345,8 +345,9 @@ fn resolve_branch(
 ) {
     let store = require_dag_store(config);
 
-    let branch = store
-        .get_branch_by_name(branch_name)
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let branch = rt
+        .block_on(store.get_branch_by_name(branch_name))
         .unwrap_or_else(|e| {
             eprintln!("Failed to look up branch: {e}");
             std::process::exit(1);

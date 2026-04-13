@@ -255,9 +255,11 @@ fn promote(session_id_or_name: &str, branch_name: &str) {
     let store = require_dag_store(&config);
     let session_id = resolve_session_id(&*store, session_id_or_name);
 
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
     // Verify the branch exists and belongs to this session
-    let branch = store
-        .get_branch_by_name(branch_name)
+    let branch = rt
+        .block_on(store.get_branch_by_name(branch_name))
         .unwrap_or_else(|e| {
             eprintln!("Failed to look up branch: {e}");
             std::process::exit(1);
@@ -286,8 +288,6 @@ fn promote(session_id_or_name: &str, branch_name: &str) {
     let params = PromoteParams {
         agent_name: AgentName::new(agent_name),
     };
-
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(harness.promote_timeline(params, session_id, branch.id))
         .unwrap_or_else(|e| {
             eprintln!("Failed to promote timeline: {e}");
