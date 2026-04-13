@@ -944,7 +944,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(dag_node_row_to_domain))
     }
 
-    fn rename_branch(&self, id: BranchId, new_name: &str) -> Result<(), String> {
+    async fn rename_branch(&self, id: BranchId, new_name: &str) -> Result<(), String> {
         use crate::schema::branches;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");

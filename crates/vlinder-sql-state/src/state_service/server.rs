@@ -796,6 +796,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .rename_branch(vlinder_core::domain::BranchId::from(req.id), &req.new_name)
+            .await
         {
             Ok(()) => Ok(Response::new(RenameBranchResponse {
                 success: true,

@@ -518,7 +518,7 @@ pub trait DagStore: Send + Sync {
     ) -> Result<Option<DagNode>, String>;
 
     /// Rename a branch.
-    fn rename_branch(&self, id: super::BranchId, new_name: &str) -> Result<(), String>;
+    async fn rename_branch(&self, id: super::BranchId, new_name: &str) -> Result<(), String>;
 
     /// Mark a branch as broken (sealed). Sets `broken_at` to the given timestamp.
     async fn seal_branch(
@@ -884,7 +884,7 @@ impl DagStore for InMemoryDagStore {
             .cloned())
     }
 
-    fn rename_branch(&self, id: super::BranchId, new_name: &str) -> Result<(), String> {
+    async fn rename_branch(&self, id: super::BranchId, new_name: &str) -> Result<(), String> {
         let mut branches = self.branches.lock().unwrap();
         let branch = branches
             .iter_mut()

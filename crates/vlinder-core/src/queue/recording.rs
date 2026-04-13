@@ -515,13 +515,13 @@ impl MessageQueue for RecordingQueue {
             if let Err(e) = self.store.seal_branch(old.id, chrono::Utc::now()).await {
                 tracing::warn!(error = %e, branch = old.id.as_i64(), "Failed to seal old main");
             }
-            if let Err(e) = self.store.rename_branch(old.id, &sealed_name) {
+            if let Err(e) = self.store.rename_branch(old.id, &sealed_name).await {
                 tracing::warn!(error = %e, branch = old.id.as_i64(), "Failed to rename old main");
             }
         }
 
         if let Some(promoted) = branch_to_promote {
-            if let Err(e) = self.store.rename_branch(promoted.id, "main") {
+            if let Err(e) = self.store.rename_branch(promoted.id, "main").await {
                 tracing::warn!(error = %e, "Failed to rename promoted branch to main");
             }
             if let Err(e) = self
@@ -994,7 +994,11 @@ mod tests {
             ) -> Result<Option<crate::domain::Session>, String> {
                 Ok(None)
             }
-            fn rename_branch(&self, _: crate::domain::BranchId, _: &str) -> Result<(), String> {
+            async fn rename_branch(
+                &self,
+                _: crate::domain::BranchId,
+                _: &str,
+            ) -> Result<(), String> {
                 Ok(())
             }
             async fn seal_branch(

@@ -790,7 +790,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn rename_branch(
+    async fn rename_branch(
         &self,
         id: vlinder_core::domain::BranchId,
         new_name: &str,
@@ -800,9 +800,9 @@ impl DagStore for GrpcStateClient {
             new_name: new_name.to_string(),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.rename_branch(request).await })
+        let response = client
+            .rename_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         if resp.success {
