@@ -348,7 +348,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn insert_complete_node(
+    async fn insert_complete_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,

@@ -350,7 +350,11 @@ impl MessageQueue for AmqpQueue {
         Ok((rk, payload, ack))
     }
 
-    fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
+    async fn send_complete(
+        &self,
+        key: DataRoutingKey,
+        msg: CompleteMessage,
+    ) -> Result<(), QueueError> {
         let DataMessageKind::Complete {
             ref agent, harness, ..
         } = key.kind
@@ -366,9 +370,7 @@ impl MessageQueue for AmqpQueue {
         );
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize complete: {e}")))?;
-        self.inner
-            .runtime
-            .block_on(self.publish(&rk, msg.id.as_str(), &payload))
+        self.publish(&rk, msg.id.as_str(), &payload).await
     }
 
     async fn send_request(

@@ -302,7 +302,7 @@ pub trait DagStore: Send + Sync {
 
     /// Insert a typed complete node. Writes to `dag_nodes` + `complete_nodes`.
     #[allow(clippy::too_many_arguments)]
-    fn insert_complete_node(
+    async fn insert_complete_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -633,7 +633,7 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn insert_complete_node(
+    async fn insert_complete_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,

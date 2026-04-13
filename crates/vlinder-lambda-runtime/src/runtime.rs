@@ -280,7 +280,7 @@ impl LambdaRuntime {
                             diagnostics: RuntimeDiagnostics::placeholder(0),
                             payload: format!("[error] Lambda invoke failed: {e}").into_bytes(),
                         };
-                        let _ = self.queue.send_complete(complete_key, complete);
+                        let _ = self.queue.send_complete(complete_key, complete).await;
                     }
                 }
             }

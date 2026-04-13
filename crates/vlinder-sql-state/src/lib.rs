@@ -473,6 +473,7 @@ mod tests {
                 HarnessType::Cli,
                 &complete_msg,
             )
+            .await
             .unwrap();
 
         // Create a session so the viewer can look it up

@@ -106,8 +106,12 @@ impl MessageQueue for LambdaRuntimeQueue {
     // Everything else delegates to the inner queue
     // -------------------------------------------------------------------------
 
-    fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
-        self.inner.send_complete(key, msg)
+    async fn send_complete(
+        &self,
+        key: DataRoutingKey,
+        msg: CompleteMessage,
+    ) -> Result<(), QueueError> {
+        self.inner.send_complete(key, msg).await
     }
 
     async fn receive_complete(

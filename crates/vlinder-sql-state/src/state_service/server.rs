@@ -490,18 +490,22 @@ impl StateService for StateServiceServer {
             payload: req.payload,
         };
 
-        match self.store.insert_complete_node(
-            &dag_id,
-            &parent_id,
-            created_at,
-            &snapshot,
-            &session,
-            &submission,
-            branch,
-            &agent,
-            harness,
-            &msg,
-        ) {
+        match self
+            .store
+            .insert_complete_node(
+                &dag_id,
+                &parent_id,
+                created_at,
+                &snapshot,
+                &session,
+                &submission,
+                branch,
+                &agent,
+                harness,
+                &msg,
+            )
+            .await
+        {
             Ok(()) => Ok(Response::new(InsertCompleteNodeResponse {
                 success: true,
                 error: None,

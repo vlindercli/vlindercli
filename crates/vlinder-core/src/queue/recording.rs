@@ -155,18 +155,22 @@ impl RecordingQueue {
             return;
         };
 
-        if let Err(e) = self.store.insert_complete_node(
-            &id,
-            &parent_id,
-            Utc::now(),
-            &state,
-            &key.session,
-            &key.submission,
-            key.branch,
-            agent,
-            *harness,
-            msg,
-        ) {
+        if let Err(e) = self
+            .store
+            .insert_complete_node(
+                &id,
+                &parent_id,
+                Utc::now(),
+                &state,
+                &key.session,
+                &key.submission,
+                key.branch,
+                agent,
+                *harness,
+                msg,
+            )
+            .await
+        {
             tracing::warn!(
                 dag_id = %id,
                 submission = %key.submission,
@@ -377,11 +381,13 @@ impl MessageQueue for RecordingQueue {
         self.inner.receive_invoke(agent).await
     }
 
-    fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
-        // Record to typed table before forwarding
-        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
-        rt.block_on(self.record_complete(&key, &msg));
-        self.inner.send_complete(key, msg)
+    async fn send_complete(
+        &self,
+        key: DataRoutingKey,
+        msg: CompleteMessage,
+    ) -> Result<(), QueueError> {
+        self.record_complete(&key, &msg).await;
+        self.inner.send_complete(key, msg).await
     }
 
     async fn send_request(
@@ -837,15 +843,15 @@ mod tests {
         assert_eq!(nodes[0].parent_id, DagNodeId::root());
     }
 
-    #[test]
-    fn send_complete_records_dag_node() {
+    #[tokio::test]
+    async fn send_complete_records_dag_node() {
         let store = test_store();
         let queue = test_queue(Arc::clone(&store));
 
         let (key, msg) = test_complete();
         let sid = key.session.clone();
 
-        queue.send_complete(key, msg).unwrap();
+        queue.send_complete(key, msg).await.unwrap();
 
         let nodes = store.get_session_nodes(&sid).unwrap();
         assert_eq!(nodes.len(), 1);

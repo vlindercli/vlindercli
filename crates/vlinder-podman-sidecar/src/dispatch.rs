@@ -54,7 +54,8 @@ pub async fn handle_invoke(
                 result.output,
                 result.state,
                 diagnostics,
-            );
+            )
+            .await;
         }
         Err(e) => {
             tracing::warn!(event = "dispatch.error", error = %e, "Dispatch failed");
@@ -65,7 +66,8 @@ pub async fn handle_invoke(
                 format!("[error] {e}").into_bytes(),
                 None,
                 RuntimeDiagnostics::placeholder(0),
-            );
+            )
+            .await;
         }
     }
 }

@@ -134,25 +134,25 @@ fn dispatch_loop(
                             .unwrap_or_else(|_| "unknown".to_string());
                         let diagnostics =
                             build_lambda_diagnostics(function_name, &region, result.duration_ms);
-                        shared::send_complete(
+                        rt.block_on(shared::send_complete(
                             queue.as_ref(),
                             &key,
                             agent,
                             result.output,
                             result.state,
                             diagnostics,
-                        );
+                        ));
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Dispatch failed");
-                        shared::send_complete(
+                        rt.block_on(shared::send_complete(
                             queue.as_ref(),
                             &key,
                             agent,
                             format!("[error] {e}").into_bytes(),
                             None,
                             vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
-                        );
+                        ));
                     }
                 }
                 if let Err(e) = rt.block_on(ack()) {

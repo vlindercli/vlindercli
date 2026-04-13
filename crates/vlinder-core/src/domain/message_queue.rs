@@ -96,7 +96,11 @@ pub trait MessageQueue: Send + Sync {
     // -------------------------------------------------------------------------
 
     /// Send a complete on the data plane (ADR 121).
-    fn send_complete(&self, _key: DataRoutingKey, _msg: CompleteMessage) -> Result<(), QueueError> {
+    async fn send_complete(
+        &self,
+        _key: DataRoutingKey,
+        _msg: CompleteMessage,
+    ) -> Result<(), QueueError> {
         Err(QueueError::SendFailed(
             "send_complete not implemented".into(),
         ))

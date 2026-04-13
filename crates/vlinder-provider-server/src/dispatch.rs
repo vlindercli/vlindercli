@@ -98,7 +98,7 @@ pub async fn dispatch_invoke(
 }
 
 /// Build and send a `CompleteMessage` on the data plane.
-pub fn send_complete(
+pub async fn send_complete(
     queue: &dyn MessageQueue,
     key: &DataRoutingKey,
     agent: &AgentName,
@@ -125,7 +125,7 @@ pub fn send_complete(
         diagnostics,
         payload: output,
     };
-    if let Err(e) = queue.send_complete(complete_key, msg) {
+    if let Err(e) = queue.send_complete(complete_key, msg).await {
         tracing::error!(error = %e, "failed to send complete");
     }
 }
