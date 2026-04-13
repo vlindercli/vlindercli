@@ -260,6 +260,7 @@ async fn render_session(
     ))
 }
 
+#[cfg(feature = "server")]
 async fn render_node(
     store: &dyn DagStore,
     node: &vlinder_core::domain::DagNode,
