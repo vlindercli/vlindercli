@@ -103,7 +103,7 @@ impl Harness for GrpcHarnessClient {
         }
     }
 
-    fn fork_timeline(
+    async fn fork_timeline(
         &self,
         params: ForkParams,
         session_id: SessionId,
@@ -118,9 +118,9 @@ impl Harness for GrpcHarnessClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.fork_timeline(request).await })
+        let response = client
+            .fork_timeline(request)
+            .await
             .map_err(|e| format!("gRPC error: {e}"))?;
 
         let resp = response.into_inner();

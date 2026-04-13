@@ -370,7 +370,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Insert a typed fork node. Writes to `dag_nodes` + `fork_nodes`.
-    fn insert_fork_node(
+    async fn insert_fork_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,

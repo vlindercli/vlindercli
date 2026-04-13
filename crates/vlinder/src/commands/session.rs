@@ -237,8 +237,7 @@ fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
         fork_point: node.id.clone(),
     };
 
-    harness
-        .fork_timeline(params, session_id, timeline)
+    rt.block_on(harness.fork_timeline(params, session_id, timeline))
         .unwrap_or_else(|e| {
             eprintln!("Failed to fork timeline: {e}");
             std::process::exit(1);

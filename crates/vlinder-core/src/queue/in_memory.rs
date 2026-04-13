@@ -212,7 +212,11 @@ impl MessageQueue for InMemoryQueue {
         Err(QueueError::Timeout)
     }
 
-    fn send_fork(&self, _key: SessionRoutingKey, _msg: ForkMessage) -> Result<(), QueueError> {
+    async fn send_fork(
+        &self,
+        _key: SessionRoutingKey,
+        _msg: ForkMessage,
+    ) -> Result<(), QueueError> {
         // Fire-and-forget — no consumer subscribes.
         Ok(())
     }

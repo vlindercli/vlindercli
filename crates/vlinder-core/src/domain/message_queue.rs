@@ -172,7 +172,7 @@ pub trait MessageQueue: Send + Sync {
     // -------------------------------------------------------------------------
 
     /// Send a fork on the session plane.
-    fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError>;
+    async fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError>;
 
     /// Receive a fork from the session plane.
     async fn receive_fork(
@@ -468,7 +468,7 @@ mod routing_contract_proofs {
         ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
             Err(QueueError::Timeout)
         }
-        fn send_fork(&self, _: SessionRoutingKey, _: ForkMessage) -> Result<(), QueueError> {
+        async fn send_fork(&self, _: SessionRoutingKey, _: ForkMessage) -> Result<(), QueueError> {
             Ok(())
         }
         fn send_promote(&self, _: SessionRoutingKey, _: PromoteMessage) -> Result<(), QueueError> {
@@ -534,7 +534,7 @@ mod routing_contract_proofs {
         ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
             Err(QueueError::Timeout)
         }
-        fn send_fork(&self, _: SessionRoutingKey, _: ForkMessage) -> Result<(), QueueError> {
+        async fn send_fork(&self, _: SessionRoutingKey, _: ForkMessage) -> Result<(), QueueError> {
             Ok(())
         }
         fn send_promote(&self, _: SessionRoutingKey, _: PromoteMessage) -> Result<(), QueueError> {

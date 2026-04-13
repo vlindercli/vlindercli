@@ -52,7 +52,7 @@ pub trait Harness {
     ///
     /// Fire-and-forget: both SQL (via `RecordingQueue`) and git (via
     /// `GitDagWorker`) react to the message. No response is expected.
-    fn fork_timeline(
+    async fn fork_timeline(
         &self,
         params: ForkParams,
         session_id: SessionId,
@@ -320,7 +320,7 @@ impl Harness for CoreHarness {
         Ok(result)
     }
 
-    fn fork_timeline(
+    async fn fork_timeline(
         &self,
         params: ForkParams,
         session_id: SessionId,
@@ -337,6 +337,7 @@ impl Harness for CoreHarness {
 
         self.queue
             .send_fork(key, msg)
+            .await
             .map_err(|e| format!("queue error: {e}"))
     }
 

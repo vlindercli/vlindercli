@@ -1029,7 +1029,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(session_row_to_domain))
     }
 
-    fn insert_fork_node(
+    async fn insert_fork_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,

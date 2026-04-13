@@ -701,6 +701,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .insert_fork_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+            .await
         {
             Ok(()) => Ok(Response::new(InsertForkNodeResponse {
                 success: true,

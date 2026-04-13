@@ -449,16 +449,14 @@ impl MessageQueue for AmqpQueue {
         self.publish(&rk, msg.id.as_str(), &payload).await
     }
 
-    fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
+    async fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
         let SessionMessageKind::Fork { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Fork kind".into()));
         };
         let rk = routing::fork_routing_key(&key, agent_name);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize fork: {e}")))?;
-        self.inner
-            .runtime
-            .block_on(self.publish(&rk, msg.id.as_str(), &payload))
+        self.publish(&rk, msg.id.as_str(), &payload).await
     }
 
     fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {

@@ -162,8 +162,8 @@ impl MessageQueue for LambdaRuntimeQueue {
             .await
     }
 
-    fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
-        self.inner.send_fork(key, msg)
+    async fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
+        self.inner.send_fork(key, msg).await
     }
 
     fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {

@@ -462,9 +462,8 @@ impl MessageQueue for RecordingQueue {
     // Session plane
     // -------------------------------------------------------------------------
 
-    fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
-        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
-        rt.block_on(self.record_fork(&key, &msg));
+    async fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
+        self.record_fork(&key, &msg).await;
 
         // Create the branch row
         match self
@@ -488,7 +487,7 @@ impl MessageQueue for RecordingQueue {
         }
 
         // Forward to inner (fire-and-forget)
-        let _ = self.inner.send_fork(key, msg);
+        let _ = self.inner.send_fork(key, msg).await;
         Ok(())
     }
 
@@ -634,9 +633,10 @@ impl RecordingQueue {
 
         let id = hash_dag_node(&[], &parent_id, &MessageType::Fork, &[], &key.session);
 
-        if let Err(e) =
-            self.store
-                .insert_fork_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
+        if let Err(e) = self
+            .store
+            .insert_fork_node(&id, &parent_id, Utc::now(), &parent_state, key, msg)
+            .await
         {
             tracing::warn!(
                 dag_id = %id,

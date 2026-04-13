@@ -103,19 +103,15 @@ impl HarnessService for HarnessServer {
         let req = request.into_inner();
         let harness = Arc::clone(&self.harness);
 
-        let result = tokio::task::spawn_blocking(move || {
-            let params = ForkParams {
-                agent_name: AgentName::new(req.agent_name),
-                branch_name: req.branch_name,
-                fork_point: DagNodeId::from(req.fork_point),
-            };
-            let session_id = SessionId::try_from(req.session_id)
-                .map_err(|e| format!("invalid session_id: {e}"))?;
-            let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
-            harness.fork_timeline(params, session_id, timeline)
-        })
-        .await
-        .map_err(|e| Status::internal(format!("spawn_blocking failed: {e}")))?;
+        let params = ForkParams {
+            agent_name: AgentName::new(req.agent_name),
+            branch_name: req.branch_name,
+            fork_point: DagNodeId::from(req.fork_point),
+        };
+        let session_id = SessionId::try_from(req.session_id)
+            .map_err(|e| Status::invalid_argument(format!("invalid session_id: {e}")))?;
+        let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
+        let result = harness.fork_timeline(params, session_id, timeline).await;
 
         match result {
             Ok(()) => Ok(Response::new(ForkTimelineResponse { error: None })),
