@@ -146,6 +146,7 @@ impl StateService for StateServiceServer {
         let branch = self
             .store
             .get_branch(vlinder_core::domain::BranchId::from(req.id))
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
         Ok(Response::new(GetBranchResponse { branch }))

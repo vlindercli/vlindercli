@@ -500,7 +500,7 @@ impl MessageQueue for RecordingQueue {
         self.record_promote(&key, &msg).await;
 
         // Promote: seal old main, rename promoted branch to "main"
-        let branch_to_promote = self.store.get_branch(msg.branch_id).ok().flatten();
+        let branch_to_promote = self.store.get_branch(msg.branch_id).await.ok().flatten();
 
         let old_main = self
             .store
@@ -956,7 +956,7 @@ mod tests {
             fn get_branch_by_name(&self, _: &str) -> Result<Option<crate::domain::Branch>, String> {
                 Ok(None)
             }
-            fn get_branch(
+            async fn get_branch(
                 &self,
                 _: crate::domain::BranchId,
             ) -> Result<Option<crate::domain::Branch>, String> {

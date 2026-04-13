@@ -311,8 +311,9 @@ fn resolve_session_default(
     let session = resolve_session(&*store, session_name);
     let branch_id = session.default_branch;
 
-    let branch = store
-        .get_branch(branch_id)
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let branch = rt
+        .block_on(store.get_branch(branch_id))
         .unwrap_or_else(|e| {
             eprintln!("Failed to look up default branch: {e}");
             std::process::exit(1);

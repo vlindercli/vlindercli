@@ -142,12 +142,12 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_branch(&self, id: BranchId) -> Result<Option<Branch>, String> {
+    async fn get_branch(&self, id: BranchId) -> Result<Option<Branch>, String> {
         let request = proto::GetBranchByIdRequest { id: id.as_i64() };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_branch(request).await })
+        let response = client
+            .get_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().branch {

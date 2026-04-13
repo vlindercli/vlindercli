@@ -457,7 +457,7 @@ pub trait DagStore: Send + Sync {
     fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String>;
 
     /// Look up a branch by its integer ID.
-    fn get_branch(&self, id: super::BranchId) -> Result<Option<Branch>, String>;
+    async fn get_branch(&self, id: super::BranchId) -> Result<Option<Branch>, String>;
 
     /// List all sessions with summary information.
     fn list_sessions(&self) -> Result<Vec<SessionSummary>, String>;
@@ -794,7 +794,7 @@ impl DagStore for InMemoryDagStore {
         Ok(branches.iter().find(|b| b.name == name).cloned())
     }
 
-    fn get_branch(&self, id: super::BranchId) -> Result<Option<Branch>, String> {
+    async fn get_branch(&self, id: super::BranchId) -> Result<Option<Branch>, String> {
         let branches = self.branches.lock().unwrap();
         Ok(branches.iter().find(|b| b.id == id).cloned())
     }

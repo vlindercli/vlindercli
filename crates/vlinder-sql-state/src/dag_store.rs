@@ -650,7 +650,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(branch_row_to_domain))
     }
 
-    fn get_branch(&self, id: BranchId) -> Result<Option<Branch>, String> {
+    async fn get_branch(&self, id: BranchId) -> Result<Option<Branch>, String> {
         use crate::schema::branches;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1483,7 +1483,7 @@ mod tests {
             .unwrap();
         assert!(id.as_i64() >= 1);
 
-        let tl = store.get_branch(id).unwrap().unwrap();
+        let tl = store.get_branch(id).await.unwrap().unwrap();
         assert_eq!(tl.name, "repair-1");
         assert_eq!(tl.session_id, session_id);
         assert_eq!(tl.fork_point, Some(DagNodeId::from("abc123".to_string())));
@@ -1502,7 +1502,7 @@ mod tests {
             .await
             .unwrap();
 
-        let tl = store.get_branch(fork_id).unwrap().unwrap();
+        let tl = store.get_branch(fork_id).await.unwrap().unwrap();
         assert_eq!(tl.fork_point, Some(fork));
     }
 
