@@ -155,7 +155,7 @@ fn dispatch_loop(
                         );
                     }
                 }
-                if let Err(e) = ack() {
+                if let Err(e) = rt.block_on(ack()) {
                     tracing::error!(error = %e, "Failed to ack invocation");
                 }
             }

@@ -77,7 +77,7 @@ impl OpenRouterWorker {
         &self,
         key: &DataRoutingKey,
         msg: RequestMessage,
-        ack: Box<dyn FnOnce() -> Result<(), vlinder_core::domain::QueueError> + Send>,
+        ack: vlinder_core::domain::Acknowledgement,
     ) {
         let start = Instant::now();
         let (http_response, metrics) = self.handle(&msg.payload);
@@ -110,7 +110,7 @@ impl OpenRouterWorker {
         let _ = self
             .rt
             .block_on(self.queue.send_response(response_key, response));
-        let _ = ack();
+        let _ = self.rt.block_on(ack());
     }
 
     fn handle(&self, payload: &[u8]) -> HandlerResult {
@@ -295,7 +295,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["type"], "invalid_request_error");
         assert!(!body["error"]["message"].as_str().unwrap().is_empty());
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -326,7 +326,7 @@ mod tests {
             Some("xyz".to_string()),
             "response should echo request state"
         );
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["type"], "server_error");
         assert!(!body["error"]["message"].as_str().unwrap().is_empty());
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]

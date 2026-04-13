@@ -90,7 +90,7 @@ impl OllamaWorker {
         &self,
         key: &DataRoutingKey,
         msg: RequestMessage,
-        ack: Box<dyn FnOnce() -> Result<(), vlinder_core::domain::QueueError> + Send>,
+        ack: vlinder_core::domain::Acknowledgement,
         operation: Operation,
     ) {
         let start = Instant::now();
@@ -130,14 +130,14 @@ impl OllamaWorker {
         let _ = self
             .rt
             .block_on(self.queue.send_response(response_key, response));
-        let _ = ack();
+        let _ = self.rt.block_on(ack());
     }
 
     fn process_embed_v2(
         &self,
         key: &DataRoutingKey,
         msg: RequestMessage,
-        ack: Box<dyn FnOnce() -> Result<(), vlinder_core::domain::QueueError> + Send>,
+        ack: vlinder_core::domain::Acknowledgement,
     ) {
         let start = Instant::now();
         let (http_response, metrics) = self.handle_embed(&msg.payload);
@@ -170,7 +170,7 @@ impl OllamaWorker {
         let _ = self
             .rt
             .block_on(self.queue.send_response(response_key, response));
-        let _ = ack();
+        let _ = self.rt.block_on(ack());
     }
 
     // ---- OpenAI-compatible: /v1/chat/completions ----
@@ -474,7 +474,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.status_code, 400);
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -498,7 +498,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.state, Some("xyz".to_string()));
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -522,7 +522,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.status_code, 500);
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     // --- Operation::Chat (/api/chat) ---
@@ -540,7 +540,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.status_code, 400);
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -564,7 +564,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.state, Some("abc".to_string()));
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -588,7 +588,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.status_code, 500);
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     // --- Operation::Generate (/api/generate) ---
@@ -606,7 +606,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.status_code, 400);
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -630,7 +630,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.state, Some("def".to_string()));
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -654,7 +654,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.status_code, 500);
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     // --- Embed (/api/embed) ---
@@ -671,7 +671,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.status_code, 400);
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -694,7 +694,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.state, Some("embed-state".to_string()));
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -714,7 +714,7 @@ mod tests {
             block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
                 .unwrap();
         assert_eq!(response.status_code, 500);
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     // --- General ---

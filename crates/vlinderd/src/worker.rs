@@ -195,7 +195,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
         // Try deploy
         match rt.block_on(queue.receive_deploy_agent()) {
             Ok((_key, deploy_msg, ack)) => {
-                let _ = ack();
+                let _ = rt.block_on(ack());
                 let agent_name = deploy_msg.manifest.name.clone();
                 tracing::info!(agent = %agent_name, "Processing deploy-agent");
 
@@ -234,7 +234,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
         // Try delete
         match rt.block_on(queue.receive_delete_agent()) {
             Ok((_key, delete_msg, ack)) => {
-                let _ = ack();
+                let _ = rt.block_on(ack());
                 let agent_name = delete_msg.agent.as_str().to_string();
                 tracing::info!(agent = %agent_name, "Processing delete-agent");
 
@@ -760,7 +760,7 @@ fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
                     );
                 }
 
-                let _ = ack();
+                let _ = rt.block_on(ack());
             }
             Err(QueueError::Timeout) => {
                 std::thread::sleep(std::time::Duration::from_millis(10));

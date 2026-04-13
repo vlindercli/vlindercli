@@ -153,13 +153,7 @@ impl NatsQueue {
     async fn fetch_one(
         &self,
         filter: &str,
-    ) -> Result<
-        (
-            JetStreamMessage,
-            Box<dyn FnOnce() -> Result<(), QueueError> + Send>,
-        ),
-        QueueError,
-    > {
+    ) -> Result<(JetStreamMessage, Acknowledgement), QueueError> {
         match self.try_fetch_one(filter).await {
             Ok(result) => Ok(result),
             Err(QueueError::ReceiveFailed(ref msg)) if msg.contains("503") => {
@@ -175,13 +169,7 @@ impl NatsQueue {
     async fn try_fetch_one(
         &self,
         filter: &str,
-    ) -> Result<
-        (
-            JetStreamMessage,
-            Box<dyn FnOnce() -> Result<(), QueueError> + Send>,
-        ),
-        QueueError,
-    > {
+    ) -> Result<(JetStreamMessage, Acknowledgement), QueueError> {
         let consumer = self.get_or_create_consumer(filter).await?;
 
         let mut messages = consumer
@@ -201,18 +189,17 @@ impl NatsQueue {
         // Wrap message for ack closure
         let js_msg_for_ack: Arc<Mutex<Option<JetStreamMessage>>> =
             Arc::new(Mutex::new(Some(js_msg.clone())));
-        let handle = self.inner.runtime.handle().clone();
-
-        let ack_fn: Box<dyn FnOnce() -> Result<(), QueueError> + Send> = Box::new(move || {
-            if let Some(msg) = js_msg_for_ack.lock().unwrap().take() {
-                handle.block_on(async {
+        let ack_fn: Acknowledgement = Box::new(move || {
+            let taken = js_msg_for_ack.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(msg) = taken {
                     msg.ack()
                         .await
                         .map_err(|e| QueueError::ReceiveFailed(format!("ack failed: {e}")))
-                })
-            } else {
-                Ok(())
-            }
+                } else {
+                    Ok(())
+                }
+            })
         });
 
         Ok((js_msg, ack_fn))

@@ -3,11 +3,11 @@
 #[cfg(test)]
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
-    Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
-    DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey,
-    InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError, RequestMessage,
-    ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessage,
-    SubmissionId,
+    noop_ack, Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind,
+    DataRoutingKey, DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType,
+    InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
+    RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey,
+    SessionStartMessage, SubmissionId,
 };
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
@@ -71,7 +71,7 @@ impl MessageQueue for InMemoryQueue {
             if a == agent {
                 if let Some(msg) = queue.pop_front() {
                     let key = key.clone();
-                    return Ok((key, msg, Box::new(|| Ok(()))));
+                    return Ok((key, msg, noop_ack()));
                 }
             }
         }
@@ -108,7 +108,7 @@ impl MessageQueue for InMemoryQueue {
             };
             if let Some(msg) = queue.pop_front() {
                 let key = key.clone();
-                return Ok((key, msg, Box::new(|| Ok(()))));
+                return Ok((key, msg, noop_ack()));
             }
         }
 
@@ -150,7 +150,7 @@ impl MessageQueue for InMemoryQueue {
             if *s == service && *o == operation {
                 if let Some(msg) = queue.pop_front() {
                     let key = key.clone();
-                    return Ok((key, msg, Box::new(|| Ok(()))));
+                    return Ok((key, msg, noop_ack()));
                 }
             }
         }
@@ -200,7 +200,7 @@ impl MessageQueue for InMemoryQueue {
             if *s == service && *o == operation && *sq == sequence {
                 if let Some(msg) = queue.pop_front() {
                     let key = key.clone();
-                    return Ok((key, msg, Box::new(|| Ok(()))));
+                    return Ok((key, msg, noop_ack()));
                 }
             }
         }
@@ -313,7 +313,7 @@ mod tests {
         ));
         assert_eq!(received.payload, b"hello");
 
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
     #[tokio::test]
@@ -398,7 +398,7 @@ mod tests {
 
         assert_eq!(recv_msg, msg);
         assert_eq!(recv_key.submission, test_submission());
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
     #[tokio::test]

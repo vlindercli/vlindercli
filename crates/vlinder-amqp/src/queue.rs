@@ -162,10 +162,9 @@ impl AmqpQueue {
             let payload = delivery.data.clone();
             let delivery_tag = delivery.delivery_tag;
             let channel = self.inner.channel.clone();
-            let handle = self.inner.runtime.handle().clone();
 
             let ack_fn: Acknowledgement = Box::new(move || {
-                handle.block_on(async {
+                Box::pin(async move {
                     channel
                         .basic_ack(delivery_tag, BasicAckOptions::default())
                         .await

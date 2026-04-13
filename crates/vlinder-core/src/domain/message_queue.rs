@@ -21,7 +21,16 @@ use std::future::Future;
 use tokio::time::sleep;
 
 /// One-shot closure that acknowledges a received message was processed.
-pub type Acknowledgement = Box<dyn FnOnce() -> Result<(), QueueError> + Send>;
+pub type Acknowledgement = Box<
+    dyn FnOnce() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), QueueError>> + Send>,
+        > + Send,
+>;
+
+/// Create an `Acknowledgement` that completes immediately with `Ok(())`.
+pub fn noop_ack() -> Acknowledgement {
+    Box::new(|| Box::pin(async { Ok(()) }))
+}
 
 // --- MessageQueue Trait ---
 
@@ -287,7 +296,7 @@ where
     loop {
         match receive().await {
             Ok((reply, ack)) => {
-                let _ = ack();
+                let _ = ack().await;
                 return Ok(reply);
             }
             Err(QueueError::Timeout) => {

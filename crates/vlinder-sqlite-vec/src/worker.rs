@@ -149,7 +149,7 @@ impl SqliteVecWorker {
                 let _ = self
                     .rt
                     .block_on(self.queue.send_response(response_key, response));
-                let _ = ack();
+                let _ = self.rt.block_on(ack());
                 true
             }
             Err(_) => false,
@@ -187,7 +187,7 @@ impl SqliteVecWorker {
                 let _ = self
                     .rt
                     .block_on(self.queue.send_response(response_key, response));
-                let _ = ack();
+                let _ = self.rt.block_on(ack());
                 true
             }
             Err(_) => false,
@@ -225,7 +225,7 @@ impl SqliteVecWorker {
                 let _ = self
                     .rt
                     .block_on(self.queue.send_response(response_key, response));
-                let _ = ack();
+                let _ = self.rt.block_on(ack());
                 true
             }
             Err(_) => false,
@@ -436,7 +436,7 @@ mod tests {
             Sequence::first(),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
         assert_eq!(
             store_resp.state,
             Some("state-vec".to_string()),
@@ -468,7 +468,7 @@ mod tests {
             Sequence::from(2),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
         assert_eq!(
             search_resp.state,
             Some("state-vec2".to_string()),
@@ -526,7 +526,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
-        ack().unwrap();
+        block_on(ack()).unwrap();
 
         let search_payload = serde_json::json!({
             "vector": embedding,
@@ -555,6 +555,6 @@ mod tests {
             serde_json::from_slice(response.payload.as_slice()).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["key"], "doc1");
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 }

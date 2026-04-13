@@ -91,7 +91,7 @@ impl Sidecar {
             if let Ok((key, invoke, ack)) =
                 rt.block_on(self.dispatch.queue.receive_invoke(&agent_id))
             {
-                let _ = ack();
+                let _ = rt.block_on(ack());
                 tracing::info!(
                     event = "dispatch.started",
                     submission = %key.submission,

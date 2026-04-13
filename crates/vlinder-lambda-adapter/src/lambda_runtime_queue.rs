@@ -87,13 +87,16 @@ impl MessageQueue for LambdaRuntimeQueue {
         let runtime_api = self.runtime_api.clone();
         let http = self.http.clone();
         let ack: Acknowledgement = Box::new(move || {
-            let response_url = format!(
-                "http://{runtime_api}/2018-06-01/runtime/invocation/{request_id}/response",
-            );
-            http.post(&response_url).send_bytes(b"ok").map_err(|e| {
-                QueueError::ReceiveFailed(format!("POST invocation response failed: {e}"))
-            })?;
-            Ok(())
+            let result = (|| {
+                let response_url = format!(
+                    "http://{runtime_api}/2018-06-01/runtime/invocation/{request_id}/response",
+                );
+                http.post(&response_url).send_bytes(b"ok").map_err(|e| {
+                    QueueError::ReceiveFailed(format!("POST invocation response failed: {e}"))
+                })?;
+                Ok(())
+            })();
+            Box::pin(async move { result })
         });
 
         Ok((payload.key, payload.msg, ack))

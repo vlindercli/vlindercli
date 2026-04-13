@@ -304,7 +304,7 @@ impl Harness for CoreHarness {
                 .await
             {
                 Ok((_key, v2, ack)) => {
-                    let _ = ack();
+                    let _ = ack().await;
                     break String::from_utf8_lossy(&v2.payload).to_string();
                 }
                 Err(crate::domain::QueueError::Timeout) => {

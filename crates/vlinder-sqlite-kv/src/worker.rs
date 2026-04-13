@@ -240,7 +240,7 @@ impl KvWorker {
                 let _ = self
                     .rt
                     .block_on(self.queue.send_response(response_key, response));
-                let _ = ack();
+                let _ = self.rt.block_on(ack());
                 true
             }
             Err(_) => false,
@@ -279,7 +279,7 @@ impl KvWorker {
                 let _ = self
                     .rt
                     .block_on(self.queue.send_response(response_key, response));
-                let _ = ack();
+                let _ = self.rt.block_on(ack());
                 true
             }
             Err(_) => false,
@@ -318,7 +318,7 @@ impl KvWorker {
                 let _ = self
                     .rt
                     .block_on(self.queue.send_response(response_key, response));
-                let _ = ack();
+                let _ = self.rt.block_on(ack());
                 true
             }
             Err(_) => false,
@@ -356,7 +356,7 @@ impl KvWorker {
                 let _ = self
                     .rt
                     .block_on(self.queue.send_response(response_key, response));
-                let _ = ack();
+                let _ = self.rt.block_on(ack());
                 true
             }
             Err(_) => false,
@@ -740,7 +740,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
-        ack().unwrap();
+        block_on(ack()).unwrap();
 
         // Get request
         let get_payload = serde_json::json!({"path": "/hello.txt"});
@@ -765,7 +765,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(response.payload.as_slice(), b"hello world");
-        ack().unwrap();
+        block_on(ack()).unwrap();
     }
 
     #[test]
@@ -821,7 +821,7 @@ mod tests {
             Sequence::first(),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
 
         // Response should be JSON with a state field
         let resp: serde_json::Value = serde_json::from_slice(response.payload.as_slice()).unwrap();
@@ -879,7 +879,7 @@ mod tests {
             Sequence::first(),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
         let hash1 = state1["state"].as_str().unwrap().to_string();
 
@@ -907,7 +907,7 @@ mod tests {
             Sequence::from(2),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
         let hash2 = state2["state"].as_str().unwrap().to_string();
 
@@ -938,7 +938,7 @@ mod tests {
             Sequence::from(3),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
         assert_eq!(resp.payload.as_slice(), b"aaa");
     }
 
@@ -990,7 +990,7 @@ mod tests {
             Sequence::first(),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
         let hash1 = state1["state"].as_str().unwrap().to_string();
 
@@ -1017,7 +1017,7 @@ mod tests {
             Sequence::from(2),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
         let hash2 = state2["state"].as_str().unwrap().to_string();
 
@@ -1044,7 +1044,7 @@ mod tests {
             Sequence::from(3),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
         assert_eq!(files, vec!["/a.txt", "/b.txt"]);
 
@@ -1071,7 +1071,7 @@ mod tests {
             Sequence::from(4),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
         assert_eq!(files, vec!["/a.txt"]);
     }
@@ -1121,7 +1121,7 @@ mod tests {
             Sequence::first(),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
 
         // Get with state in envelope — should echo it back
         let get_payload = serde_json::json!({"path": "/hello.txt"});
@@ -1147,7 +1147,7 @@ mod tests {
             Sequence::from(2),
         ))
         .unwrap();
-        ack().unwrap();
+        block_on(ack()).unwrap();
 
         assert_eq!(
             response.state,

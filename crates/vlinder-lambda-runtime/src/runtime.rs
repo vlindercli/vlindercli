@@ -237,7 +237,7 @@ impl LambdaRuntime {
 
             // Receive invoke (ADR 121 — data plane).
             if let Ok((key, invoke, ack)) = self.queue.receive_invoke(&agent_id).await {
-                let _ = ack();
+                let _ = ack().await;
                 let function_name = format!("vlinder-{name}");
 
                 let DataMessageKind::Invoke { harness, agent, .. } = &key.kind else {
@@ -750,7 +750,7 @@ mod tests {
             .receive_complete(&submission, HarnessType::Grpc, &AgentName::new("echo"))
             .await
             .expect("should receive error complete from daemon");
-        ack().unwrap();
+        ack().await.unwrap();
         let payload_str = String::from_utf8_lossy(&complete.payload);
         assert!(
             payload_str.contains("[error]"),
