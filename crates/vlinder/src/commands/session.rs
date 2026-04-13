@@ -198,8 +198,9 @@ fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
     let session_id = resolve_session_id(&*store, session_id_or_name);
 
     // Verify the node exists and belongs to this session
-    let node = store
-        .get_node_by_prefix(from_hash)
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let node = rt
+        .block_on(store.get_node_by_prefix(from_hash))
         .unwrap_or_else(|e| {
             eprintln!("Failed to look up node: {e}");
             std::process::exit(1);

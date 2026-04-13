@@ -52,7 +52,7 @@ impl RecordingQueue {
         };
 
         let parent_node = match dag_parent_override {
-            Some(id) => self.store.get_node(&id).unwrap_or_else(|e| {
+            Some(id) => self.store.get_node(&id).await.unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "Failed to look up dag_parent node");
                 None
             }),
@@ -463,7 +463,8 @@ impl MessageQueue for RecordingQueue {
     // -------------------------------------------------------------------------
 
     fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
-        self.record_fork(&key, &msg);
+        let rt = Runtime::new().expect("Failed to create tokio runtime for RecordingQueue");
+        rt.block_on(self.record_fork(&key, &msg));
 
         // Create the branch row
         match self
@@ -607,16 +608,20 @@ impl MessageQueue for RecordingQueue {
 
 impl RecordingQueue {
     /// Record a fork DAG node.
-    fn record_fork(&self, key: &SessionRoutingKey, msg: &ForkMessage) {
+    async fn record_fork(&self, key: &SessionRoutingKey, msg: &ForkMessage) {
         let SessionMessageKind::Fork { .. } = &key.kind else {
             return;
         };
 
         // Fork's parent is the fork point itself
-        let parent_node = self.store.get_node(&msg.fork_point).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "Failed to look up fork point node");
-            None
-        });
+        let parent_node = self
+            .store
+            .get_node(&msg.fork_point)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to look up fork point node");
+                None
+            });
 
         let parent_id = parent_node
             .as_ref()
@@ -916,7 +921,10 @@ mod tests {
         struct FailStore;
         #[async_trait]
         impl DagStore for FailStore {
-            fn get_node(&self, _: &crate::domain::DagNodeId) -> Result<Option<DagNode>, String> {
+            async fn get_node(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<DagNode>, String> {
                 Ok(None)
             }
             fn get_session_nodes(

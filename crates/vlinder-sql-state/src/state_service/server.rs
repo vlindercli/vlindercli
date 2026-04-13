@@ -60,6 +60,7 @@ impl StateService for StateServiceServer {
         let node = self
             .store
             .get_node(&DagNodeId::from(req.hash))
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
 
@@ -190,6 +191,7 @@ impl StateService for StateServiceServer {
         let node = self
             .store
             .get_node_by_prefix(&req.prefix)
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
         Ok(Response::new(GetNodeResponse { node }))

@@ -426,12 +426,13 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Retrieve a node by its content-addressed ID.
-    fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String>;
+    async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String>;
 
     /// Retrieve a node by ID prefix. Returns an error if ambiguous.
-    fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
+    async fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
         // Default: try exact match first, then scan is left to implementors.
         self.get_node(&super::DagNodeId::from(prefix.to_string()))
+            .await
     }
 
     /// Get all nodes in a session, ordered by `created_at`.
@@ -730,12 +731,12 @@ impl DagStore for InMemoryDagStore {
         Ok(None)
     }
 
-    fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String> {
+    async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         Ok(nodes.iter().find(|n| n.id == *id).cloned())
     }
 
-    fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
+    async fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         let matches: Vec<_> = nodes
             .iter()

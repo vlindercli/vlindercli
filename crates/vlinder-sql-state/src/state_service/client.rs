@@ -45,16 +45,13 @@ pub fn ping_state_service(addr: &str) -> Option<(u32, u32, u32)> {
 
 #[async_trait]
 impl DagStore for GrpcStateClient {
-    fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
+    async fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
         let request = proto::GetNodeRequest {
             hash: hash.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_node(request).await })
-            .map_err(|e| e.to_string())?;
+        let response = client.get_node(request).await.map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
             Some(proto_node) => {
@@ -733,15 +730,15 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
+    async fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
         let request = proto::GetNodeByPrefixRequest {
             prefix: prefix.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_node_by_prefix(request).await })
+        let response = client
+            .get_node_by_prefix(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {

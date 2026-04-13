@@ -523,7 +523,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
+    async fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -537,7 +537,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(dag_node_row_to_domain))
     }
 
-    fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
+    async fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1340,38 +1340,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn round_trip_insert_get() {
+    #[tokio::test]
+    async fn round_trip_insert_get() {
         let (store, _dir) = test_store();
         let node = test_node(b"hello", &DagNodeId::root());
 
         store.insert_node(&node).unwrap();
-        let retrieved = store.get_node(&node.id).unwrap().unwrap();
+        let retrieved = store.get_node(&node.id).await.unwrap().unwrap();
 
         assert_eq!(retrieved.id, node.id);
         assert_eq!(retrieved.parent_id, node.parent_id);
     }
 
-    #[test]
-    fn get_node_returns_none_for_unknown() {
+    #[tokio::test]
+    async fn get_node_returns_none_for_unknown() {
         let (store, _dir) = test_store();
         assert_eq!(
             store
                 .get_node(&DagNodeId::from("nonexistent".to_string()))
+                .await
                 .unwrap(),
             None
         );
     }
 
-    #[test]
-    fn idempotent_insert() {
+    #[tokio::test]
+    async fn idempotent_insert() {
         let (store, _dir) = test_store();
         let node = test_node(b"data", &DagNodeId::root());
 
         store.insert_node(&node).unwrap();
         store.insert_node(&node).unwrap(); // No error
 
-        let retrieved = store.get_node(&node.id).unwrap().unwrap();
+        let retrieved = store.get_node(&node.id).await.unwrap().unwrap();
         assert_eq!(retrieved.id, node.id);
     }
 
@@ -1634,21 +1635,22 @@ mod tests {
         assert_eq!(retrieved.agent, "pensieve");
     }
 
-    #[test]
-    fn dag_node_row_with_message_blob_ignores_it() {
+    #[tokio::test]
+    async fn dag_node_row_with_message_blob_ignores_it() {
         // The old message_blob column has been removed from dag_nodes.
         // Verify a raw insert with only the slimmed columns round-trips.
         use diesel::connection::SimpleConnection;
 
         let (store, _dir) = test_store();
-        let mut conn = store.conn.lock().unwrap();
-        conn.batch_execute(
-            "INSERT INTO dag_nodes (hash, parent_hash, message_type, session_id, submission_id, created_at, protocol_version, branch_id, snapshot)
-             VALUES ('h1', NULL, 'fork', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', '2025-01-01T00:00:00Z', '', 1, '{}')",
-        ).unwrap();
-        drop(conn);
+        {
+            let mut conn = store.conn.lock().unwrap();
+            conn.batch_execute(
+                "INSERT INTO dag_nodes (hash, parent_hash, message_type, session_id, submission_id, created_at, protocol_version, branch_id, snapshot)
+                 VALUES ('h1', NULL, 'fork', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', '2025-01-01T00:00:00Z', '', 1, '{}')",
+            ).unwrap();
+        }
 
-        let result = store.get_node(&DagNodeId::from("h1".to_string()));
+        let result = store.get_node(&DagNodeId::from("h1".to_string())).await;
         assert!(result.is_ok());
         let node = result.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::Fork);
@@ -1658,8 +1660,8 @@ mod tests {
     // Infra plane insert tests
     // ========================================================================
 
-    #[test]
-    fn insert_deploy_agent_node_round_trip() {
+    #[tokio::test]
+    async fn insert_deploy_agent_node_round_trip() {
         let (store, _dir) = test_store();
 
         let manifest = vlinder_core::domain::AgentManifest {
@@ -1696,13 +1698,13 @@ mod tests {
             )
             .unwrap();
 
-        let node = store.get_node(&dag_id).unwrap().unwrap();
+        let node = store.get_node(&dag_id).await.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::DeployAgent);
         assert!(node.session.as_str().contains("00000000")); // nullable → default
     }
 
-    #[test]
-    fn insert_delete_agent_node_round_trip() {
+    #[tokio::test]
+    async fn insert_delete_agent_node_round_trip() {
         let (store, _dir) = test_store();
 
         let msg = vlinder_core::domain::DeleteAgentMessage::new(
@@ -1725,7 +1727,7 @@ mod tests {
             )
             .unwrap();
 
-        let node = store.get_node(&dag_id).unwrap().unwrap();
+        let node = store.get_node(&dag_id).await.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::DeleteAgent);
     }
 
