@@ -357,6 +357,7 @@ impl RegistryService for RegistryServer {
         let jobs = self
             .registry
             .pending_jobs()
+            .await
             .into_iter()
             .map(std::convert::Into::into)
             .collect();

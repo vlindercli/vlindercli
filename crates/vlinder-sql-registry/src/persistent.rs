@@ -253,8 +253,8 @@ impl Registry for PersistentRegistry {
         self.inner.update_job_status(id, status).await;
     }
 
-    fn pending_jobs(&self) -> Vec<Job> {
-        self.inner.pending_jobs()
+    async fn pending_jobs(&self) -> Vec<Job> {
+        self.inner.pending_jobs().await
     }
 
     // --- Capability registration (delegate directly) ---

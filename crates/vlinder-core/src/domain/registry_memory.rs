@@ -505,7 +505,7 @@ impl Registry for InMemoryRegistry {
         }
     }
 
-    fn pending_jobs(&self) -> Vec<Job> {
+    async fn pending_jobs(&self) -> Vec<Job> {
         let state = self.state.read().unwrap();
         state
             .jobs
@@ -653,7 +653,7 @@ mod tests {
             .await;
 
         // All three are pending
-        assert_eq!(registry.pending_jobs().len(), 3);
+        assert_eq!(registry.pending_jobs().await.len(), 3);
 
         // Mark one as running, one as completed
         registry.update_job_status(&job1, JobStatus::Running).await;
@@ -662,7 +662,7 @@ mod tests {
             .await;
 
         // Only one pending now
-        assert_eq!(registry.pending_jobs().len(), 1);
+        assert_eq!(registry.pending_jobs().await.len(), 1);
     }
 
     // --- Object storage tests ---

@@ -160,7 +160,7 @@ fn grpc_job_lifecycle() {
     let job_id = rt.block_on(client.create_job(SubmissionId::new(), agent_id, "hello".to_string()));
 
     // Job should be pending
-    let pending = client.pending_jobs();
+    let pending = rt.block_on(client.pending_jobs());
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].input, "hello");
 

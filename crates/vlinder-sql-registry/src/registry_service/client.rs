@@ -373,13 +373,11 @@ impl Registry for GrpcRegistryClient {
         let _ = client.update_job_status(request).await;
     }
 
-    fn pending_jobs(&self) -> Vec<Job> {
+    async fn pending_jobs(&self) -> Vec<Job> {
         let request = proto::ListPendingJobsRequest {};
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_pending_jobs(request).await });
+        let response = client.list_pending_jobs(request).await;
 
         match response {
             Ok(resp) => resp

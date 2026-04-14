@@ -336,7 +336,7 @@ pub trait Registry: Send + Sync {
     async fn update_job_status(&self, id: &JobId, status: JobStatus);
 
     /// Get all pending jobs.
-    fn pending_jobs(&self) -> Vec<Job>;
+    async fn pending_jobs(&self) -> Vec<Job>;
 
     // --- Fleet operations ---
 
