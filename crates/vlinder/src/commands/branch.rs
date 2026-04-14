@@ -53,7 +53,9 @@ fn list(session_id_or_name: &str) {
     }
 
     // Count turns (distinct submissions) per branch
-    let nodes = store.get_session_nodes(&session_id).unwrap_or_default();
+    let nodes = rt
+        .block_on(store.get_session_nodes(&session_id))
+        .unwrap_or_default();
     let turn_counts: std::collections::HashMap<vlinder_core::domain::BranchId, usize> = {
         let mut per_branch: std::collections::HashMap<
             vlinder_core::domain::BranchId,
@@ -109,10 +111,12 @@ fn get(session_id_or_name: &str, branch_name: &str) {
     }
 
     // Get all session nodes and filter to those on this branch's timeline
-    let nodes = store.get_session_nodes(&session_id).unwrap_or_else(|e| {
-        eprintln!("Failed to query session nodes: {e}");
-        std::process::exit(1);
-    });
+    let nodes = rt
+        .block_on(store.get_session_nodes(&session_id))
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to query session nodes: {e}");
+            std::process::exit(1);
+        });
 
     let branch_nodes: Vec<_> = nodes
         .into_iter()

@@ -113,10 +113,12 @@ fn get(session_id_or_name: &str) {
     let rt = Runtime::new().expect("Failed to create tokio runtime");
 
     let session_id = resolve_session_id(&*store, session_id_or_name, &rt);
-    let nodes = store.get_session_nodes(&session_id).unwrap_or_else(|e| {
-        eprintln!("Failed to query session: {e}");
-        std::process::exit(1);
-    });
+    let nodes = rt
+        .block_on(store.get_session_nodes(&session_id))
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to query session: {e}");
+            std::process::exit(1);
+        });
 
     if nodes.is_empty() {
         println!("No messages found for session {session_id}");
@@ -222,10 +224,12 @@ fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
     }
 
     // Derive agent name from the session's Invoke message
-    let agent_name = find_agent_name(&*store, &session_id).unwrap_or_else(|| {
-        eprintln!("Cannot determine agent name for session {session_id}");
-        std::process::exit(1);
-    });
+    let agent_name = rt
+        .block_on(find_agent_name(&*store, &session_id))
+        .unwrap_or_else(|| {
+            eprintln!("Cannot determine agent name for session {session_id}");
+            std::process::exit(1);
+        });
 
     // Send ForkMessage through the harness/queue (CQRS: both SQL and git react)
     // Fork creates a branch within the existing session — no new session needed.
@@ -278,10 +282,12 @@ fn promote(session_id_or_name: &str, branch_name: &str) {
     }
 
     // Derive agent name from the session's Invoke message
-    let agent_name = find_agent_name(&*store, &session_id).unwrap_or_else(|| {
-        eprintln!("Cannot determine agent name for session {session_id}");
-        std::process::exit(1);
-    });
+    let agent_name = rt
+        .block_on(find_agent_name(&*store, &session_id))
+        .unwrap_or_else(|| {
+            eprintln!("Cannot determine agent name for session {session_id}");
+            std::process::exit(1);
+        });
 
     let harness = connect_harness(&config);
 
@@ -354,20 +360,17 @@ fn resolve_session_id(store: &dyn DagStore, id_or_name: &str, rt: &Runtime) -> S
 }
 
 /// Find the agent name from the Invoke message in a session.
-fn find_agent_name(store: &dyn DagStore, session_id: &SessionId) -> Option<String> {
-    let nodes = store.get_session_nodes(session_id).ok()?;
-    nodes
+async fn find_agent_name(store: &dyn DagStore, session_id: &SessionId) -> Option<String> {
+    let nodes = store.get_session_nodes(session_id).await.ok()?;
+    let n = nodes
         .iter()
-        .find(|n| n.message_type() == MessageType::Invoke)
-        .and_then(|n| {
-            let rt = Runtime::new().expect("Failed to create tokio runtime");
-            if let Ok(Some((key, _))) = rt.block_on(async { store.get_invoke_node(&n.id).await }) {
-                let vlinder_core::domain::DataMessageKind::Invoke { agent, .. } = &key.kind else {
-                    return None;
-                };
-                Some(agent.to_string())
-            } else {
-                None
-            }
-        })
+        .find(|n| n.message_type() == MessageType::Invoke)?;
+    if let Ok(Some((key, _))) = store.get_invoke_node(&n.id).await {
+        let vlinder_core::domain::DataMessageKind::Invoke { agent, .. } = &key.kind else {
+            return None;
+        };
+        Some(agent.to_string())
+    } else {
+        None
+    }
 }

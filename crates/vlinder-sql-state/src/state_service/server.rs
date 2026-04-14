@@ -78,6 +78,7 @@ impl StateService for StateServiceServer {
             .get_session_nodes(
                 &SessionId::try_from(req.session_id).map_err(Status::invalid_argument)?,
             )
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)

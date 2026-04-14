@@ -436,7 +436,10 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Get all nodes in a session, ordered by `created_at`.
-    fn get_session_nodes(&self, session_id: &super::SessionId) -> Result<Vec<DagNode>, String>;
+    async fn get_session_nodes(
+        &self,
+        session_id: &super::SessionId,
+    ) -> Result<Vec<DagNode>, String>;
 
     /// Get all children of a given parent ID.
     async fn get_children(&self, parent_id: &super::DagNodeId) -> Result<Vec<DagNode>, String>;
@@ -753,7 +756,10 @@ impl DagStore for InMemoryDagStore {
         }
     }
 
-    fn get_session_nodes(&self, session_id: &super::SessionId) -> Result<Vec<DagNode>, String> {
+    async fn get_session_nodes(
+        &self,
+        session_id: &super::SessionId,
+    ) -> Result<Vec<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         let mut result: Vec<DagNode> = nodes
             .iter()

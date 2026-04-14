@@ -62,7 +62,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_session_nodes(
+    async fn get_session_nodes(
         &self,
         session_id: &vlinder_core::domain::SessionId,
     ) -> Result<Vec<DagNode>, String> {
@@ -71,9 +71,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_session_nodes(request).await })
+        let response = client
+            .get_session_nodes(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         response

@@ -565,7 +565,7 @@ impl DagStore for SqliteDagStore {
         }
     }
 
-    fn get_session_nodes(&self, session_id: &SessionId) -> Result<Vec<DagNode>, String> {
+    async fn get_session_nodes(&self, session_id: &SessionId) -> Result<Vec<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1462,11 +1462,11 @@ mod tests {
         store.insert_node(&node_a).unwrap();
         store.insert_node(&node_b).unwrap();
 
-        let s1_nodes = store.get_session_nodes(&sess1).unwrap();
+        let s1_nodes = store.get_session_nodes(&sess1).await.unwrap();
         assert_eq!(s1_nodes.len(), 1);
         assert_eq!(*s1_nodes[0].session_id(), sess1);
 
-        let s2_nodes = store.get_session_nodes(&sess2).unwrap();
+        let s2_nodes = store.get_session_nodes(&sess2).await.unwrap();
         assert_eq!(s2_nodes.len(), 1);
         assert_eq!(*s2_nodes[0].session_id(), sess2);
     }

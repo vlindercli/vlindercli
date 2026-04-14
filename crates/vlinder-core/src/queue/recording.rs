@@ -853,7 +853,7 @@ mod tests {
 
         queue.send_invoke(key, msg).await.unwrap();
 
-        let nodes = store.get_session_nodes(&sid).unwrap();
+        let nodes = store.get_session_nodes(&sid).await.unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].message_type(), MessageType::Invoke);
         assert_eq!(nodes[0].parent_id, DagNodeId::root());
@@ -869,7 +869,7 @@ mod tests {
 
         queue.send_complete(key, msg).await.unwrap();
 
-        let nodes = store.get_session_nodes(&sid).unwrap();
+        let nodes = store.get_session_nodes(&sid).await.unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].message_type(), MessageType::Complete);
     }
@@ -897,8 +897,8 @@ mod tests {
         queue.send_invoke(key1, msg1).await.unwrap();
         queue.send_invoke(key2, msg2).await.unwrap();
 
-        let nodes1 = store.get_session_nodes(&ses_aaa).unwrap();
-        let nodes2 = store.get_session_nodes(&ses_bbb).unwrap();
+        let nodes1 = store.get_session_nodes(&ses_aaa).await.unwrap();
+        let nodes2 = store.get_session_nodes(&ses_bbb).await.unwrap();
 
         assert_eq!(nodes1.len(), 1);
         assert_eq!(nodes2.len(), 1);
@@ -938,7 +938,7 @@ mod tests {
             ) -> Result<Option<DagNode>, String> {
                 Ok(None)
             }
-            fn get_session_nodes(
+            async fn get_session_nodes(
                 &self,
                 _: &crate::domain::SessionId,
             ) -> Result<Vec<DagNode>, String> {
@@ -1047,7 +1047,7 @@ mod tests {
         let sid = key1.session.clone();
         queue.send_invoke(key1, msg1).await.unwrap();
 
-        let nodes = store.get_session_nodes(&sid).unwrap();
+        let nodes = store.get_session_nodes(&sid).await.unwrap();
         assert_eq!(nodes.len(), 1);
         let first_id = nodes[0].id.clone();
 
@@ -1056,7 +1056,7 @@ mod tests {
         msg2.payload = b"second".to_vec();
         queue.send_invoke(key2, msg2).await.unwrap();
 
-        let nodes = store.get_session_nodes(&sid).unwrap();
+        let nodes = store.get_session_nodes(&sid).await.unwrap();
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[1].parent_id, first_id, "normal chaining");
 
@@ -1067,7 +1067,7 @@ mod tests {
         msg3.dag_parent = first_id.clone();
         queue.send_invoke(key3, msg3).await.unwrap();
 
-        let nodes = store.get_session_nodes(&sid).unwrap();
+        let nodes = store.get_session_nodes(&sid).await.unwrap();
         assert_eq!(nodes.len(), 3);
         assert_eq!(
             nodes[2].parent_id, first_id,
