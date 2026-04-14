@@ -174,12 +174,12 @@ impl MessageQueue for LambdaRuntimeQueue {
         self.inner.send_promote(key, msg).await
     }
 
-    fn send_session_start(
+    async fn send_session_start(
         &self,
         key: SessionRoutingKey,
         msg: SessionStartMessage,
     ) -> Result<vlinder_core::domain::BranchId, QueueError> {
-        self.inner.send_session_start(key, msg)
+        self.inner.send_session_start(key, msg).await
     }
 
     fn send_deploy_agent(

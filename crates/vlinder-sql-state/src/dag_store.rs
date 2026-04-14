@@ -998,7 +998,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn create_session(&self, session: &Session) -> Result<(), String> {
+    async fn create_session(&self, session: &Session) -> Result<(), String> {
         use crate::schema::sessions;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1312,7 +1312,7 @@ mod tests {
             default_branch: BranchId::from(1),
             created_at: Utc::now(),
         };
-        store.create_session(&session).unwrap();
+        store.create_session(&session).await.unwrap();
         store.create_branch("main", &sess(), None).await.unwrap();
         (store, dir)
     }
@@ -1427,7 +1427,7 @@ mod tests {
             default_branch: BranchId::from(1),
             created_at: Utc::now(),
         };
-        store.create_session(&session2).unwrap();
+        store.create_session(&session2).await.unwrap();
         store.create_branch("main", &sess2, None).await.unwrap();
 
         let id_a = hash_dag_node(b"a", &DagNodeId::root(), &MessageType::Fork, &[], &sess1);
@@ -1580,7 +1580,7 @@ mod tests {
             BranchId::from(1),
         );
 
-        store.create_session(&session).unwrap();
+        store.create_session(&session).await.unwrap();
 
         let sid = SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap();
         let retrieved = store.get_session(&sid).unwrap().unwrap();
@@ -1602,7 +1602,7 @@ mod tests {
         );
         let name = session.name.clone();
 
-        store.create_session(&session).unwrap();
+        store.create_session(&session).await.unwrap();
 
         let retrieved = store.get_session_by_name(&name).unwrap().unwrap();
         assert_eq!(
@@ -1634,8 +1634,8 @@ mod tests {
             BranchId::from(1),
         );
 
-        store.create_session(&session).unwrap();
-        store.create_session(&session).unwrap(); // No error
+        store.create_session(&session).await.unwrap();
+        store.create_session(&session).await.unwrap(); // No error
 
         let sid = SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap();
         let retrieved = store.get_session(&sid).unwrap().unwrap();

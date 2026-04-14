@@ -196,7 +196,7 @@ pub trait MessageQueue: Send + Sync {
     }
 
     /// Start a session on the session plane.
-    fn send_session_start(
+    async fn send_session_start(
         &self,
         key: SessionRoutingKey,
         msg: SessionStartMessage,
@@ -482,7 +482,7 @@ mod routing_contract_proofs {
         ) -> Result<(), QueueError> {
             Ok(())
         }
-        fn send_session_start(
+        async fn send_session_start(
             &self,
             _: SessionRoutingKey,
             _: SessionStartMessage,
@@ -552,7 +552,7 @@ mod routing_contract_proofs {
         ) -> Result<(), QueueError> {
             Ok(())
         }
-        fn send_session_start(
+        async fn send_session_start(
             &self,
             _: SessionRoutingKey,
             _: SessionStartMessage,

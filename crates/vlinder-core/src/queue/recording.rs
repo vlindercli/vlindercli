@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use tokio::runtime::Runtime;
 
 use crate::domain::{
     hash_dag_node, Acknowledgement, CompleteMessage, DagNodeId, DagStore, DataMessageKind,
@@ -537,7 +536,7 @@ impl MessageQueue for RecordingQueue {
         Ok(())
     }
 
-    fn send_session_start(
+    async fn send_session_start(
         &self,
         key: SessionRoutingKey,
         msg: SessionStartMessage,
@@ -553,24 +552,26 @@ impl MessageQueue for RecordingQueue {
             agent_name.as_str(),
             placeholder_branch,
         );
-        if let Err(e) = self.store.create_session(&session) {
+        if let Err(e) = self.store.create_session(&session).await {
             tracing::warn!(error = %e, "Failed to persist session");
         }
-        let rt = Runtime::new().expect("Failed to create tokio runtime for send_session_start");
-        let default_branch = rt
-            .block_on(self.store.create_branch("main", &key.session, None))
+        let default_branch = self
+            .store
+            .create_branch("main", &key.session, None)
+            .await
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "Failed to create default branch");
                 placeholder_branch
             });
-        if let Err(e) = rt.block_on(
-            self.store
-                .update_session_default_branch(&key.session, default_branch),
-        ) {
+        if let Err(e) = self
+            .store
+            .update_session_default_branch(&key.session, default_branch)
+            .await
+        {
             tracing::warn!(error = %e, "Failed to update session default branch");
         }
 
-        let _ = self.inner.send_session_start(key, msg);
+        let _ = self.inner.send_session_start(key, msg).await;
         Ok(default_branch)
     }
 
@@ -985,7 +986,7 @@ mod tests {
             ) -> Result<Option<crate::domain::DagNode>, String> {
                 Ok(None)
             }
-            fn create_session(&self, _: &crate::domain::Session) -> Result<(), String> {
+            async fn create_session(&self, _: &crate::domain::Session) -> Result<(), String> {
                 Ok(())
             }
             fn get_session(

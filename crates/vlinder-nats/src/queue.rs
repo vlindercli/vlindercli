@@ -532,7 +532,7 @@ impl MessageQueue for NatsQueue {
         Ok(())
     }
 
-    fn send_session_start(
+    async fn send_session_start(
         &self,
         _key: SessionRoutingKey,
         _msg: SessionStartMessage,

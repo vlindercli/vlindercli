@@ -30,7 +30,7 @@ pub trait Harness {
     ///
     /// Creates a session and its default "main" branch. Returns the
     /// `SessionId` and the default branch's `BranchId`.
-    fn start_session(&self, agent_name: &str) -> (SessionId, BranchId);
+    async fn start_session(&self, agent_name: &str) -> (SessionId, BranchId);
 
     /// Run an agent to completion synchronously.
     ///
@@ -246,7 +246,7 @@ impl Harness for CoreHarness {
         self.harness_type
     }
 
-    fn start_session(&self, agent_name: &str) -> (SessionId, BranchId) {
+    async fn start_session(&self, agent_name: &str) -> (SessionId, BranchId) {
         let session_id = SessionId::new();
         let key = SessionRoutingKey {
             session: session_id.clone(),
@@ -256,10 +256,14 @@ impl Harness for CoreHarness {
             },
         };
         let msg = SessionStartMessage::new();
-        let branch_id = self.queue.send_session_start(key, msg).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "Failed to send session start message");
-            BranchId::from(1)
-        });
+        let branch_id = self
+            .queue
+            .send_session_start(key, msg)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to send session start message");
+                BranchId::from(1)
+            });
 
         (session_id, branch_id)
     }

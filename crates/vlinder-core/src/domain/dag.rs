@@ -539,7 +539,7 @@ pub trait DagStore: Send + Sync {
     // -------------------------------------------------------------------------
 
     /// Persist a new session. Idempotent (ignores if ID already exists).
-    fn create_session(&self, session: &Session) -> Result<(), String>;
+    async fn create_session(&self, session: &Session) -> Result<(), String>;
 
     /// Look up a session by its ID.
     fn get_session(&self, session_id: &super::SessionId) -> Result<Option<Session>, String>;
@@ -922,7 +922,7 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn create_session(&self, session: &Session) -> Result<(), String> {
+    async fn create_session(&self, session: &Session) -> Result<(), String> {
         let mut sessions = self.sessions.lock().unwrap();
         if sessions
             .iter()

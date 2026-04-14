@@ -473,7 +473,7 @@ impl MessageQueue for AmqpQueue {
         self.publish(&rk, msg.id.as_str(), &payload).await
     }
 
-    fn send_session_start(
+    async fn send_session_start(
         &self,
         _key: SessionRoutingKey,
         _msg: SessionStartMessage,

@@ -856,7 +856,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn create_session(&self, session: &vlinder_core::domain::Session) -> Result<(), String> {
+    async fn create_session(&self, session: &vlinder_core::domain::Session) -> Result<(), String> {
         let mut client = self.client.clone();
         let req = proto::CreateSessionRequest {
             session: Some(proto::SessionProto {
@@ -867,9 +867,9 @@ impl DagStore for GrpcStateClient {
                 created_at: session.created_at.to_rfc3339(),
             }),
         };
-        let resp = self
-            .runtime
-            .block_on(async { client.create_session(req).await })
+        let resp = client
+            .create_session(req)
+            .await
             .map_err(|e| e.to_string())?
             .into_inner();
         if resp.success {

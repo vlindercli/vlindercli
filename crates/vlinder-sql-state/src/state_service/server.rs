@@ -235,10 +235,14 @@ impl StateService for StateServiceServer {
             &session_proto.agent_name,
             vlinder_core::domain::BranchId::from(session_proto.default_branch),
         );
-        match self.store.create_session(&vlinder_core::domain::Session {
-            name: session_proto.name,
-            ..session
-        }) {
+        match self
+            .store
+            .create_session(&vlinder_core::domain::Session {
+                name: session_proto.name,
+                ..session
+            })
+            .await
+        {
             Ok(()) => Ok(Response::new(CreateSessionResponse {
                 success: true,
                 error: None,

@@ -31,6 +31,7 @@ pub fn ping_harness(addr: &str) -> Option<(u32, u32, u32)> {
 /// Harness implementation that makes gRPC calls to a remote server.
 pub struct GrpcHarnessClient {
     client: HarnessClient<Channel>,
+    #[allow(dead_code)]
     runtime: tokio::runtime::Runtime,
 }
 
@@ -50,22 +51,20 @@ impl Harness for GrpcHarnessClient {
         HarnessType::Grpc
     }
 
-    fn start_session(&self, agent_name: &str) -> (SessionId, BranchId) {
+    async fn start_session(&self, agent_name: &str) -> (SessionId, BranchId) {
         let request = proto::StartSessionRequest {
             agent_name: agent_name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.start_session(request).await });
-
-        let resp = response
+        let response = client
+            .start_session(request)
+            .await
             .expect("failed to start session via gRPC")
             .into_inner();
         let session_id =
-            SessionId::try_from(resp.session_id).expect("server returned invalid session_id");
-        let branch_id = BranchId::from(resp.default_branch_id);
+            SessionId::try_from(response.session_id).expect("server returned invalid session_id");
+        let branch_id = BranchId::from(response.default_branch_id);
         (session_id, branch_id)
     }
 

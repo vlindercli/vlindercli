@@ -197,7 +197,7 @@ pub fn run(name: &str, prompt: Option<&str>) {
     let harness = connect_harness(&config);
 
     // New session — start fresh, no prior state
-    let (session_id, branch_id) = harness.start_session(entry_agent_name.as_str());
+    let (session_id, branch_id) = rt.block_on(harness.start_session(entry_agent_name.as_str()));
 
     tracing::debug!(fleet = %fleet.name, "Fleet session started");
 

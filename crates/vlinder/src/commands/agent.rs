@@ -259,7 +259,7 @@ fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&
     let (session_id, branch_id, sealed, initial_state, dag_parent) = match (session, branch) {
         (None, None) => {
             // New session → create session + default branch, resolve tip
-            let (session_id, branch_id) = harness.start_session(name);
+            let (session_id, branch_id) = rt.block_on(harness.start_session(name));
             (session_id, branch_id, false, None, DagNodeId::root())
         }
         (Some(session_name), None) => {

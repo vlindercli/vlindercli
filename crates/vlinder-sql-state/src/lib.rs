@@ -478,7 +478,7 @@ mod tests {
 
         // Create a session so the viewer can look it up
         let session = Session::new(sess_id(), "pensieve", BranchId::from(1));
-        store.create_session(&session).unwrap();
+        store.create_session(&session).await.unwrap();
 
         store
     }
