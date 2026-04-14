@@ -199,6 +199,7 @@ impl Registry for PersistentRegistry {
         let dependent: Vec<String> = self
             .inner
             .get_fleets()
+            .await
             .into_iter()
             .filter(|f| f.agents.contains(&agent_id))
             .map(|f| f.name)
@@ -223,16 +224,16 @@ impl Registry for PersistentRegistry {
 
     // --- Fleet operations (delegate to in-memory, persistence deferred) ---
 
-    fn register_fleet(&self, fleet: Fleet) -> Result<(), RegistrationError> {
-        self.inner.register_fleet(fleet)
+    async fn register_fleet(&self, fleet: Fleet) -> Result<(), RegistrationError> {
+        self.inner.register_fleet(fleet).await
     }
 
-    fn get_fleet(&self, name: &str) -> Option<Fleet> {
-        self.inner.get_fleet(name)
+    async fn get_fleet(&self, name: &str) -> Option<Fleet> {
+        self.inner.get_fleet(name).await
     }
 
-    fn get_fleets(&self) -> Vec<Fleet> {
-        self.inner.get_fleets()
+    async fn get_fleets(&self) -> Vec<Fleet> {
+        self.inner.get_fleets().await
     }
 
     // --- Job operations (delegate directly) ---

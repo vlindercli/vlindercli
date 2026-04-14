@@ -341,13 +341,13 @@ pub trait Registry: Send + Sync {
     // --- Fleet operations ---
 
     /// Register a fleet after validating all agents are registered.
-    fn register_fleet(&self, fleet: Fleet) -> Result<(), RegistrationError>;
+    async fn register_fleet(&self, fleet: Fleet) -> Result<(), RegistrationError>;
 
     /// Get a fleet by name.
-    fn get_fleet(&self, name: &str) -> Option<Fleet>;
+    async fn get_fleet(&self, name: &str) -> Option<Fleet>;
 
     /// Get all registered fleets.
-    fn get_fleets(&self) -> Vec<Fleet>;
+    async fn get_fleets(&self) -> Vec<Fleet>;
 
     // --- Capability registration ---
 

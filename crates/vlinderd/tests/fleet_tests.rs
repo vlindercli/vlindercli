@@ -208,9 +208,9 @@ async fn register_fleet_assigns_registry_id() {
     let manifest = test_manifest();
     let fleet = Fleet::from_manifest(manifest, &*registry).await.unwrap();
 
-    registry.register_fleet(fleet).unwrap();
+    registry.register_fleet(fleet).await.unwrap();
 
-    let stored = registry.get_fleet("test-fleet").unwrap();
+    let stored = registry.get_fleet("test-fleet").await.unwrap();
     assert!(stored.id.as_str().contains("/fleets/test-fleet"));
     assert!(!stored.id.as_str().contains("pending-registration"));
 }
@@ -226,9 +226,9 @@ async fn register_fleet_idempotent() {
         .await
         .unwrap();
 
-    registry.register_fleet(fleet1).unwrap();
+    registry.register_fleet(fleet1).await.unwrap();
     // Second registration of same fleet should succeed
-    registry.register_fleet(fleet2).unwrap();
+    registry.register_fleet(fleet2).await.unwrap();
 }
 
 #[tokio::test]
@@ -237,17 +237,17 @@ async fn get_fleets_returns_all() {
     let fleet = Fleet::from_manifest(test_manifest(), &*registry)
         .await
         .unwrap();
-    registry.register_fleet(fleet).unwrap();
+    registry.register_fleet(fleet).await.unwrap();
 
-    let fleets = registry.get_fleets();
+    let fleets = registry.get_fleets().await;
     assert_eq!(fleets.len(), 1);
     assert_eq!(fleets[0].name, "test-fleet");
 }
 
-#[test]
-fn get_fleet_returns_none_for_missing() {
+#[tokio::test]
+async fn get_fleet_returns_none_for_missing() {
     let registry = test_registry_with_agents(&["echo"]);
-    assert!(registry.get_fleet("nonexistent").is_none());
+    assert!(registry.get_fleet("nonexistent").await.is_none());
 }
 
 // ============================================================================
@@ -387,7 +387,7 @@ async fn register_fleet_rejects_config_mismatch_different_entry() {
     let fleet1 = Fleet::from_manifest(test_manifest(), &*registry)
         .await
         .unwrap();
-    registry.register_fleet(fleet1).unwrap();
+    registry.register_fleet(fleet1).await.unwrap();
 
     // Build a fleet with same agents but different entry
     let manifest2: FleetManifest = parse_fleet_manifest(
@@ -405,7 +405,7 @@ async fn register_fleet_rejects_config_mismatch_different_entry() {
     .unwrap();
     let fleet2 = Fleet::from_manifest(manifest2, &*registry).await.unwrap();
 
-    let result = registry.register_fleet(fleet2);
+    let result = registry.register_fleet(fleet2).await;
     assert!(result.is_err());
     match result.unwrap_err() {
         vlinder_core::domain::RegistrationError::FleetConfigMismatch(name) => {
@@ -422,7 +422,7 @@ async fn register_fleet_rejects_config_mismatch_different_agents() {
     let fleet1 = Fleet::from_manifest(test_manifest(), &*registry)
         .await
         .unwrap();
-    registry.register_fleet(fleet1).unwrap();
+    registry.register_fleet(fleet1).await.unwrap();
 
     // Build a fleet with same name and entry, but a different agent set
     let manifest2: FleetManifest = parse_fleet_manifest(
@@ -440,7 +440,7 @@ async fn register_fleet_rejects_config_mismatch_different_agents() {
     .unwrap();
     let fleet2 = Fleet::from_manifest(manifest2, &*registry).await.unwrap();
 
-    let result = registry.register_fleet(fleet2);
+    let result = registry.register_fleet(fleet2).await;
     assert!(result.is_err());
     match result.unwrap_err() {
         vlinder_core::domain::RegistrationError::FleetConfigMismatch(name) => {
@@ -458,9 +458,9 @@ async fn fleet_name_preserved_through_registration() {
         .unwrap();
 
     assert_eq!(fleet.name, "test-fleet");
-    registry.register_fleet(fleet).unwrap();
+    registry.register_fleet(fleet).await.unwrap();
 
-    let stored = registry.get_fleet("test-fleet").unwrap();
+    let stored = registry.get_fleet("test-fleet").await.unwrap();
     assert_eq!(stored.name, "test-fleet");
 }
 
@@ -499,20 +499,22 @@ async fn multiple_fleets_can_share_agents() {
     let fleet_a = Fleet::from_manifest(manifest_a, &*registry).await.unwrap();
     let fleet_b = Fleet::from_manifest(manifest_b, &*registry).await.unwrap();
 
-    registry.register_fleet(fleet_a).unwrap();
-    registry.register_fleet(fleet_b).unwrap();
+    registry.register_fleet(fleet_a).await.unwrap();
+    registry.register_fleet(fleet_b).await.unwrap();
 
-    assert_eq!(registry.get_fleets().len(), 2);
+    assert_eq!(registry.get_fleets().await.len(), 2);
 
     // Both fleets contain the shared agent
     let shared_id = registry.agent_id("shared").await.unwrap();
     assert!(registry
         .get_fleet("fleet-a")
+        .await
         .unwrap()
         .agents
         .contains(&shared_id));
     assert!(registry
         .get_fleet("fleet-b")
+        .await
         .unwrap()
         .agents
         .contains(&shared_id));

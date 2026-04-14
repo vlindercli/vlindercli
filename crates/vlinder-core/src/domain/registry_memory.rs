@@ -423,7 +423,7 @@ impl Registry for InMemoryRegistry {
 
     // --- Fleet operations ---
 
-    fn register_fleet(&self, mut fleet: Fleet) -> Result<(), RegistrationError> {
+    async fn register_fleet(&self, mut fleet: Fleet) -> Result<(), RegistrationError> {
         let mut state = self.state.write().unwrap();
 
         // Idempotency: same fleet → Ok, different fleet same name → error
@@ -462,12 +462,12 @@ impl Registry for InMemoryRegistry {
         Ok(())
     }
 
-    fn get_fleet(&self, name: &str) -> Option<Fleet> {
+    async fn get_fleet(&self, name: &str) -> Option<Fleet> {
         let state = self.state.read().unwrap();
         state.fleets.get(name).cloned()
     }
 
-    fn get_fleets(&self) -> Vec<Fleet> {
+    async fn get_fleets(&self) -> Vec<Fleet> {
         let state = self.state.read().unwrap();
         state.fleets.values().cloned().collect()
     }
@@ -919,13 +919,13 @@ mod tests {
     #[tokio::test]
     async fn get_fleets_empty_initially() {
         let registry = InMemoryRegistry::new(test_secret_store());
-        assert!(registry.get_fleets().is_empty());
+        assert!(registry.get_fleets().await.is_empty());
     }
 
     #[tokio::test]
     async fn get_fleet_returns_none_for_unknown() {
         let registry = InMemoryRegistry::new(test_secret_store());
-        assert!(registry.get_fleet("nonexistent").is_none());
+        assert!(registry.get_fleet("nonexistent").await.is_none());
     }
 
     #[tokio::test]
@@ -935,9 +935,9 @@ mod tests {
         registry.restore_agent(minimal_agent("beta")).unwrap();
 
         let fleet = make_fleet(&registry, "my-fleet", "alpha", &["alpha", "beta"]).await;
-        registry.register_fleet(fleet).unwrap();
+        registry.register_fleet(fleet).await.unwrap();
 
-        let stored = registry.get_fleet("my-fleet").unwrap();
+        let stored = registry.get_fleet("my-fleet").await.unwrap();
         assert_eq!(stored.name, "my-fleet");
         assert_eq!(stored.agents.len(), 2);
     }
@@ -950,9 +950,9 @@ mod tests {
         let fleet = make_fleet(&registry, "test", "solo", &["solo"]).await;
         assert!(fleet.id.as_str().contains("pending-registration"));
 
-        registry.register_fleet(fleet).unwrap();
+        registry.register_fleet(fleet).await.unwrap();
 
-        let stored = registry.get_fleet("test").unwrap();
+        let stored = registry.get_fleet("test").await.unwrap();
         assert!(stored.id.as_str().contains("/fleets/test"));
         assert!(!stored.id.as_str().contains("pending-registration"));
     }
@@ -972,7 +972,7 @@ mod tests {
             agents: HashSet::from([real_id, fake_id]),
         };
 
-        let result = registry.register_fleet(fleet);
+        let result = registry.register_fleet(fleet).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             RegistrationError::FleetAgentNotRegistered(fleet_name, agent_ref) => {
@@ -999,7 +999,7 @@ mod tests {
             agents: HashSet::from([worker_id]),
         };
 
-        let result = registry.register_fleet(fleet);
+        let result = registry.register_fleet(fleet).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             RegistrationError::FleetAgentNotRegistered(fleet_name, agent_ref) => {
@@ -1018,8 +1018,8 @@ mod tests {
         let fleet1 = make_fleet(&registry, "idempotent", "a", &["a"]).await;
         let fleet2 = make_fleet(&registry, "idempotent", "a", &["a"]).await;
 
-        registry.register_fleet(fleet1).unwrap();
-        registry.register_fleet(fleet2).unwrap(); // should succeed
+        registry.register_fleet(fleet1).await.unwrap();
+        registry.register_fleet(fleet2).await.unwrap(); // should succeed
     }
 
     #[tokio::test]
@@ -1029,11 +1029,11 @@ mod tests {
         registry.restore_agent(minimal_agent("b")).unwrap();
 
         let fleet1 = make_fleet(&registry, "mismatch", "a", &["a", "b"]).await;
-        registry.register_fleet(fleet1).unwrap();
+        registry.register_fleet(fleet1).await.unwrap();
 
         // Same name and agents, different entry
         let fleet2 = make_fleet(&registry, "mismatch", "b", &["a", "b"]).await;
-        let result = registry.register_fleet(fleet2);
+        let result = registry.register_fleet(fleet2).await;
         assert!(matches!(
             result,
             Err(RegistrationError::FleetConfigMismatch(_))
@@ -1048,11 +1048,11 @@ mod tests {
         registry.restore_agent(minimal_agent("c")).unwrap();
 
         let fleet1 = make_fleet(&registry, "mismatch", "a", &["a", "b"]).await;
-        registry.register_fleet(fleet1).unwrap();
+        registry.register_fleet(fleet1).await.unwrap();
 
         // Same name and entry, different agent set
         let fleet2 = make_fleet(&registry, "mismatch", "a", &["a", "c"]).await;
-        let result = registry.register_fleet(fleet2);
+        let result = registry.register_fleet(fleet2).await;
         assert!(matches!(
             result,
             Err(RegistrationError::FleetConfigMismatch(_))
@@ -1065,9 +1065,9 @@ mod tests {
         registry.restore_agent(minimal_agent("solo")).unwrap();
 
         let fleet = make_fleet(&registry, "solo-fleet", "solo", &["solo"]).await;
-        registry.register_fleet(fleet).unwrap();
+        registry.register_fleet(fleet).await.unwrap();
 
-        let stored = registry.get_fleet("solo-fleet").unwrap();
+        let stored = registry.get_fleet("solo-fleet").await.unwrap();
         assert_eq!(stored.agents.len(), 1);
         assert_eq!(stored.entry, registry.agent_id("solo").await.unwrap());
     }
@@ -1082,12 +1082,12 @@ mod tests {
         let fleet1 = make_fleet(&registry, "fleet-1", "a", &["a", "b"]).await;
         let fleet2 = make_fleet(&registry, "fleet-2", "b", &["b", "c"]).await;
 
-        registry.register_fleet(fleet1).unwrap();
-        registry.register_fleet(fleet2).unwrap();
+        registry.register_fleet(fleet1).await.unwrap();
+        registry.register_fleet(fleet2).await.unwrap();
 
-        assert_eq!(registry.get_fleets().len(), 2);
-        assert!(registry.get_fleet("fleet-1").is_some());
-        assert!(registry.get_fleet("fleet-2").is_some());
+        assert_eq!(registry.get_fleets().await.len(), 2);
+        assert!(registry.get_fleet("fleet-1").await.is_some());
+        assert!(registry.get_fleet("fleet-2").await.is_some());
     }
 
     #[tokio::test]
@@ -1097,9 +1097,9 @@ mod tests {
         registry.restore_agent(minimal_agent("y")).unwrap();
 
         let fleet = make_fleet(&registry, "lookup-test", "x", &["x", "y"]).await;
-        registry.register_fleet(fleet).unwrap();
+        registry.register_fleet(fleet).await.unwrap();
 
-        let stored = registry.get_fleet("lookup-test").unwrap();
+        let stored = registry.get_fleet("lookup-test").await.unwrap();
         assert_eq!(stored.name, "lookup-test");
         assert_eq!(stored.entry, registry.agent_id("x").await.unwrap());
         assert!(stored
@@ -1137,7 +1137,7 @@ mod tests {
         registry.restore_agent(minimal_agent("beta")).unwrap();
 
         let fleet = make_fleet(&registry, "my-fleet", "alpha", &["alpha", "beta"]).await;
-        registry.register_fleet(fleet).unwrap();
+        registry.register_fleet(fleet).await.unwrap();
 
         let result = registry.delete_agent("alpha").await;
         assert!(matches!(result, Err(RegistrationError::AgentInUse(_, _))));

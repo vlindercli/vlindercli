@@ -172,7 +172,7 @@ impl RegistryService for RegistryServer {
             .try_into()
             .map_err(|e: String| Status::invalid_argument(e))?;
 
-        match self.registry.register_fleet(domain_fleet) {
+        match self.registry.register_fleet(domain_fleet).await {
             Ok(()) => Ok(Response::new(RegisterFleetResponse {
                 success: true,
                 error: None,
@@ -192,6 +192,7 @@ impl RegistryService for RegistryServer {
         let fleet = self
             .registry
             .get_fleet(&req.name)
+            .await
             .map(std::convert::Into::into);
 
         Ok(Response::new(GetFleetResponse { fleet }))
@@ -204,6 +205,7 @@ impl RegistryService for RegistryServer {
         let fleets = self
             .registry
             .get_fleets()
+            .await
             .into_iter()
             .map(std::convert::Into::into)
             .collect();

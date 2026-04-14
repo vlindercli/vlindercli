@@ -389,16 +389,16 @@ impl Registry for GrpcRegistryClient {
 
     // --- Fleet operations ---
 
-    fn register_fleet(&self, fleet: Fleet) -> Result<(), RegistrationError> {
+    async fn register_fleet(&self, fleet: Fleet) -> Result<(), RegistrationError> {
         let proto_fleet: proto::Fleet = fleet.into();
         let request = proto::RegisterFleetRequest {
             fleet: Some(proto_fleet),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.register_fleet(request).await })
+        let response = client
+            .register_fleet(request)
+            .await
             .map_err(|e| RegistrationError::Remote(e.to_string()))?;
 
         let resp = response.into_inner();
@@ -411,27 +411,22 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_fleet(&self, name: &str) -> Option<Fleet> {
+    async fn get_fleet(&self, name: &str) -> Option<Fleet> {
         let request = proto::GetFleetRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_fleet(request).await })
-            .ok()?;
+        let response = client.get_fleet(request).await.ok()?;
 
         response.into_inner().fleet.and_then(|f| f.try_into().ok())
     }
 
-    fn get_fleets(&self) -> Vec<Fleet> {
+    async fn get_fleets(&self) -> Vec<Fleet> {
         let request = proto::ListFleetsRequest {};
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_fleets(request).await });
+        let response = client.list_fleets(request).await;
 
         match response {
             Ok(resp) => resp
