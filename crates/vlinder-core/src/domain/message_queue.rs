@@ -58,7 +58,7 @@ pub trait MessageQueue: Send + Sync {
     ///
     /// SQS: creates invoke, complete, and response queues + DLQs.
     /// NATS: no-op (subjects are implicit).
-    fn on_agent_deployed(&self, _agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deployed(&self, _agent: &AgentName) -> Result<(), QueueError> {
         Ok(())
     }
 
@@ -69,7 +69,7 @@ pub trait MessageQueue: Send + Sync {
     ///
     /// SQS: deletes the agent's invoke, complete, and response queues + DLQs.
     /// NATS: no-op.
-    fn on_agent_deleted(&self, _agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deleted(&self, _agent: &AgentName) -> Result<(), QueueError> {
         Ok(())
     }
 

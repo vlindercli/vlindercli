@@ -218,7 +218,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                 match reg_result {
                     Ok(()) => {
                         let name = AgentName::new(&agent_name);
-                        if let Err(e) = queue.on_agent_deployed(&name) {
+                        if let Err(e) = rt.block_on(queue.on_agent_deployed(&name)) {
                             tracing::warn!(agent = %agent_name, error = %e, "Failed to provision agent queues");
                         }
                         // Deploying state is now set by register_agent
@@ -246,7 +246,7 @@ fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
                 tracing::info!(agent = %agent_name, "Processing delete-agent");
 
                 let name = AgentName::new(&agent_name);
-                if let Err(e) = queue.on_agent_deleted(&name) {
+                if let Err(e) = rt.block_on(queue.on_agent_deleted(&name)) {
                     tracing::warn!(agent = %agent_name, error = %e, "Failed to deprovision agent queues");
                 }
                 let check = ReadinessCheck::pending(name, "registry").deleted();

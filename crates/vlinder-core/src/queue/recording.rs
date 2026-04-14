@@ -351,12 +351,12 @@ impl MessageQueue for RecordingQueue {
         self.inner.on_cluster_start()
     }
 
-    fn on_agent_deployed(&self, agent: &crate::domain::AgentName) -> Result<(), QueueError> {
-        self.inner.on_agent_deployed(agent)
+    async fn on_agent_deployed(&self, agent: &crate::domain::AgentName) -> Result<(), QueueError> {
+        self.inner.on_agent_deployed(agent).await
     }
 
-    fn on_agent_deleted(&self, agent: &crate::domain::AgentName) -> Result<(), QueueError> {
-        self.inner.on_agent_deleted(agent)
+    async fn on_agent_deleted(&self, agent: &crate::domain::AgentName) -> Result<(), QueueError> {
+        self.inner.on_agent_deleted(agent).await
     }
 
     // -------------------------------------------------------------------------

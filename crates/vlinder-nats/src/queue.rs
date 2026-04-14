@@ -251,7 +251,7 @@ impl MessageQueue for NatsQueue {
         Ok(())
     }
 
-    fn on_agent_deployed(&self, agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deployed(&self, agent: &AgentName) -> Result<(), QueueError> {
         // NATS subjects are implicit — no queues to create.
         // The agent's subjects (invoke, complete, response) will be created
         // on first publish. Log for traceability.
@@ -262,7 +262,7 @@ impl MessageQueue for NatsQueue {
         Ok(())
     }
 
-    fn on_agent_deleted(&self, agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deleted(&self, agent: &AgentName) -> Result<(), QueueError> {
         // NATS subjects don't need explicit deletion — messages expire
         // via stream retention policy (max_age / max_bytes).
         tracing::debug!(

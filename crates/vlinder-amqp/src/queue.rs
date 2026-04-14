@@ -213,12 +213,12 @@ impl MessageQueue for AmqpQueue {
         Ok(())
     }
 
-    fn on_agent_deployed(&self, agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deployed(&self, agent: &AgentName) -> Result<(), QueueError> {
         tracing::debug!(agent = %agent, "AMQP: agent deployed — bindings created on first consume");
         Ok(())
     }
 
-    fn on_agent_deleted(&self, agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deleted(&self, agent: &AgentName) -> Result<(), QueueError> {
         tracing::debug!(agent = %agent, "AMQP: agent deleted — queues auto-delete on disconnect");
         Ok(())
     }
