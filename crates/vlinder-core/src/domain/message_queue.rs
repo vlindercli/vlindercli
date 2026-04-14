@@ -47,7 +47,7 @@ pub trait MessageQueue: Send + Sync {
     ///
     /// SQS: creates static queues (deploy, delete, fork, promote) + DLQs.
     /// NATS: no-op (subjects are implicit, stream created at connect time).
-    fn on_cluster_start(&self) -> Result<(), QueueError> {
+    async fn on_cluster_start(&self) -> Result<(), QueueError> {
         Ok(())
     }
 

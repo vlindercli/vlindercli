@@ -35,6 +35,7 @@ pub struct NatsQueue {
 }
 
 struct NatsQueueInner {
+    #[allow(dead_code)]
     runtime: Runtime,
     client: async_nats::Client,
     jetstream: jetstream::Context,
@@ -214,40 +215,7 @@ impl NatsQueue {
 
 #[async_trait]
 impl MessageQueue for NatsQueue {
-    fn on_cluster_start(&self) -> Result<(), QueueError> {
-        // Stream is already created in connect(). Log its state for observability.
-        self.inner.runtime.block_on(async {
-            match self.inner.jetstream.get_stream("VLINDER").await {
-                Ok(mut stream) => {
-                    let info = stream.info().await;
-                    match info {
-                        Ok(info) => {
-                            tracing::info!(
-                                stream = "VLINDER",
-                                messages = info.state.messages,
-                                bytes = info.state.bytes,
-                                consumers = info.state.consumer_count,
-                                "NATS stream ready"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                stream = "VLINDER",
-                                error = %e,
-                                "NATS stream exists but failed to query info"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        stream = "VLINDER",
-                        error = %e,
-                        "NATS stream not found — ensure_stream may have failed at connect time"
-                    );
-                }
-            }
-        });
+    async fn on_cluster_start(&self) -> Result<(), QueueError> {
         Ok(())
     }
 

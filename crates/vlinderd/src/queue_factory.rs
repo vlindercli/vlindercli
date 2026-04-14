@@ -24,7 +24,6 @@ pub fn from_config(config: &Config) -> Result<Arc<dyn MessageQueue + Send + Sync
         #[cfg(any(test, feature = "test-support"))]
         QueueBackend::Memory => Arc::new(vlinder_core::queue::InMemoryQueue::new()),
     };
-    queue.on_cluster_start()?;
     Ok(queue)
 }
 

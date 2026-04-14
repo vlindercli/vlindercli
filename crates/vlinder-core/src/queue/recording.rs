@@ -347,8 +347,8 @@ impl MessageQueue for RecordingQueue {
     // Lifecycle — delegate to inner
     // -------------------------------------------------------------------------
 
-    fn on_cluster_start(&self) -> Result<(), QueueError> {
-        self.inner.on_cluster_start()
+    async fn on_cluster_start(&self) -> Result<(), QueueError> {
+        self.inner.on_cluster_start().await
     }
 
     async fn on_agent_deployed(&self, agent: &crate::domain::AgentName) -> Result<(), QueueError> {

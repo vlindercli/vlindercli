@@ -208,7 +208,7 @@ impl AmqpQueue {
 
 #[async_trait]
 impl MessageQueue for AmqpQueue {
-    fn on_cluster_start(&self) -> Result<(), QueueError> {
+    async fn on_cluster_start(&self) -> Result<(), QueueError> {
         tracing::info!(exchange = EXCHANGE_NAME, "AMQP topic exchange ready");
         Ok(())
     }
