@@ -219,6 +219,7 @@ impl RegistryService for RegistryServer {
         let model = self
             .registry
             .get_model(&req.name)
+            .await
             .map(std::convert::Into::into);
 
         Ok(Response::new(GetModelResponse { model }))

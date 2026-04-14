@@ -282,7 +282,7 @@ mod tests {
 
         assert_eq!(model.name, "claude-sonnet");
         // Verify it's actually in the registry
-        assert!(registry.get_model("claude-sonnet").is_some());
+        assert!(registry.get_model("claude-sonnet").await.is_some());
     }
 
     #[tokio::test]

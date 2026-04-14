@@ -139,8 +139,8 @@ impl Registry for PersistentRegistry {
         Ok(())
     }
 
-    fn get_model(&self, name: &str) -> Option<Model> {
-        self.inner.get_model(name)
+    async fn get_model(&self, name: &str) -> Option<Model> {
+        self.inner.get_model(name).await
     }
 
     fn get_models(&self) -> Vec<Model> {
@@ -156,14 +156,14 @@ impl Registry for PersistentRegistry {
     }
 
     fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
-        // Check if model exists
-        let Some(model) = self.inner.get_model(name) else {
+        // Check model exists using the sync get_models (get_model is now async)
+        if !self.inner.get_models().iter().any(|m| m.name == name) {
             return Ok(false);
-        };
+        }
 
         // Check for dependent agents before deleting (async call)
         let inner = Arc::clone(&self.inner);
-        let model_name = model.name.clone();
+        let model_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -372,7 +372,7 @@ mod tests {
         }
 
         let registry = open_registry(&db_path).await;
-        assert!(registry.get_model("llama3").is_some());
+        assert!(registry.get_model("llama3").await.is_some());
     }
 
     #[tokio::test]
@@ -384,7 +384,7 @@ mod tests {
         registry.register_model(test_model("phi3")).await.unwrap();
 
         // Verify in-memory
-        assert!(registry.get_model("phi3").is_some());
+        assert!(registry.get_model("phi3").await.is_some());
 
         // Verify on disk: open a fresh store and check
         let repo = open_repo(&db_path);
@@ -400,13 +400,13 @@ mod tests {
 
         let registry = open_registry(&db_path).await;
         registry.register_model(test_model("phi3")).await.unwrap();
-        assert!(registry.get_model("phi3").is_some());
+        assert!(registry.get_model("phi3").await.is_some());
 
         let deleted = registry.delete_model("phi3").unwrap();
         assert!(deleted);
 
         // Gone from in-memory
-        assert!(registry.get_model("phi3").is_none());
+        assert!(registry.get_model("phi3").await.is_none());
 
         // Gone from disk
         let repo = open_repo(&db_path);
@@ -447,7 +447,7 @@ mod tests {
         // Second "session": model should be there
         {
             let registry = open_registry(&db_path).await;
-            let model = registry.get_model("llama3");
+            let model = registry.get_model("llama3").await;
             assert!(model.is_some(), "model should survive restart");
             assert_eq!(model.unwrap().name, "llama3");
         }

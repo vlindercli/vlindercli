@@ -761,7 +761,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(deployed, vec!["claude-sonnet"]);
-        assert!(registry.get_model("claude-sonnet").is_some());
+        assert!(registry.get_model("claude-sonnet").await.is_some());
     }
 
     #[tokio::test]

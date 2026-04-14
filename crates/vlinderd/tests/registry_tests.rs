@@ -132,7 +132,7 @@ async fn delete_model_blocked_by_deployed_agent() {
     }
 
     // Model still exists
-    assert!(registry.get_model("phi3").is_some());
+    assert!(registry.get_model("phi3").await.is_some());
 }
 
 #[tokio::test]
@@ -152,7 +152,7 @@ async fn delete_model_succeeds_without_dependent_agents() {
 
     let deleted = registry.delete_model("unused").unwrap();
     assert!(deleted);
-    assert!(registry.get_model("unused").is_none());
+    assert!(registry.get_model("unused").await.is_none());
 }
 
 // ============================================================================

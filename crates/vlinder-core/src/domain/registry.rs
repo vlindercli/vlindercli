@@ -272,7 +272,7 @@ pub trait Registry: Send + Sync {
                 agent.requirements.models.keys().collect::<Vec<_>>()
             )
         })?;
-        let registered = self.get_model(model_name).ok_or_else(|| {
+        let registered = self.get_model(model_name).await.ok_or_else(|| {
             format!("model '{model}' (registry name: '{model_name}') not found in registry",)
         })?;
         Ok(match registered.provider {
@@ -301,7 +301,7 @@ pub trait Registry: Send + Sync {
     async fn register_model(&self, model: Model) -> Result<(), RegistrationError>;
 
     /// Get a model by name.
-    fn get_model(&self, name: &str) -> Option<Model>;
+    async fn get_model(&self, name: &str) -> Option<Model>;
 
     /// Get all registered models.
     fn get_models(&self) -> Vec<Model>;

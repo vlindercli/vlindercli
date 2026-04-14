@@ -301,8 +301,8 @@ mod tests {
         let deployed = deploy_fleet_models(dir.path(), &*registry).await;
 
         assert_eq!(deployed.len(), 2);
-        assert!(registry.get_model("claude-sonnet").is_some());
-        assert!(registry.get_model("llama3").is_some());
+        assert!(registry.get_model("claude-sonnet").await.is_some());
+        assert!(registry.get_model("llama3").await.is_some());
     }
 
     #[tokio::test]

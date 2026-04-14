@@ -339,7 +339,7 @@ impl Registry for InMemoryRegistry {
         Ok(())
     }
 
-    fn get_model(&self, name: &str) -> Option<Model> {
+    async fn get_model(&self, name: &str) -> Option<Model> {
         let model_id = self.model_id(name);
         let state = self.state.read().unwrap();
         state.models.get(&model_id).cloned()

@@ -243,16 +243,13 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_model(&self, name: &str) -> Option<Model> {
+    async fn get_model(&self, name: &str) -> Option<Model> {
         let request = proto::GetModelRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_model(request).await })
-            .ok()?;
+        let response = client.get_model(request).await.ok()?;
 
         response.into_inner().model.and_then(|m| m.try_into().ok())
     }

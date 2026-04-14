@@ -49,7 +49,8 @@ use git2::{FileMode, Oid, Repository, RepositoryInitOptions, Signature, TreeBuil
 
 use vlinder_core::domain::{
     hash_dag_node, DagNodeId, DagWorker, DataMessageKind, DataRoutingKey, ForkMessage,
-    InvokeMessage, MessageType, PromoteMessage, Registry, SessionMessageKind, SessionRoutingKey,
+    InvokeMessage, MessageType, Model, PromoteMessage, Registry, SessionMessageKind,
+    SessionRoutingKey,
 };
 
 /// DAG worker that writes commits to a git repository.
@@ -182,9 +183,11 @@ impl GitDagWorker {
     }
 
     /// Build a models/ subtree with one TOML file per model.
+    ///
+    /// `fetched_models` maps model name → pre-fetched `Model` (resolved by the caller).
     fn build_models_subtree(
         &self,
-        registry: &Arc<dyn Registry>,
+        fetched_models: &std::collections::HashMap<String, Model>,
         models: &std::collections::HashMap<String, String>,
     ) -> Result<Oid, String> {
         let mut tb = self
@@ -194,8 +197,8 @@ impl GitDagWorker {
 
         let mut has_entries = false;
         for (alias, model_name) in models {
-            if let Some(model) = registry.get_model(model_name) {
-                if let Ok(model_toml) = toml::to_string_pretty(&model) {
+            if let Some(model) = fetched_models.get(model_name.as_str()) {
+                if let Ok(model_toml) = toml::to_string_pretty(model) {
                     let oid = self.write_blob(model_toml.as_bytes())?;
                     let filename = format!("{}.toml", alias.replace('/', "-"));
                     tb.insert(&filename, oid, FileMode::Blob.into())
@@ -367,17 +370,29 @@ impl GitDagWorker {
         let _ = root_tb.remove("models");
 
         if let Some(ref registry) = self.registry {
-            // Call async registry method in a separate thread to avoid nested runtime
+            // Fetch agent and models asynchronously in one thread (get_model is async).
+            type AgentAndModels = (
+                Option<vlinder_core::domain::Agent>,
+                std::collections::HashMap<String, Model>,
+            );
             let registry_clone = Arc::clone(registry);
-            let registry_for_models = Arc::clone(registry);
-            let agent_name = agent_name.to_string();
-            let (tx, rx) = std::sync::mpsc::channel();
+            let agent_name_str = agent_name.to_string();
+            let (tx, rx) = std::sync::mpsc::channel::<AgentAndModels>();
             std::thread::spawn(move || {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                let agent = rt.block_on(registry_clone.get_agent_by_name(&agent_name));
-                let _ = tx.send(agent);
+                let agent = rt.block_on(registry_clone.get_agent_by_name(&agent_name_str));
+                let mut fetched_models = std::collections::HashMap::new();
+                if let Some(ref a) = agent {
+                    for model_name in a.requirements.models.values() {
+                        if let Some(model) = rt.block_on(registry_clone.get_model(model_name)) {
+                            fetched_models.insert(model_name.clone(), model);
+                        }
+                    }
+                }
+                let _ = tx.send((agent, fetched_models));
             });
-            if let Some(agent) = rx.recv().unwrap() {
+            let (agent_opt, fetched_models) = rx.recv().unwrap();
+            if let Some(agent) = agent_opt {
                 if let Ok(agent_toml) = toml::to_string_pretty(&agent) {
                     if let Ok(oid) = self.write_blob(agent_toml.as_bytes()) {
                         let _ = root_tb.insert("agent.toml", oid, FileMode::Blob.into());
@@ -386,7 +401,7 @@ impl GitDagWorker {
 
                 if !agent.requirements.models.is_empty() {
                     if let Ok(models_oid) =
-                        self.build_models_subtree(&registry_for_models, &agent.requirements.models)
+                        self.build_models_subtree(&fetched_models, &agent.requirements.models)
                     {
                         let _ = root_tb.insert("models", models_oid, FileMode::Tree.into());
                     }
