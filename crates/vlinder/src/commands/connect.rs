@@ -42,15 +42,22 @@ pub fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
 }
 
 /// Connect to the harness via gRPC, exiting on failure.
-pub fn connect_harness(config: &CliConfig) -> Box<dyn Harness> {
+pub async fn connect_harness(config: &CliConfig) -> Box<dyn Harness> {
     let harness_addr = normalize_addr(&config.daemon.harness_addr);
-
-    if ping_harness(&harness_addr).is_none() {
+    let addr_for_ping = harness_addr.clone();
+    if tokio::task::spawn_blocking(move || ping_harness(&addr_for_ping))
+        .await
+        .unwrap_or(None)
+        .is_none()
+    {
         eprintln!("Cannot reach harness at {harness_addr}. Is the daemon running?");
         std::process::exit(1);
     }
-
-    Box::new(GrpcHarnessClient::connect(&harness_addr).expect("Failed to connect to harness"))
+    Box::new(
+        GrpcHarnessClient::connect(&harness_addr)
+            .await
+            .expect("Failed to connect to harness"),
+    )
 }
 
 /// Open the `DagStore` via gRPC state service.

@@ -233,7 +233,7 @@ fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
 
     // Send ForkMessage through the harness/queue (CQRS: both SQL and git react)
     // Fork creates a branch within the existing session — no new session needed.
-    let harness = connect_harness(&config);
+    let harness = rt.block_on(connect_harness(&config));
     let timeline = BranchId::from(1);
 
     let params = ForkParams {
@@ -289,7 +289,7 @@ fn promote(session_id_or_name: &str, branch_name: &str) {
             std::process::exit(1);
         });
 
-    let harness = connect_harness(&config);
+    let harness = rt.block_on(connect_harness(&config));
 
     let params = PromoteParams {
         agent_name: AgentName::new(agent_name),

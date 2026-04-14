@@ -31,17 +31,14 @@ pub fn ping_harness(addr: &str) -> Option<(u32, u32, u32)> {
 /// Harness implementation that makes gRPC calls to a remote server.
 pub struct GrpcHarnessClient {
     client: HarnessClient<Channel>,
-    #[allow(dead_code)]
-    runtime: tokio::runtime::Runtime,
 }
 
 impl GrpcHarnessClient {
     /// Connect to a harness server.
-    pub fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let runtime = tokio::runtime::Runtime::new()?;
-        let client = runtime.block_on(async { HarnessClient::connect(addr.to_string()).await })?;
+    pub async fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let client = HarnessClient::connect(addr.to_string()).await?;
 
-        Ok(Self { client, runtime })
+        Ok(Self { client })
     }
 }
 

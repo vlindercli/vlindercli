@@ -252,7 +252,7 @@ fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&
 
     // Connect to harness via gRPC — the daemon's harness worker owns the
     // queue and registry connection. The CLI is now a pure gRPC client.
-    let harness = connect_harness(&config);
+    let harness = rt.block_on(connect_harness(&config));
 
     // Resolve (session, branch) — the CLI flags are sugar for this tuple.
     // All paths end at resolve_branch_tip for state resolution.

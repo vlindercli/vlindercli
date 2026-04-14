@@ -194,7 +194,7 @@ pub fn run(name: &str, prompt: Option<&str>) {
     let fleet_context = rt.block_on(build_fleet_context(&*registry, &fleet));
 
     // Connect harness via gRPC — the daemon owns queue and registry
-    let harness = connect_harness(&config);
+    let harness = rt.block_on(connect_harness(&config));
 
     // New session — start fresh, no prior state
     let (session_id, branch_id) = rt.block_on(harness.start_session(entry_agent_name.as_str()));
