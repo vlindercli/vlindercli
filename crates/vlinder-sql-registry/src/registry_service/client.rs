@@ -197,17 +197,14 @@ impl Registry for GrpcRegistryClient {
         response.into_inner().agent.and_then(|a| a.try_into().ok())
     }
 
-    fn agent_id(&self, name: &str) -> Option<ResourceId> {
+    async fn agent_id(&self, name: &str) -> Option<ResourceId> {
         // Query the server — only it knows its registry_id.
         let request = proto::GetAgentByNameRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_agent_by_name(request).await })
-            .ok()?;
+        let response = client.get_agent_by_name(request).await.ok()?;
 
         let agent = response.into_inner().agent?;
         Some(agent.id?.into())

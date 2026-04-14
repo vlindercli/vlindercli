@@ -32,7 +32,7 @@ async fn agent_registration() {
     registry.register_runtime(RuntimeType::Container);
 
     // Agent not found initially
-    assert!(registry.agent_id("echo-agent").is_none());
+    assert!(registry.agent_id("echo-agent").await.is_none());
     assert!(registry.get_agent_by_name("echo-agent").await.is_none());
 
     // Register agent — registry assigns identity
@@ -40,7 +40,7 @@ async fn agent_registration() {
     registry.register_agent(agent).await.unwrap();
 
     // Now found by name and registry-assigned id
-    let agent_id = registry.agent_id("echo-agent").unwrap();
+    let agent_id = registry.agent_id("echo-agent").await.unwrap();
     let agent = registry.get_agent(&agent_id).await.unwrap();
     assert_eq!(agent.name, "echo-agent");
 

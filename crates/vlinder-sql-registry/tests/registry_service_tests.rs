@@ -90,7 +90,7 @@ fn grpc_register_and_get_agent() {
     rt.block_on(client.register_agent(agent)).unwrap();
 
     // Retrieve via gRPC using registry-assigned ID
-    let agent_id = registry.agent_id("test-agent").unwrap();
+    let agent_id = rt.block_on(registry.agent_id("test-agent")).unwrap();
     let retrieved = rt.block_on(client.get_agent(&agent_id));
     assert!(retrieved.is_some());
     assert_eq!(retrieved.unwrap().name, "test-agent");
@@ -156,7 +156,7 @@ fn grpc_job_lifecycle() {
     rt.block_on(client.register_agent(agent)).unwrap();
 
     // Create a job via gRPC using registry-assigned ID
-    let agent_id = registry.agent_id("job-test-agent").unwrap();
+    let agent_id = rt.block_on(registry.agent_id("job-test-agent")).unwrap();
     let job_id = rt.block_on(client.create_job(SubmissionId::new(), agent_id, "hello".to_string()));
 
     // Job should be pending

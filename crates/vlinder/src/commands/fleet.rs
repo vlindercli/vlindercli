@@ -122,10 +122,12 @@ pub fn deploy(path: Option<PathBuf>) {
     }
 
     // Build Fleet from manifest + registry, then register
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap_or_else(|e| {
-        eprintln!("Failed to build fleet: {e}");
-        std::process::exit(1);
-    });
+    let fleet = rt
+        .block_on(Fleet::from_manifest(manifest, &*registry))
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to build fleet: {e}");
+            std::process::exit(1);
+        });
 
     let fleet_name = fleet.name.clone();
     let entry_id = fleet.entry.clone();

@@ -132,12 +132,12 @@ fn test_manifest() -> FleetManifest {
     .unwrap()
 }
 
-#[test]
-fn fleet_from_manifest_resolves_agent_ids() {
+#[tokio::test]
+async fn fleet_from_manifest_resolves_agent_ids() {
     let registry = test_registry_with_agents(&["echo", "upper"]);
     let manifest = test_manifest();
 
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap();
+    let fleet = Fleet::from_manifest(manifest, &*registry).await.unwrap();
 
     assert_eq!(fleet.name, "test-fleet");
     assert_eq!(fleet.agents.len(), 2);
@@ -145,12 +145,12 @@ fn fleet_from_manifest_resolves_agent_ids() {
     assert!(fleet.entry.as_str().contains("echo"));
 }
 
-#[test]
-fn fleet_from_manifest_fails_when_agent_not_registered() {
+#[tokio::test]
+async fn fleet_from_manifest_fails_when_agent_not_registered() {
     let registry = test_registry_with_agents(&["echo"]); // "upper" missing
     let manifest = test_manifest();
 
-    let result = Fleet::from_manifest(manifest, &*registry);
+    let result = Fleet::from_manifest(manifest, &*registry).await;
     assert!(result.is_err());
     let err = format!("{}", result.unwrap_err());
     assert!(
@@ -159,12 +159,12 @@ fn fleet_from_manifest_fails_when_agent_not_registered() {
     );
 }
 
-#[test]
-fn fleet_from_manifest_fails_when_entry_not_registered() {
+#[tokio::test]
+async fn fleet_from_manifest_fails_when_entry_not_registered() {
     let registry = test_registry_with_agents(&["upper"]); // "echo" (entry) missing
     let manifest = test_manifest();
 
-    let result = Fleet::from_manifest(manifest, &*registry);
+    let result = Fleet::from_manifest(manifest, &*registry).await;
     assert!(result.is_err());
     let err = format!("{}", result.unwrap_err());
     assert!(
@@ -173,24 +173,24 @@ fn fleet_from_manifest_fails_when_entry_not_registered() {
     );
 }
 
-#[test]
-fn fleet_has_agent() {
+#[tokio::test]
+async fn fleet_has_agent() {
     let registry = test_registry_with_agents(&["echo", "upper"]);
     let manifest = test_manifest();
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap();
+    let fleet = Fleet::from_manifest(manifest, &*registry).await.unwrap();
 
     // Fleet stores ResourceIds, has_agent checks by ResourceId string content
-    let echo_id = registry.agent_id("echo").unwrap();
-    let upper_id = registry.agent_id("upper").unwrap();
+    let echo_id = registry.agent_id("echo").await.unwrap();
+    let upper_id = registry.agent_id("upper").await.unwrap();
     assert!(fleet.agents.contains(&echo_id));
     assert!(fleet.agents.contains(&upper_id));
 }
 
-#[test]
-fn fleet_has_placeholder_id_before_registration() {
+#[tokio::test]
+async fn fleet_has_placeholder_id_before_registration() {
     let registry = test_registry_with_agents(&["echo", "upper"]);
     let manifest = test_manifest();
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap();
+    let fleet = Fleet::from_manifest(manifest, &*registry).await.unwrap();
 
     assert!(fleet
         .id
@@ -202,11 +202,11 @@ fn fleet_has_placeholder_id_before_registration() {
 // Fleet Registration Tests
 // ============================================================================
 
-#[test]
-fn register_fleet_assigns_registry_id() {
+#[tokio::test]
+async fn register_fleet_assigns_registry_id() {
     let registry = test_registry_with_agents(&["echo", "upper"]);
     let manifest = test_manifest();
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap();
+    let fleet = Fleet::from_manifest(manifest, &*registry).await.unwrap();
 
     registry.register_fleet(fleet).unwrap();
 
@@ -215,22 +215,28 @@ fn register_fleet_assigns_registry_id() {
     assert!(!stored.id.as_str().contains("pending-registration"));
 }
 
-#[test]
-fn register_fleet_idempotent() {
+#[tokio::test]
+async fn register_fleet_idempotent() {
     let registry = test_registry_with_agents(&["echo", "upper"]);
 
-    let fleet1 = Fleet::from_manifest(test_manifest(), &*registry).unwrap();
-    let fleet2 = Fleet::from_manifest(test_manifest(), &*registry).unwrap();
+    let fleet1 = Fleet::from_manifest(test_manifest(), &*registry)
+        .await
+        .unwrap();
+    let fleet2 = Fleet::from_manifest(test_manifest(), &*registry)
+        .await
+        .unwrap();
 
     registry.register_fleet(fleet1).unwrap();
     // Second registration of same fleet should succeed
     registry.register_fleet(fleet2).unwrap();
 }
 
-#[test]
-fn get_fleets_returns_all() {
+#[tokio::test]
+async fn get_fleets_returns_all() {
     let registry = test_registry_with_agents(&["echo", "upper"]);
-    let fleet = Fleet::from_manifest(test_manifest(), &*registry).unwrap();
+    let fleet = Fleet::from_manifest(test_manifest(), &*registry)
+        .await
+        .unwrap();
     registry.register_fleet(fleet).unwrap();
 
     let fleets = registry.get_fleets();
@@ -248,18 +254,18 @@ fn get_fleet_returns_none_for_missing() {
 // Fleet from_manifest — Edge Cases
 // ============================================================================
 
-#[test]
-fn fleet_from_manifest_entry_is_in_agents_set() {
+#[tokio::test]
+async fn fleet_from_manifest_entry_is_in_agents_set() {
     let registry = test_registry_with_agents(&["echo", "upper"]);
     let manifest = test_manifest();
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap();
+    let fleet = Fleet::from_manifest(manifest, &*registry).await.unwrap();
 
     // The entry agent's ResourceId must be present in the agents set
     assert!(fleet.agents.contains(&fleet.entry));
 }
 
-#[test]
-fn fleet_from_manifest_single_agent_fleet() {
+#[tokio::test]
+async fn fleet_from_manifest_single_agent_fleet() {
     let registry = test_registry_with_agents(&["solo"]);
     let manifest: FleetManifest = parse_fleet_manifest(
         r#"
@@ -272,13 +278,13 @@ fn fleet_from_manifest_single_agent_fleet() {
     )
     .unwrap();
 
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap();
+    let fleet = Fleet::from_manifest(manifest, &*registry).await.unwrap();
     assert_eq!(fleet.agents.len(), 1);
-    assert_eq!(fleet.entry, registry.agent_id("solo").unwrap());
+    assert_eq!(fleet.entry, registry.agent_id("solo").await.unwrap());
 }
 
-#[test]
-fn fleet_from_manifest_many_agents() {
+#[tokio::test]
+async fn fleet_from_manifest_many_agents() {
     let names = &[
         "coordinator",
         "researcher",
@@ -310,10 +316,10 @@ fn fleet_from_manifest_many_agents() {
     )
     .unwrap();
 
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap();
+    let fleet = Fleet::from_manifest(manifest, &*registry).await.unwrap();
     assert_eq!(fleet.agents.len(), 5);
     for name in names {
-        let id = registry.agent_id(name).unwrap();
+        let id = registry.agent_id(name).await.unwrap();
         assert!(
             fleet.agents.contains(&id),
             "fleet should contain agent '{name}'"
@@ -321,8 +327,8 @@ fn fleet_from_manifest_many_agents() {
     }
 }
 
-#[test]
-fn fleet_from_manifest_all_agents_missing() {
+#[tokio::test]
+async fn fleet_from_manifest_all_agents_missing() {
     // Registry has no agents at all
     let registry = test_registry_with_agents(&[]);
     let manifest: FleetManifest = parse_fleet_manifest(
@@ -336,7 +342,7 @@ fn fleet_from_manifest_all_agents_missing() {
     )
     .unwrap();
 
-    let result = Fleet::from_manifest(manifest, &*registry);
+    let result = Fleet::from_manifest(manifest, &*registry).await;
     assert!(result.is_err());
     let err = format!("{}", result.unwrap_err());
     assert!(
@@ -345,8 +351,8 @@ fn fleet_from_manifest_all_agents_missing() {
     );
 }
 
-#[test]
-fn fleet_agents_count_matches_manifest() {
+#[tokio::test]
+async fn fleet_agents_count_matches_manifest() {
     let registry = test_registry_with_agents(&["a", "b", "c"]);
     let manifest: FleetManifest = parse_fleet_manifest(
         r#"
@@ -366,7 +372,7 @@ fn fleet_agents_count_matches_manifest() {
     .unwrap();
 
     let expected_count = manifest.agents.len();
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap();
+    let fleet = Fleet::from_manifest(manifest, &*registry).await.unwrap();
     assert_eq!(fleet.agents.len(), expected_count);
 }
 
@@ -374,11 +380,13 @@ fn fleet_agents_count_matches_manifest() {
 // Fleet Registration — Edge Cases
 // ============================================================================
 
-#[test]
-fn register_fleet_rejects_config_mismatch_different_entry() {
+#[tokio::test]
+async fn register_fleet_rejects_config_mismatch_different_entry() {
     let registry = test_registry_with_agents(&["echo", "upper"]);
 
-    let fleet1 = Fleet::from_manifest(test_manifest(), &*registry).unwrap();
+    let fleet1 = Fleet::from_manifest(test_manifest(), &*registry)
+        .await
+        .unwrap();
     registry.register_fleet(fleet1).unwrap();
 
     // Build a fleet with same agents but different entry
@@ -395,7 +403,7 @@ fn register_fleet_rejects_config_mismatch_different_entry() {
     "#,
     )
     .unwrap();
-    let fleet2 = Fleet::from_manifest(manifest2, &*registry).unwrap();
+    let fleet2 = Fleet::from_manifest(manifest2, &*registry).await.unwrap();
 
     let result = registry.register_fleet(fleet2);
     assert!(result.is_err());
@@ -407,11 +415,13 @@ fn register_fleet_rejects_config_mismatch_different_entry() {
     }
 }
 
-#[test]
-fn register_fleet_rejects_config_mismatch_different_agents() {
+#[tokio::test]
+async fn register_fleet_rejects_config_mismatch_different_agents() {
     let registry = test_registry_with_agents(&["echo", "upper", "third"]);
 
-    let fleet1 = Fleet::from_manifest(test_manifest(), &*registry).unwrap();
+    let fleet1 = Fleet::from_manifest(test_manifest(), &*registry)
+        .await
+        .unwrap();
     registry.register_fleet(fleet1).unwrap();
 
     // Build a fleet with same name and entry, but a different agent set
@@ -428,7 +438,7 @@ fn register_fleet_rejects_config_mismatch_different_agents() {
     "#,
     )
     .unwrap();
-    let fleet2 = Fleet::from_manifest(manifest2, &*registry).unwrap();
+    let fleet2 = Fleet::from_manifest(manifest2, &*registry).await.unwrap();
 
     let result = registry.register_fleet(fleet2);
     assert!(result.is_err());
@@ -440,10 +450,12 @@ fn register_fleet_rejects_config_mismatch_different_agents() {
     }
 }
 
-#[test]
-fn fleet_name_preserved_through_registration() {
+#[tokio::test]
+async fn fleet_name_preserved_through_registration() {
     let registry = test_registry_with_agents(&["echo", "upper"]);
-    let fleet = Fleet::from_manifest(test_manifest(), &*registry).unwrap();
+    let fleet = Fleet::from_manifest(test_manifest(), &*registry)
+        .await
+        .unwrap();
 
     assert_eq!(fleet.name, "test-fleet");
     registry.register_fleet(fleet).unwrap();
@@ -452,8 +464,8 @@ fn fleet_name_preserved_through_registration() {
     assert_eq!(stored.name, "test-fleet");
 }
 
-#[test]
-fn multiple_fleets_can_share_agents() {
+#[tokio::test]
+async fn multiple_fleets_can_share_agents() {
     let registry = test_registry_with_agents(&["shared", "only-a", "only-b"]);
 
     let manifest_a: FleetManifest = parse_fleet_manifest(
@@ -484,8 +496,8 @@ fn multiple_fleets_can_share_agents() {
     )
     .unwrap();
 
-    let fleet_a = Fleet::from_manifest(manifest_a, &*registry).unwrap();
-    let fleet_b = Fleet::from_manifest(manifest_b, &*registry).unwrap();
+    let fleet_a = Fleet::from_manifest(manifest_a, &*registry).await.unwrap();
+    let fleet_b = Fleet::from_manifest(manifest_b, &*registry).await.unwrap();
 
     registry.register_fleet(fleet_a).unwrap();
     registry.register_fleet(fleet_b).unwrap();
@@ -493,7 +505,7 @@ fn multiple_fleets_can_share_agents() {
     assert_eq!(registry.get_fleets().len(), 2);
 
     // Both fleets contain the shared agent
-    let shared_id = registry.agent_id("shared").unwrap();
+    let shared_id = registry.agent_id("shared").await.unwrap();
     assert!(registry
         .get_fleet("fleet-a")
         .unwrap()

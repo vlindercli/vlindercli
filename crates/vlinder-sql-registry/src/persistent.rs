@@ -109,8 +109,8 @@ impl Registry for PersistentRegistry {
         Ok(())
     }
 
-    fn agent_id(&self, name: &str) -> Option<ResourceId> {
-        self.inner.agent_id(name)
+    async fn agent_id(&self, name: &str) -> Option<ResourceId> {
+        self.inner.agent_id(name).await
     }
 
     async fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
@@ -194,6 +194,7 @@ impl Registry for PersistentRegistry {
         let agent_id = self
             .inner
             .agent_id(name)
+            .await
             .expect("agent_id must exist when get_agent_by_name succeeds");
         let dependent: Vec<String> = self
             .inner
