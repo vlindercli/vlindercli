@@ -879,7 +879,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_session(
+    async fn get_session(
         &self,
         session_id: &vlinder_core::domain::SessionId,
     ) -> Result<Option<vlinder_core::domain::Session>, String> {
@@ -887,9 +887,9 @@ impl DagStore for GrpcStateClient {
         let req = proto::GetSessionRequest {
             session_id: session_id.as_str().to_string(),
         };
-        let resp = self
-            .runtime
-            .block_on(async { client.get_session(req).await })
+        let resp = client
+            .get_session(req)
+            .await
             .map_err(|e| e.to_string())?
             .into_inner();
         resp.session.map(proto_to_session).transpose()

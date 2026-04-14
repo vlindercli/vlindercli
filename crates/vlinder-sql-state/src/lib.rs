@@ -123,14 +123,12 @@ fn handle_request(request: tiny_http::Request, store: &dyn DagStore) {
             let _ = request.respond(html_response(404, &body));
             return;
         }
+        let rt = Runtime::new().unwrap();
         let session = SessionId::try_from(raw_id.to_string())
             .ok()
-            .and_then(|sid| store.get_session(&sid).ok().flatten());
+            .and_then(|sid| rt.block_on(store.get_session(&sid)).ok().flatten());
         if let Some(session) = session {
-            if let Ok(body) = Runtime::new()
-                .unwrap()
-                .block_on(render_session(store, &session))
-            {
+            if let Ok(body) = rt.block_on(render_session(store, &session)) {
                 let _ = request.respond(html_response(200, &body));
             } else {
                 let body = html_page(

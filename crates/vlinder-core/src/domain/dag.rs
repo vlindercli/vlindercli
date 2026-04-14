@@ -542,7 +542,7 @@ pub trait DagStore: Send + Sync {
     async fn create_session(&self, session: &Session) -> Result<(), String>;
 
     /// Look up a session by its ID.
-    fn get_session(&self, session_id: &super::SessionId) -> Result<Option<Session>, String>;
+    async fn get_session(&self, session_id: &super::SessionId) -> Result<Option<Session>, String>;
 
     /// Look up a session by its friendly name.
     fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String>;
@@ -934,7 +934,7 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn get_session(&self, session_id: &super::SessionId) -> Result<Option<Session>, String> {
+    async fn get_session(&self, session_id: &super::SessionId) -> Result<Option<Session>, String> {
         let sessions = self.sessions.lock().unwrap();
         Ok(sessions.iter().find(|s| s.id == *session_id).cloned())
     }

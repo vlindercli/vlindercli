@@ -309,11 +309,11 @@ fn resolve_session_default(
     DagNodeId,
 ) {
     let store = require_dag_store(config);
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
 
-    let session = resolve_session(&*store, session_name);
+    let session = resolve_session(&*store, session_name, &rt);
     let branch_id = session.default_branch;
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let branch = rt
         .block_on(store.get_branch(branch_id))
         .unwrap_or_else(|e| {
@@ -427,10 +427,14 @@ fn resolve_branch_tip(
 }
 
 /// Resolve a session by name or UUID.
-fn resolve_session(store: &dyn DagStore, name_or_id: &str) -> vlinder_core::domain::Session {
+fn resolve_session(
+    store: &dyn DagStore,
+    name_or_id: &str,
+    rt: &Runtime,
+) -> vlinder_core::domain::Session {
     // Try UUID first
     if let Ok(sid) = vlinder_core::domain::SessionId::try_from(name_or_id.to_string()) {
-        if let Some(session) = store.get_session(&sid).ok().flatten() {
+        if let Some(session) = rt.block_on(store.get_session(&sid)).ok().flatten() {
             return session;
         }
     }

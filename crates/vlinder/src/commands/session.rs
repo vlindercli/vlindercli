@@ -65,6 +65,7 @@ fn require_dag_store(config: &CliConfig) -> Box<dyn DagStore> {
 fn list(agent_name: &str) {
     let config = CliConfig::load();
     let store = require_dag_store(&config);
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
 
     let sessions = store.list_sessions().unwrap_or_else(|e| {
         eprintln!("Failed to list sessions: {e}");
@@ -86,8 +87,8 @@ fn list(agent_name: &str) {
         "NAME", "SESSION_ID", "STARTED", "BRANCHES"
     );
     for s in &filtered {
-        let name = store
-            .get_session(&s.session_id)
+        let name = rt
+            .block_on(store.get_session(&s.session_id))
             .ok()
             .flatten()
             .map(|sess| sess.name)

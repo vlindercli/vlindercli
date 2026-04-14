@@ -992,7 +992,7 @@ mod tests {
             async fn create_session(&self, _: &crate::domain::Session) -> Result<(), String> {
                 Ok(())
             }
-            fn get_session(
+            async fn get_session(
                 &self,
                 _: &crate::domain::SessionId,
             ) -> Result<Option<crate::domain::Session>, String> {

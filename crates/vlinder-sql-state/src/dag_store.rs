@@ -1015,7 +1015,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn get_session(&self, session_id: &SessionId) -> Result<Option<Session>, String> {
+    async fn get_session(&self, session_id: &SessionId) -> Result<Option<Session>, String> {
         use crate::schema::sessions;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1583,7 +1583,7 @@ mod tests {
         store.create_session(&session).await.unwrap();
 
         let sid = SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap();
-        let retrieved = store.get_session(&sid).unwrap().unwrap();
+        let retrieved = store.get_session(&sid).await.unwrap().unwrap();
         assert_eq!(
             retrieved.id.as_str(),
             "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -1616,7 +1616,7 @@ mod tests {
     async fn get_session_returns_none_for_unknown() {
         let (store, _dir) = test_store().await;
         let sid = SessionId::try_from("00000000-0000-0000-0000-000000000000".to_string()).unwrap();
-        assert!(store.get_session(&sid).unwrap().is_none());
+        assert!(store.get_session(&sid).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1638,7 +1638,7 @@ mod tests {
         store.create_session(&session).await.unwrap(); // No error
 
         let sid = SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap();
-        let retrieved = store.get_session(&sid).unwrap().unwrap();
+        let retrieved = store.get_session(&sid).await.unwrap().unwrap();
         assert_eq!(retrieved.agent, "pensieve");
     }
 
