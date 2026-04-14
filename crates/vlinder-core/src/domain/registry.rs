@@ -298,7 +298,7 @@ pub trait Registry: Send + Sync {
     // --- Model operations ---
 
     /// Register a model (assigns registry-issued identity).
-    fn register_model(&self, model: Model) -> Result<(), RegistrationError>;
+    async fn register_model(&self, model: Model) -> Result<(), RegistrationError>;
 
     /// Get a model by name.
     fn get_model(&self, name: &str) -> Option<Model>;

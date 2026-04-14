@@ -151,9 +151,10 @@ fn deploy(path: Option<PathBuf>) {
 
     let agent_name = manifest.name.clone();
 
-    // Auto-deploy models (still synchronous via Registry trait)
+    // Auto-deploy models before submitting the deploy request
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
     let agent_dir = resolve_agent_dir(&absolute_path);
-    match auto_deploy_models(&agent_dir, &manifest, &client) {
+    match rt.block_on(auto_deploy_models(&agent_dir, &manifest, &client)) {
         Ok(deployed) => {
             for name in &deployed {
                 println!("  Model: {name} (auto-deployed)");
@@ -214,8 +215,10 @@ pub(super) fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Registry) 
         std::process::exit(1);
     });
 
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+
     // Auto-deploy models from <agent_dir>/models/<name>.toml
-    match auto_deploy_models(agent_dir, &manifest, registry) {
+    match rt.block_on(auto_deploy_models(agent_dir, &manifest, registry)) {
         Ok(deployed) => {
             for name in &deployed {
                 println!("  Model: {name} (auto-deployed)");
@@ -227,7 +230,6 @@ pub(super) fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Registry) 
         }
     }
 
-    let rt = Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(registry.register_manifest(manifest))
         .unwrap_or_else(|e| {
             eprintln!("Failed to deploy agent: {e}");
@@ -673,7 +675,7 @@ fn patch_file(path: &PathBuf, from: &str, to: &str) {
 /// Models without a `.toml` file are skipped (they must already be registered).
 ///
 /// Returns the names of models that were auto-deployed.
-pub(super) fn auto_deploy_models(
+pub(super) async fn auto_deploy_models(
     agent_dir: &Path,
     manifest: &AgentManifest,
     registry: &dyn Registry,
@@ -690,7 +692,7 @@ pub(super) fn auto_deploy_models(
     for model_name in &model_names {
         let model_toml = models_dir.join(format!("{model_name}.toml"));
         if model_toml.exists() {
-            let model = super::model::load_and_register_model(&model_toml, registry)?;
+            let model = super::model::load_and_register_model(&model_toml, registry).await?;
             deployed.push(model.name);
         }
     }
@@ -740,8 +742,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn auto_deploy_registers_discovered_models() {
+    #[tokio::test]
+    async fn auto_deploy_registers_discovered_models() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -754,26 +756,30 @@ mod tests {
         registry.register_inference_engine(Provider::OpenRouter);
 
         let manifest = manifest_with_models(vec![("inference_model", "claude-sonnet")]);
-        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
 
         assert_eq!(deployed, vec!["claude-sonnet"]);
         assert!(registry.get_model("claude-sonnet").is_some());
     }
 
-    #[test]
-    fn auto_deploy_skips_models_without_toml() {
+    #[tokio::test]
+    async fn auto_deploy_skips_models_without_toml() {
         let dir = tempfile::tempdir().unwrap();
         // No models/ directory at all
 
         let registry = test_registry();
         let manifest = manifest_with_models(vec![("inference_model", "already-registered")]);
-        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
 
         assert!(deployed.is_empty());
     }
 
-    #[test]
-    fn auto_deploy_deduplicates_model_names() {
+    #[tokio::test]
+    async fn auto_deploy_deduplicates_model_names() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -790,15 +796,17 @@ mod tests {
             ("inference_model", "claude-sonnet"),
             ("summary_model", "claude-sonnet"),
         ]);
-        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
 
         // Registered only once
         assert_eq!(deployed.len(), 1);
         assert_eq!(registry.get_models().len(), 1);
     }
 
-    #[test]
-    fn auto_deploy_handles_multiple_models() {
+    #[tokio::test]
+    async fn auto_deploy_handles_multiple_models() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -822,26 +830,30 @@ mod tests {
             ("inference_model", "claude-sonnet"),
             ("embedding_model", "nomic-embed"),
         ]);
-        let mut deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let mut deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
         deployed.sort();
 
         assert_eq!(deployed, vec!["claude-sonnet", "nomic-embed"]);
         assert_eq!(registry.get_models().len(), 2);
     }
 
-    #[test]
-    fn auto_deploy_with_no_required_models() {
+    #[tokio::test]
+    async fn auto_deploy_with_no_required_models() {
         let dir = tempfile::tempdir().unwrap();
         let registry = test_registry();
 
         let manifest = manifest_with_models(vec![]);
-        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
 
         assert!(deployed.is_empty());
     }
 
-    #[test]
-    fn auto_deploy_propagates_registration_error() {
+    #[tokio::test]
+    async fn auto_deploy_propagates_registration_error() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -854,7 +866,7 @@ mod tests {
         // Don't register OpenRouter engine — registration should fail
 
         let manifest = manifest_with_models(vec![("inference_model", "claude-sonnet")]);
-        let result = auto_deploy_models(dir.path(), &manifest, &*registry);
+        let result = auto_deploy_models(dir.path(), &manifest, &*registry).await;
 
         assert!(result.is_err());
     }

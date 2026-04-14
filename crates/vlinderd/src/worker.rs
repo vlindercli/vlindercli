@@ -121,7 +121,15 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
         embedding_engines,
     };
 
-    let registry = PersistentRegistry::new(repo, &registry_config, secret_store)
+    // Create the tokio runtime once; use it for both async construction and the gRPC server.
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
+    let registry = rt
+        .block_on(PersistentRegistry::new(
+            repo,
+            &registry_config,
+            secret_store,
+        ))
         .unwrap_or_else(|e| panic!("Failed to initialize registry: {e}"));
 
     // Register non-engine capabilities (engines are registered by open())
@@ -145,7 +153,6 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
     tracing::info!(?addr, "Starting registry gRPC server");
 
     // Run the gRPC server until shutdown
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
         let service = RegistryServer::new(registry, queue, Arc::clone(&store) as _).into_service();
 

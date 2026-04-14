@@ -109,7 +109,8 @@ pub fn deploy(path: Option<PathBuf>) {
     let registry = connect_registry(&config);
 
     // Deploy fleet-level models from <fleet_dir>/models/*.toml
-    let fleet_models = deploy_fleet_models(&absolute_path, &*registry);
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let fleet_models = rt.block_on(deploy_fleet_models(&absolute_path, &*registry));
     for name in &fleet_models {
         println!("  Model: {name} (fleet-level)");
     }
@@ -142,7 +143,7 @@ pub fn deploy(path: Option<PathBuf>) {
 /// Fleet-level models are registered before agents, so agents can reference
 /// shared models without bundling their own copies. Agent-level models deploy
 /// after, so an agent can override a fleet-level model if needed.
-fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<String> {
+async fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<String> {
     let models_dir = fleet_dir.join("models");
     if !models_dir.is_dir() {
         return Vec::new();
@@ -161,7 +162,7 @@ fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<String>
 
     let mut deployed = Vec::new();
     for entry in entries {
-        match super::model::load_and_register_model(&entry.path(), registry) {
+        match super::model::load_and_register_model(&entry.path(), registry).await {
             Ok(model) => deployed.push(model.name),
             Err(e) => {
                 eprintln!("{e}");
@@ -275,8 +276,8 @@ mod tests {
     // deploy_fleet_models
     // ========================================================================
 
-    #[test]
-    fn deploy_fleet_models_registers_all_toml_files() {
+    #[tokio::test]
+    async fn deploy_fleet_models_registers_all_toml_files() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -297,25 +298,25 @@ mod tests {
         registry.register_inference_engine(Provider::OpenRouter);
         registry.register_inference_engine(Provider::Ollama);
 
-        let deployed = deploy_fleet_models(dir.path(), &*registry);
+        let deployed = deploy_fleet_models(dir.path(), &*registry).await;
 
         assert_eq!(deployed.len(), 2);
         assert!(registry.get_model("claude-sonnet").is_some());
         assert!(registry.get_model("llama3").is_some());
     }
 
-    #[test]
-    fn deploy_fleet_models_returns_empty_when_no_models_dir() {
+    #[tokio::test]
+    async fn deploy_fleet_models_returns_empty_when_no_models_dir() {
         let dir = tempfile::tempdir().unwrap();
         let registry = test_registry();
 
-        let deployed = deploy_fleet_models(dir.path(), &*registry);
+        let deployed = deploy_fleet_models(dir.path(), &*registry).await;
 
         assert!(deployed.is_empty());
     }
 
-    #[test]
-    fn deploy_fleet_models_ignores_non_toml_files() {
+    #[tokio::test]
+    async fn deploy_fleet_models_ignores_non_toml_files() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -332,13 +333,13 @@ mod tests {
         let registry = test_registry();
         registry.register_inference_engine(Provider::OpenRouter);
 
-        let deployed = deploy_fleet_models(dir.path(), &*registry);
+        let deployed = deploy_fleet_models(dir.path(), &*registry).await;
 
         assert_eq!(deployed, vec!["claude-sonnet"]);
     }
 
-    #[test]
-    fn deploy_fleet_models_returns_sorted_by_filename() {
+    #[tokio::test]
+    async fn deploy_fleet_models_returns_sorted_by_filename() {
         let dir = tempfile::tempdir().unwrap();
         // Write in reverse-alpha order to verify sorting
         write_model_toml(
@@ -360,7 +361,7 @@ mod tests {
         registry.register_inference_engine(Provider::OpenRouter);
         registry.register_inference_engine(Provider::Ollama);
 
-        let deployed = deploy_fleet_models(dir.path(), &*registry);
+        let deployed = deploy_fleet_models(dir.path(), &*registry).await;
 
         // Sorted by filename: claude-sonnet.toml comes before llama3.toml
         assert_eq!(deployed, vec!["claude-sonnet", "llama3"]);

@@ -9,11 +9,15 @@ use vlinder_core::domain::{CatalogService, Model, Registry};
 
 /// Load a model from a TOML manifest and register it with the registry.
 /// Used by `model add <path.toml>` and by `agent deploy` auto-discovery.
-pub fn load_and_register_model(path: &Path, registry: &dyn Registry) -> Result<Model, String> {
+pub async fn load_and_register_model(
+    path: &Path,
+    registry: &dyn Registry,
+) -> Result<Model, String> {
     let model = Model::load(path)
         .map_err(|e| format!("Failed to load model manifest '{}': {}", path.display(), e))?;
     registry
         .register_model(model.clone())
+        .await
         .map_err(|e| format!("Failed to register model: {e}"))?;
     Ok(model)
 }
@@ -59,6 +63,7 @@ pub enum ModelCommand {
 }
 
 pub fn execute(cmd: ModelCommand) {
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let config = CliConfig::load();
 
     match cmd {
@@ -74,7 +79,7 @@ pub fn execute(cmd: ModelCommand) {
                 .extension()
                 .is_some_and(|ext| ext == "toml")
             {
-                match load_and_register_model(Path::new(&name), &*registry) {
+                match rt.block_on(load_and_register_model(Path::new(&name), &*registry)) {
                     Ok(m) => m,
                     Err(e) => {
                         eprintln!("{e}");
@@ -85,7 +90,7 @@ pub fn execute(cmd: ModelCommand) {
                 let Some(model) = resolve_from_catalog(&name, &catalog, &config) else {
                     return;
                 };
-                if let Err(e) = registry.register_model(model.clone()) {
+                if let Err(e) = rt.block_on(registry.register_model(model.clone())) {
                     eprintln!("Failed to register model: {e}");
                     return;
                 }
@@ -256,8 +261,8 @@ mod tests {
     // load_and_register_model
     // ========================================================================
 
-    #[test]
-    fn load_and_register_model_registers_from_toml() {
+    #[tokio::test]
+    async fn load_and_register_model_registers_from_toml() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -272,6 +277,7 @@ mod tests {
 
         let model =
             load_and_register_model(&dir.path().join("models/claude-sonnet.toml"), &*registry)
+                .await
                 .unwrap();
 
         assert_eq!(model.name, "claude-sonnet");
@@ -279,15 +285,16 @@ mod tests {
         assert!(registry.get_model("claude-sonnet").is_some());
     }
 
-    #[test]
-    fn load_and_register_model_fails_on_missing_file() {
+    #[tokio::test]
+    async fn load_and_register_model_fails_on_missing_file() {
         let registry = test_registry();
-        let result = load_and_register_model(Path::new("/nonexistent/model.toml"), &*registry);
+        let result =
+            load_and_register_model(Path::new("/nonexistent/model.toml"), &*registry).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn load_and_register_model_fails_when_engine_unavailable() {
+    #[tokio::test]
+    async fn load_and_register_model_fails_when_engine_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -301,13 +308,14 @@ mod tests {
         // Don't register OpenRouter engine — should fail at register_model
 
         let result =
-            load_and_register_model(&dir.path().join("models/claude-sonnet.toml"), &*registry);
+            load_and_register_model(&dir.path().join("models/claude-sonnet.toml"), &*registry)
+                .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to register model"));
     }
 
-    #[test]
-    fn load_and_register_model_is_idempotent() {
+    #[tokio::test]
+    async fn load_and_register_model_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -321,8 +329,8 @@ mod tests {
         registry.register_inference_engine(Provider::OpenRouter);
 
         let path = dir.path().join("models/claude-sonnet.toml");
-        let model1 = load_and_register_model(&path, &*registry).unwrap();
-        let model2 = load_and_register_model(&path, &*registry).unwrap();
+        let model1 = load_and_register_model(&path, &*registry).await.unwrap();
+        let model2 = load_and_register_model(&path, &*registry).await.unwrap();
 
         assert_eq!(model1.name, model2.name);
         // Still only one model in registry

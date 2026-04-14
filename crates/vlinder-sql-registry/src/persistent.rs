@@ -33,7 +33,7 @@ impl PersistentRegistry {
     /// Registers engine capabilities from config first, then loads all
     /// existing models from the repository (validating each against available engines).
     /// Fails fast with a clear error on any failure.
-    pub fn new(
+    pub async fn new(
         repo: Arc<dyn RegistryRepository>,
         config: &RegistryConfig,
         secret_store: Arc<dyn SecretStore>,
@@ -54,7 +54,7 @@ impl PersistentRegistry {
             .map_err(|e| RegistrationError::Persistence(format!("failed to load models: {e}")))?;
 
         for model in models {
-            inner.register_model(model)?;
+            inner.register_model(model).await?;
         }
 
         // Load persisted agents (bypasses validation — capabilities not yet registered)
@@ -127,9 +127,9 @@ impl Registry for PersistentRegistry {
 
     // --- Model operations (write-through for mutations) ---
 
-    fn register_model(&self, model: Model) -> Result<(), RegistrationError> {
+    async fn register_model(&self, model: Model) -> Result<(), RegistrationError> {
         // Validate in-memory first (engine availability check), then persist
-        self.inner.register_model(model.clone())?;
+        self.inner.register_model(model.clone()).await?;
 
         // Write to disk (model already validated and cached)
         self.repo
@@ -334,9 +334,11 @@ mod tests {
         Arc::new(SqliteDagStore::open(db_path).unwrap())
     }
 
-    fn open_registry(db_path: &std::path::Path) -> PersistentRegistry {
+    async fn open_registry(db_path: &std::path::Path) -> PersistentRegistry {
         let repo = open_repo(db_path);
-        PersistentRegistry::new(repo, &test_config(), test_secret_store()).unwrap()
+        PersistentRegistry::new(repo, &test_config(), test_secret_store())
+            .await
+            .unwrap()
     }
 
     fn test_model(name: &str) -> Model {
@@ -350,16 +352,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn open_creates_db_if_not_exists() {
+    #[tokio::test]
+    async fn open_creates_db_if_not_exists() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
-        let registry = open_registry(&db_path);
+        let registry = open_registry(&db_path).await;
         assert!(registry.get_models().is_empty());
     }
 
-    #[test]
-    fn loads_existing_models_on_open() {
+    #[tokio::test]
+    async fn loads_existing_models_on_open() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
@@ -369,17 +371,17 @@ mod tests {
             repo.save_model(&test_model("llama3")).unwrap();
         }
 
-        let registry = open_registry(&db_path);
+        let registry = open_registry(&db_path).await;
         assert!(registry.get_model("llama3").is_some());
     }
 
-    #[test]
-    fn register_model_persists_to_disk() {
+    #[tokio::test]
+    async fn register_model_persists_to_disk() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
-        let registry = open_registry(&db_path);
-        registry.register_model(test_model("phi3")).unwrap();
+        let registry = open_registry(&db_path).await;
+        registry.register_model(test_model("phi3")).await.unwrap();
 
         // Verify in-memory
         assert!(registry.get_model("phi3").is_some());
@@ -396,8 +398,8 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
-        let registry = open_registry(&db_path);
-        registry.register_model(test_model("phi3")).unwrap();
+        let registry = open_registry(&db_path).await;
+        registry.register_model(test_model("phi3")).await.unwrap();
         assert!(registry.get_model("phi3").is_some());
 
         let deleted = registry.delete_model("phi3").unwrap();
@@ -411,12 +413,12 @@ mod tests {
         assert!(!repo.model_exists("phi3").unwrap());
     }
 
-    #[test]
-    fn delete_nonexistent_model_returns_false() {
+    #[tokio::test]
+    async fn delete_nonexistent_model_returns_false() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
-        let registry = open_registry(&db_path);
+        let registry = open_registry(&db_path).await;
         let deleted = registry.delete_model("nope").unwrap();
         assert!(!deleted);
     }
@@ -431,20 +433,20 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn survives_restart() {
+    #[tokio::test]
+    async fn survives_restart() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
         // First "session": add a model
         {
-            let registry = open_registry(&db_path);
-            registry.register_model(test_model("llama3")).unwrap();
+            let registry = open_registry(&db_path).await;
+            registry.register_model(test_model("llama3")).await.unwrap();
         }
 
         // Second "session": model should be there
         {
-            let registry = open_registry(&db_path);
+            let registry = open_registry(&db_path).await;
             let model = registry.get_model("llama3");
             assert!(model.is_some(), "model should survive restart");
             assert_eq!(model.unwrap().name, "llama3");
@@ -475,8 +477,8 @@ mod tests {
     }
 
     /// Open a `PersistentRegistry` with container runtime pre-registered.
-    fn open_with_runtime(db_path: &std::path::Path) -> PersistentRegistry {
-        let registry = open_registry(db_path);
+    async fn open_with_runtime(db_path: &std::path::Path) -> PersistentRegistry {
+        let registry = open_registry(db_path).await;
         registry.register_runtime(RuntimeType::Container);
         registry
     }
@@ -486,7 +488,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
-        let registry = open_with_runtime(&db_path);
+        let registry = open_with_runtime(&db_path).await;
         registry.register_agent(test_agent("echo")).await.unwrap();
 
         // Verify in-memory
@@ -507,13 +509,13 @@ mod tests {
 
         // First "session": register an agent
         {
-            let registry = open_with_runtime(&db_path);
+            let registry = open_with_runtime(&db_path).await;
             registry.register_agent(test_agent("echo")).await.unwrap();
         }
 
         // Second "session": agent should be loaded via restore_agent
         {
-            let registry = open_registry(&db_path);
+            let registry = open_registry(&db_path).await;
             let agent = registry.get_agent_by_name("echo").await;
             assert!(agent.is_some(), "agent should survive restart");
             assert_eq!(agent.unwrap().name, "echo");
@@ -527,7 +529,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
-        let registry = open_with_runtime(&db_path);
+        let registry = open_with_runtime(&db_path).await;
         registry.register_agent(test_agent("echo")).await.unwrap();
         assert!(registry.get_agent_by_name("echo").await.is_some());
 
@@ -542,12 +544,12 @@ mod tests {
         assert!(!repo.agent_exists("echo").unwrap());
     }
 
-    #[test]
-    fn delete_nonexistent_agent_returns_false() {
+    #[tokio::test]
+    async fn delete_nonexistent_agent_returns_false() {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
 
-        let registry = open_with_runtime(&db_path);
+        let registry = open_with_runtime(&db_path).await;
         let deleted = registry.delete_agent("nope").unwrap();
         assert!(!deleted);
     }

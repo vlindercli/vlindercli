@@ -310,7 +310,7 @@ impl Registry for InMemoryRegistry {
 
     // --- Model operations ---
 
-    fn register_model(&self, mut model: Model) -> Result<(), RegistrationError> {
+    async fn register_model(&self, mut model: Model) -> Result<(), RegistrationError> {
         let model_id = self.model_id(&model.name);
         model.id = model_id.clone();
         let mut state = self.state.write().unwrap();

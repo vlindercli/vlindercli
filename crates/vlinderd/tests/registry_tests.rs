@@ -84,7 +84,7 @@ fn select_runtime_returns_none_without_registered_runtime() {
 // Model Deletion Tests
 // ============================================================================
 
-fn register_model_test_agent(registry: &InMemoryRegistry) {
+async fn register_model_test_agent(registry: &InMemoryRegistry) {
     // model-test-agent requires phi3 and nomic-embed with these exact URIs
     let phi3 = Model {
         id: Model::placeholder_id("phi3"),
@@ -106,18 +106,18 @@ fn register_model_test_agent(registry: &InMemoryRegistry) {
     registry.register_runtime(RuntimeType::Container);
     registry.register_inference_engine(Provider::Ollama);
     registry.register_embedding_engine(Provider::Ollama);
-    registry.register_model(phi3).unwrap();
-    registry.register_model(nomic).unwrap();
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(registry.register_agent(load_agent("model-test-agent")))
+    registry.register_model(phi3).await.unwrap();
+    registry.register_model(nomic).await.unwrap();
+    registry
+        .register_agent(load_agent("model-test-agent"))
+        .await
         .unwrap();
 }
 
-#[test]
-fn delete_model_blocked_by_deployed_agent() {
+#[tokio::test]
+async fn delete_model_blocked_by_deployed_agent() {
     let registry = InMemoryRegistry::new(test_secret_store());
-    register_model_test_agent(&registry);
+    register_model_test_agent(&registry).await;
 
     let result = registry.delete_model("phi3");
     assert!(result.is_err());
@@ -135,8 +135,8 @@ fn delete_model_blocked_by_deployed_agent() {
     assert!(registry.get_model("phi3").is_some());
 }
 
-#[test]
-fn delete_model_succeeds_without_dependent_agents() {
+#[tokio::test]
+async fn delete_model_succeeds_without_dependent_agents() {
     let registry = InMemoryRegistry::new(test_secret_store());
     registry.register_inference_engine(Provider::Ollama);
 
@@ -148,7 +148,7 @@ fn delete_model_succeeds_without_dependent_agents() {
         model_path: ResourceId::new("ollama://localhost:11434/unused"),
         digest: String::new(),
     };
-    registry.register_model(model).unwrap();
+    registry.register_model(model).await.unwrap();
 
     let deleted = registry.delete_model("unused").unwrap();
     assert!(deleted);
@@ -159,8 +159,8 @@ fn delete_model_succeeds_without_dependent_agents() {
 // Engine Availability Tests
 // ============================================================================
 
-#[test]
-fn register_model_rejected_without_inference_engine() {
+#[tokio::test]
+async fn register_model_rejected_without_inference_engine() {
     let registry = InMemoryRegistry::new(test_secret_store());
     // No inference engine registered
 
@@ -173,7 +173,7 @@ fn register_model_rejected_without_inference_engine() {
         digest: String::new(),
     };
 
-    let result = registry.register_model(model);
+    let result = registry.register_model(model).await;
     assert!(result.is_err());
     match result.unwrap_err() {
         RegistrationError::InferenceEngineUnavailable(prov, model) => {
@@ -184,8 +184,8 @@ fn register_model_rejected_without_inference_engine() {
     }
 }
 
-#[test]
-fn register_model_rejected_without_embedding_engine() {
+#[tokio::test]
+async fn register_model_rejected_without_embedding_engine() {
     let registry = InMemoryRegistry::new(test_secret_store());
     // No embedding engine registered
 
@@ -198,7 +198,7 @@ fn register_model_rejected_without_embedding_engine() {
         digest: String::new(),
     };
 
-    let result = registry.register_model(model);
+    let result = registry.register_model(model).await;
     assert!(result.is_err());
     match result.unwrap_err() {
         RegistrationError::EmbeddingEngineUnavailable(prov, model) => {
@@ -227,7 +227,7 @@ async fn register_agent_rejected_when_inference_model_has_no_service() {
         model_path: ResourceId::new("ollama://localhost:11434/phi3:latest"),
         digest: String::new(),
     };
-    registry.register_model(model).unwrap();
+    registry.register_model(model).await.unwrap();
 
     // Agent declares an inference model but no services.infer
     let agent = Agent::from_toml(
@@ -266,7 +266,7 @@ async fn register_agent_rejected_when_embedding_model_has_no_service() {
         model_path: ResourceId::new("ollama://localhost:11434/nomic-embed-text:latest"),
         digest: String::new(),
     };
-    registry.register_model(model).unwrap();
+    registry.register_model(model).await.unwrap();
 
     // Agent declares an embedding model but no services.embed
     let agent = Agent::from_toml(

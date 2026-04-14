@@ -220,16 +220,16 @@ impl Registry for GrpcRegistryClient {
 
     // --- Model operations ---
 
-    fn register_model(&self, model: Model) -> Result<(), RegistrationError> {
+    async fn register_model(&self, model: Model) -> Result<(), RegistrationError> {
         let proto_model: proto::Model = model.into();
         let request = proto::RegisterModelRequest {
             model: Some(proto_model),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.register_model(request).await })
+        let response = client
+            .register_model(request)
+            .await
             .map_err(|e| RegistrationError::Persistence(e.to_string()))?;
 
         let resp = response.into_inner();

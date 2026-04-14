@@ -251,7 +251,7 @@ impl RegistryService for RegistryServer {
             .try_into()
             .map_err(|e: String| Status::invalid_argument(e))?;
 
-        match self.registry.register_model(domain_model) {
+        match self.registry.register_model(domain_model).await {
             Ok(()) => Ok(Response::new(RegisterModelResponse {
                 success: true,
                 error: None,
