@@ -861,7 +861,7 @@ impl DagStore for SqliteDagStore {
         }))
     }
 
-    fn get_response_node(
+    async fn get_response_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::ResponseMessage>, String> {

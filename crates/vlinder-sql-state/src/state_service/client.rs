@@ -363,7 +363,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_response_node(
+    async fn get_response_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::ResponseMessage>, String> {
@@ -372,9 +372,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_response_node(request).await })
+        let response = client
+            .get_response_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
