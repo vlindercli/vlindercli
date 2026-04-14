@@ -307,13 +307,13 @@ pub trait Registry: Send + Sync {
     async fn get_models(&self) -> Vec<Model>;
 
     /// Get a model by its `model_path` (the URI that identifies the actual model resource).
-    fn get_model_by_path(&self, path: &ResourceId) -> Option<Model>;
+    async fn get_model_by_path(&self, path: &ResourceId) -> Option<Model>;
 
     /// Get the registry-issued ID for a model name.
     fn model_id(&self, name: &str) -> ResourceId;
 
     /// Delete a model by name. Returns true if the model existed.
-    fn delete_model(&self, name: &str) -> Result<bool, RegistrationError>;
+    async fn delete_model(&self, name: &str) -> Result<bool, RegistrationError>;
 
     /// Delete an agent by name. Returns true if the agent existed.
     /// Fails if the agent belongs to any fleet.

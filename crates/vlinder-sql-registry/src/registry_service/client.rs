@@ -271,11 +271,9 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
-        // get_models is async; bridge via the client's runtime (get_model_by_path is a sync
-        // trait method not yet scheduled for async conversion)
-        self.runtime
-            .block_on(self.get_models())
+    async fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
+        self.get_models()
+            .await
             .into_iter()
             .find(|m| &m.model_path == path)
     }
@@ -284,15 +282,15 @@ impl Registry for GrpcRegistryClient {
         ResourceId::new(format!("model://{name}"))
     }
 
-    fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
+    async fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
         let request = proto::DeleteModelRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.delete_model(request).await })
+        let response = client
+            .delete_model(request)
+            .await
             .map_err(|e| RegistrationError::Persistence(e.to_string()))?;
 
         let resp = response.into_inner();

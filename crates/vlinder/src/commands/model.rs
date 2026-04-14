@@ -128,7 +128,7 @@ pub fn execute(cmd: ModelCommand) {
             let registry = open_registry(&config);
             let Some(registry) = registry else { return };
 
-            match registry.delete_model(&name) {
+            match rt.block_on(registry.delete_model(&name)) {
                 Ok(true) => println!("Removed model '{name}'"),
                 Ok(false) => println!("Model '{name}' not found"),
                 Err(e) => eprintln!("Failed to remove model: {e}"),

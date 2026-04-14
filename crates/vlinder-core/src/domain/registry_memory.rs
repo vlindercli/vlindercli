@@ -350,7 +350,7 @@ impl Registry for InMemoryRegistry {
         state.models.values().cloned().collect()
     }
 
-    fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
+    async fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
         let state = self.state.read().unwrap();
         state
             .models
@@ -373,7 +373,7 @@ impl Registry for InMemoryRegistry {
         ResourceId::new(format!("{}/models/{}", self.registry_id.as_str(), name))
     }
 
-    fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
+    async fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
         let model_id = self.model_id(name);
         let mut state = self.state.write().unwrap();
 

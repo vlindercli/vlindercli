@@ -271,7 +271,7 @@ impl RegistryService for RegistryServer {
     ) -> Result<Response<DeleteModelResponse>, Status> {
         let req = request.into_inner();
 
-        match self.registry.delete_model(&req.name) {
+        match self.registry.delete_model(&req.name).await {
             Ok(deleted) => Ok(Response::new(DeleteModelResponse {
                 deleted,
                 error: None,

@@ -119,7 +119,7 @@ async fn delete_model_blocked_by_deployed_agent() {
     let registry = InMemoryRegistry::new(test_secret_store());
     register_model_test_agent(&registry).await;
 
-    let result = registry.delete_model("phi3");
+    let result = registry.delete_model("phi3").await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -150,7 +150,7 @@ async fn delete_model_succeeds_without_dependent_agents() {
     };
     registry.register_model(model).await.unwrap();
 
-    let deleted = registry.delete_model("unused").unwrap();
+    let deleted = registry.delete_model("unused").await.unwrap();
     assert!(deleted);
     assert!(registry.get_model("unused").await.is_none());
 }

@@ -147,30 +147,26 @@ impl Registry for PersistentRegistry {
         self.inner.get_models().await
     }
 
-    fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
-        self.inner.get_model_by_path(path)
+    async fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
+        self.inner.get_model_by_path(path).await
     }
 
     fn model_id(&self, name: &str) -> ResourceId {
         self.inner.model_id(name)
     }
 
-    fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
-        // Use the sync SQLite check to avoid calling the now-async get_models
-        if !self.repo.model_exists(name).unwrap_or(false) {
+    async fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
+        if self.inner.get_model(name).await.is_none() {
             return Ok(false);
         }
 
-        // Check for dependent agents before deleting (async call)
-        let inner = Arc::clone(&self.inner);
-        let model_name = name.to_string();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let agents = rt.block_on(inner.get_agents_requiring_model(&model_name));
-            let _ = tx.send(agents);
-        });
-        let dependent: Vec<String> = rx.recv().unwrap().into_iter().map(|a| a.name).collect();
+        let dependent: Vec<String> = self
+            .inner
+            .get_agents_requiring_model(name)
+            .await
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
 
         if !dependent.is_empty() {
             return Err(RegistrationError::ModelInUse(name.to_string(), dependent));
@@ -402,7 +398,7 @@ mod tests {
         registry.register_model(test_model("phi3")).await.unwrap();
         assert!(registry.get_model("phi3").await.is_some());
 
-        let deleted = registry.delete_model("phi3").unwrap();
+        let deleted = registry.delete_model("phi3").await.unwrap();
         assert!(deleted);
 
         // Gone from in-memory
@@ -419,7 +415,7 @@ mod tests {
         let db_path = temp.path().join("state.db");
 
         let registry = open_registry(&db_path).await;
-        let deleted = registry.delete_model("nope").unwrap();
+        let deleted = registry.delete_model("nope").await.unwrap();
         assert!(!deleted);
     }
 

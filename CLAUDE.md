@@ -124,3 +124,15 @@ Write throwaway code to learn, not to keep. Once you understand, delete and take
 ## When Changes Are Rejected
 
 Explain your inner reasoning — what led to that specific action, step by step. Don't just apologize and retry; expose the thinking so the failure mode becomes visible.
+
+# vlinder dev environment
+
+When the dev stack is running, there's a tmux session called `vlinder` with these panes:
+
+- `vlinder:main.0` — nats-server (-js)
+- `vlinder:main.1` — `nats sub "vlinder.>"` (live message bus tap)
+- `vlinder:main.2` — `vlinderd` with RUST_BACKTRACE=1
+- `vlinder:main.3` — todoapp agent deploy (in `sample-agents-fleets/agents/todoapp`)
+- `vlinder:main.4` — Claude Code (you, if you're running inside the session)
+
+Use the `tmux-inspect` skill to read or drive these panes.
