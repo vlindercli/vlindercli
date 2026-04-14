@@ -882,7 +882,7 @@ mod tests {
         assert!(runtime.pods.contains_key("my-agent"));
 
         // Remove from registry (simulate external deletion)
-        runtime.registry().delete_agent("my-agent").unwrap();
+        runtime.registry().delete_agent("my-agent").await.unwrap();
 
         // Tick should clean up the orphaned pod
         runtime.tick().await;

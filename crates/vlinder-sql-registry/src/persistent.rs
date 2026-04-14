@@ -185,19 +185,10 @@ impl Registry for PersistentRegistry {
         Ok(deleted)
     }
 
-    fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
-        // Check if agent exists (async call)
-        let inner = Arc::clone(&self.inner);
-        let agent_name = name.to_string();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let agent = rt.block_on(inner.get_agent_by_name(&agent_name));
-            let _ = tx.send(agent);
-        });
-        let Some(_agent) = rx.recv().unwrap() else {
+    async fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
+        if self.inner.get_agent_by_name(name).await.is_none() {
             return Ok(false);
-        };
+        }
 
         // Check for fleet dependencies before deleting
         let agent_id = self
@@ -529,7 +520,7 @@ mod tests {
         registry.register_agent(test_agent("echo")).await.unwrap();
         assert!(registry.get_agent_by_name("echo").await.is_some());
 
-        let deleted = registry.delete_agent("echo").unwrap();
+        let deleted = registry.delete_agent("echo").await.unwrap();
         assert!(deleted);
 
         // Gone from in-memory
@@ -546,7 +537,7 @@ mod tests {
         let db_path = temp.path().join("state.db");
 
         let registry = open_with_runtime(&db_path).await;
-        let deleted = registry.delete_agent("nope").unwrap();
+        let deleted = registry.delete_agent("nope").await.unwrap();
         assert!(!deleted);
     }
 }

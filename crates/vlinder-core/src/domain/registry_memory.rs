@@ -396,7 +396,7 @@ impl Registry for InMemoryRegistry {
         Ok(true)
     }
 
-    fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
+    async fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
         let agent_id = self.agent_id_internal(name);
         let mut state = self.state.write().unwrap();
 
@@ -1114,7 +1114,7 @@ mod tests {
         registry.restore_agent(minimal_agent("echo")).unwrap();
         assert_eq!(registry.get_agents().await.len(), 1);
 
-        let deleted = registry.delete_agent("echo").unwrap();
+        let deleted = registry.delete_agent("echo").await.unwrap();
         assert!(deleted);
         assert!(registry.get_agents().await.is_empty());
     }
@@ -1122,7 +1122,7 @@ mod tests {
     #[tokio::test]
     async fn delete_agent_nonexistent_returns_false() {
         let registry = InMemoryRegistry::new(test_secret_store());
-        let deleted = registry.delete_agent("nope").unwrap();
+        let deleted = registry.delete_agent("nope").await.unwrap();
         assert!(!deleted);
     }
 
@@ -1135,7 +1135,7 @@ mod tests {
         let fleet = make_fleet(&registry, "my-fleet", "alpha", &["alpha", "beta"]);
         registry.register_fleet(fleet).unwrap();
 
-        let result = registry.delete_agent("alpha");
+        let result = registry.delete_agent("alpha").await;
         assert!(matches!(result, Err(RegistrationError::AgentInUse(_, _))));
 
         // Agent should still exist
@@ -1151,7 +1151,7 @@ mod tests {
         registry.register_manifest(manifest).await.unwrap();
         assert!(registry.get_agent_by_name("echo").await.is_some());
 
-        let deleted = registry.delete_agent("echo").unwrap();
+        let deleted = registry.delete_agent("echo").await.unwrap();
         assert!(deleted);
         assert!(registry.get_agent_by_name("echo").await.is_none());
 

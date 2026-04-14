@@ -317,7 +317,7 @@ pub trait Registry: Send + Sync {
 
     /// Delete an agent by name. Returns true if the agent existed.
     /// Fails if the agent belongs to any fleet.
-    fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError>;
+    async fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError>;
 
     // --- Job operations ---
 

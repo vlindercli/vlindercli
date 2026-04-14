@@ -580,7 +580,7 @@ mod tests {
         assert_eq!(runtime.functions.len(), 1);
 
         // Remove from registry → next tick undeploys.
-        registry.delete_agent("echo").unwrap();
+        registry.delete_agent("echo").await.unwrap();
         assert!(runtime.tick().await);
         assert!(runtime.functions.is_empty());
     }

@@ -125,7 +125,7 @@ impl RegistryService for RegistryServer {
     ) -> Result<Response<DeleteAgentResponse>, Status> {
         let req = request.into_inner();
 
-        match self.registry.delete_agent(&req.name) {
+        match self.registry.delete_agent(&req.name).await {
             Ok(deleted) => Ok(Response::new(DeleteAgentResponse {
                 deleted,
                 error: None,

@@ -300,15 +300,15 @@ impl Registry for GrpcRegistryClient {
         Ok(resp.deleted)
     }
 
-    fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
+    async fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
         let request = proto::DeleteAgentRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.delete_agent(request).await })
+        let response = client
+            .delete_agent(request)
+            .await
             .map_err(|e| RegistrationError::Remote(e.to_string()))?;
 
         let resp = response.into_inner();
