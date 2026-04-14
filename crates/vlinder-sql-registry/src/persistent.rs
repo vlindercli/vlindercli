@@ -143,8 +143,8 @@ impl Registry for PersistentRegistry {
         self.inner.get_model(name).await
     }
 
-    fn get_models(&self) -> Vec<Model> {
-        self.inner.get_models()
+    async fn get_models(&self) -> Vec<Model> {
+        self.inner.get_models().await
     }
 
     fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
@@ -156,8 +156,8 @@ impl Registry for PersistentRegistry {
     }
 
     fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
-        // Check model exists using the sync get_models (get_model is now async)
-        if !self.inner.get_models().iter().any(|m| m.name == name) {
+        // Use the sync SQLite check to avoid calling the now-async get_models
+        if !self.repo.model_exists(name).unwrap_or(false) {
             return Ok(false);
         }
 
@@ -357,7 +357,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let db_path = temp.path().join("state.db");
         let registry = open_registry(&db_path).await;
-        assert!(registry.get_models().is_empty());
+        assert!(registry.get_models().await.is_empty());
     }
 
     #[tokio::test]

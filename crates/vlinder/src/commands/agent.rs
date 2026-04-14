@@ -802,7 +802,7 @@ mod tests {
 
         // Registered only once
         assert_eq!(deployed.len(), 1);
-        assert_eq!(registry.get_models().len(), 1);
+        assert_eq!(registry.get_models().await.len(), 1);
     }
 
     #[tokio::test]
@@ -836,7 +836,7 @@ mod tests {
         deployed.sort();
 
         assert_eq!(deployed, vec!["claude-sonnet", "nomic-embed"]);
-        assert_eq!(registry.get_models().len(), 2);
+        assert_eq!(registry.get_models().await.len(), 2);
     }
 
     #[tokio::test]

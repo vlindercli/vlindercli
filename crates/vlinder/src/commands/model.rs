@@ -111,7 +111,7 @@ pub fn execute(cmd: ModelCommand) {
             let registry = open_registry(&config);
             let Some(registry) = registry else { return };
 
-            let models = registry.get_models();
+            let models = rt.block_on(registry.get_models());
             if models.is_empty() {
                 println!("No models registered yet. Use 'vlinder model add <name>' to add models.");
                 return;
@@ -334,7 +334,7 @@ mod tests {
 
         assert_eq!(model1.name, model2.name);
         // Still only one model in registry
-        assert_eq!(registry.get_models().len(), 1);
+        assert_eq!(registry.get_models().await.len(), 1);
     }
 
     // ========================================================================

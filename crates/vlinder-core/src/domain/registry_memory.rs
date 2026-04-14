@@ -345,7 +345,7 @@ impl Registry for InMemoryRegistry {
         state.models.get(&model_id).cloned()
     }
 
-    fn get_models(&self) -> Vec<Model> {
+    async fn get_models(&self) -> Vec<Model> {
         let state = self.state.read().unwrap();
         state.models.values().cloned().collect()
     }

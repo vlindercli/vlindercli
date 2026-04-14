@@ -232,6 +232,7 @@ impl RegistryService for RegistryServer {
         let models = self
             .registry
             .get_models()
+            .await
             .into_iter()
             .map(std::convert::Into::into)
             .collect();

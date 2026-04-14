@@ -304,7 +304,7 @@ pub trait Registry: Send + Sync {
     async fn get_model(&self, name: &str) -> Option<Model>;
 
     /// Get all registered models.
-    fn get_models(&self) -> Vec<Model>;
+    async fn get_models(&self) -> Vec<Model>;
 
     /// Get a model by its `model_path` (the URI that identifies the actual model resource).
     fn get_model_by_path(&self, path: &ResourceId) -> Option<Model>;

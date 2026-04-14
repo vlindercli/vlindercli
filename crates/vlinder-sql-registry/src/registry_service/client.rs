@@ -254,13 +254,11 @@ impl Registry for GrpcRegistryClient {
         response.into_inner().model.and_then(|m| m.try_into().ok())
     }
 
-    fn get_models(&self) -> Vec<Model> {
+    async fn get_models(&self) -> Vec<Model> {
         let request = proto::ListModelsRequest {};
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_models(request).await });
+        let response = client.list_models(request).await;
 
         match response {
             Ok(resp) => resp
@@ -274,8 +272,10 @@ impl Registry for GrpcRegistryClient {
     }
 
     fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
-        // Get all models and find by path
-        self.get_models()
+        // get_models is async; bridge via the client's runtime (get_model_by_path is a sync
+        // trait method not yet scheduled for async conversion)
+        self.runtime
+            .block_on(self.get_models())
             .into_iter()
             .find(|m| &m.model_path == path)
     }
