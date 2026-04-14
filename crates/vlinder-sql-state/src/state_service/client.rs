@@ -171,15 +171,15 @@ impl DagStore for GrpcStateClient {
             .collect()
     }
 
-    fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
+    async fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
         let request = proto::GetNodesBySubmissionRequest {
             submission_id: submission_id.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_nodes_by_submission(request).await })
+        let response = client
+            .get_nodes_by_submission(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         response

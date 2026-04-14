@@ -702,7 +702,7 @@ impl DagStore for SqliteDagStore {
             .collect()
     }
 
-    fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
+    async fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");

@@ -181,6 +181,7 @@ impl StateService for StateServiceServer {
         let nodes = self
             .store
             .get_nodes_by_submission(&req.submission_id)
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)

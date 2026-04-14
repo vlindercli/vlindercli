@@ -30,8 +30,8 @@ fn get(submission_id: &str) {
 
     let rt = Runtime::new().unwrap();
 
-    let nodes = store
-        .get_nodes_by_submission(submission_id)
+    let nodes = rt
+        .block_on(store.get_nodes_by_submission(submission_id))
         .unwrap_or_else(|e| {
             eprintln!("Failed to query turn: {e}");
             std::process::exit(1);

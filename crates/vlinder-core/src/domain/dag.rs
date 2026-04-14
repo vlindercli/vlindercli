@@ -463,7 +463,7 @@ pub trait DagStore: Send + Sync {
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String>;
 
     /// Get all nodes for a submission (a single turn), ordered by `created_at`.
-    fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String>;
+    async fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String>;
 
     /// Retrieve typed invoke data by DAG node hash.
     ///
@@ -847,7 +847,7 @@ impl DagStore for InMemoryDagStore {
         Ok(summaries)
     }
 
-    fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
+    async fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         let mut result: Vec<DagNode> = nodes
             .iter()
