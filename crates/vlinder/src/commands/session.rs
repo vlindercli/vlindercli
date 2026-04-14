@@ -93,8 +93,8 @@ fn list(agent_name: &str) {
             .flatten()
             .map(|sess| sess.name)
             .unwrap_or_default();
-        let branch_count = store
-            .get_branches_for_session(&s.session_id)
+        let branch_count = rt
+            .block_on(store.get_branches_for_session(&s.session_id))
             .map(|b| b.len())
             .unwrap_or(0);
         println!(

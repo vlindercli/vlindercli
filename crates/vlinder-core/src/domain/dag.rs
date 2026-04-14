@@ -505,7 +505,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Get all branches for a session.
-    fn get_branches_for_session(
+    async fn get_branches_for_session(
         &self,
         session_id: &super::SessionId,
     ) -> Result<Vec<Branch>, String>;
@@ -858,7 +858,7 @@ impl DagStore for InMemoryDagStore {
         Ok(result)
     }
 
-    fn get_branches_for_session(
+    async fn get_branches_for_session(
         &self,
         session_id: &super::SessionId,
     ) -> Result<Vec<Branch>, String> {

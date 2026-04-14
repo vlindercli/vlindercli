@@ -899,7 +899,10 @@ impl DagStore for SqliteDagStore {
         }))
     }
 
-    fn get_branches_for_session(&self, session_id: &SessionId) -> Result<Vec<Branch>, String> {
+    async fn get_branches_for_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<Branch>, String> {
         use crate::schema::branches;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");

@@ -213,6 +213,7 @@ impl StateService for StateServiceServer {
             .get_branches_for_session(
                 &SessionId::try_from(req.session_id).map_err(Status::invalid_argument)?,
             )
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)

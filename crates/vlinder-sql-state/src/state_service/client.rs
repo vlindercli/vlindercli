@@ -747,7 +747,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_branches_for_session(
+    async fn get_branches_for_session(
         &self,
         session_id: &vlinder_core::domain::SessionId,
     ) -> Result<Vec<Branch>, String> {
@@ -756,9 +756,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_branches_for_session(request).await })
+        let response = client
+            .get_branches_for_session(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         response

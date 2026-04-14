@@ -976,7 +976,7 @@ mod tests {
             async fn get_nodes_by_submission(&self, _: &str) -> Result<Vec<DagNode>, String> {
                 Ok(vec![])
             }
-            fn get_branches_for_session(
+            async fn get_branches_for_session(
                 &self,
                 _: &crate::domain::SessionId,
             ) -> Result<Vec<crate::domain::Branch>, String> {

@@ -40,8 +40,8 @@ fn list(session_id_or_name: &str) {
     let rt = Runtime::new().expect("Failed to create tokio runtime");
     let session_id = resolve_session_id(&*store, session_id_or_name, &rt);
 
-    let branches = store
-        .get_branches_for_session(&session_id)
+    let branches = rt
+        .block_on(store.get_branches_for_session(&session_id))
         .unwrap_or_else(|e| {
             eprintln!("Failed to query branches: {e}");
             std::process::exit(1);
