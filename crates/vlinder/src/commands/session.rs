@@ -110,9 +110,9 @@ fn list(agent_name: &str) {
 fn get(session_id_or_name: &str) {
     let config = CliConfig::load();
     let store = require_dag_store(&config);
-
-    let session_id = resolve_session_id(&*store, session_id_or_name);
     let rt = Runtime::new().expect("Failed to create tokio runtime");
+
+    let session_id = resolve_session_id(&*store, session_id_or_name, &rt);
     let nodes = store.get_session_nodes(&session_id).unwrap_or_else(|e| {
         eprintln!("Failed to query session: {e}");
         std::process::exit(1);
@@ -196,10 +196,10 @@ fn get(session_id_or_name: &str) {
 fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
     let config = CliConfig::load();
     let store = require_dag_store(&config);
-    let session_id = resolve_session_id(&*store, session_id_or_name);
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let session_id = resolve_session_id(&*store, session_id_or_name, &rt);
 
     // Verify the node exists and belongs to this session
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let node = rt
         .block_on(store.get_node_by_prefix(from_hash))
         .unwrap_or_else(|e| {
@@ -254,9 +254,8 @@ fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
 fn promote(session_id_or_name: &str, branch_name: &str) {
     let config = CliConfig::load();
     let store = require_dag_store(&config);
-    let session_id = resolve_session_id(&*store, session_id_or_name);
-
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let session_id = resolve_session_id(&*store, session_id_or_name, &rt);
 
     // Verify the branch exists and belongs to this session
     let branch = rt
@@ -337,13 +336,17 @@ fn causal_sort(nodes: &[vlinder_core::domain::DagNode]) -> Vec<vlinder_core::dom
 }
 
 /// Resolve a user-provided string (UUID or petname) to a `SessionId`.
-fn resolve_session_id(store: &dyn DagStore, id_or_name: &str) -> SessionId {
+fn resolve_session_id(store: &dyn DagStore, id_or_name: &str, rt: &Runtime) -> SessionId {
     // If it's a valid UUID, use it directly
     if let Ok(session_id) = SessionId::try_from(id_or_name.to_string()) {
         return session_id;
     }
     // Try by petname
-    if let Some(session) = store.get_session_by_name(id_or_name).ok().flatten() {
+    if let Some(session) = rt
+        .block_on(store.get_session_by_name(id_or_name))
+        .ok()
+        .flatten()
+    {
         return session.id;
     }
     eprintln!("Session '{id_or_name}' not found");

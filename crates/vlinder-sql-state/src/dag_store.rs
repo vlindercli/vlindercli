@@ -1227,7 +1227,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {
+    async fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {
         use crate::schema::sessions;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1604,7 +1604,7 @@ mod tests {
 
         store.create_session(&session).await.unwrap();
 
-        let retrieved = store.get_session_by_name(&name).unwrap().unwrap();
+        let retrieved = store.get_session_by_name(&name).await.unwrap().unwrap();
         assert_eq!(
             retrieved.id.as_str(),
             "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -1622,7 +1622,11 @@ mod tests {
     #[tokio::test]
     async fn get_session_by_name_returns_none_for_unknown() {
         let (store, _dir) = test_store().await;
-        assert!(store.get_session_by_name("nonexistent").unwrap().is_none());
+        assert!(store
+            .get_session_by_name("nonexistent")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

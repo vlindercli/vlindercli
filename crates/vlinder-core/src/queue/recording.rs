@@ -1019,7 +1019,7 @@ mod tests {
             ) -> Result<(), String> {
                 Ok(())
             }
-            fn get_session_by_name(
+            async fn get_session_by_name(
                 &self,
                 _: &str,
             ) -> Result<Option<crate::domain::Session>, String> {

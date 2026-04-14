@@ -279,6 +279,7 @@ impl StateService for StateServiceServer {
         let session = self
             .store
             .get_session_by_name(&req.name)
+            .await
             .map_err(Status::internal)?;
         Ok(Response::new(GetSessionResponse {
             session: session.map(session_to_proto),

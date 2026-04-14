@@ -37,7 +37,8 @@ pub fn execute(cmd: BranchCommand) {
 fn list(session_id_or_name: &str) {
     let config = CliConfig::load();
     let store = require_dag_store(&config);
-    let session_id = resolve_session_id(&*store, session_id_or_name);
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let session_id = resolve_session_id(&*store, session_id_or_name, &rt);
 
     let branches = store
         .get_branches_for_session(&session_id)
@@ -85,9 +86,8 @@ fn list(session_id_or_name: &str) {
 fn get(session_id_or_name: &str, branch_name: &str) {
     let config = CliConfig::load();
     let store = require_dag_store(&config);
-    let session_id = resolve_session_id(&*store, session_id_or_name);
-
     let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let session_id = resolve_session_id(&*store, session_id_or_name, &rt);
 
     let branch = rt
         .block_on(store.get_branch_by_name(branch_name))
@@ -202,11 +202,15 @@ fn require_dag_store(config: &CliConfig) -> Box<dyn DagStore> {
     })
 }
 
-fn resolve_session_id(store: &dyn DagStore, id_or_name: &str) -> SessionId {
+fn resolve_session_id(store: &dyn DagStore, id_or_name: &str, rt: &Runtime) -> SessionId {
     if let Ok(session_id) = SessionId::try_from(id_or_name.to_string()) {
         return session_id;
     }
-    if let Some(session) = store.get_session_by_name(id_or_name).ok().flatten() {
+    if let Some(session) = rt
+        .block_on(store.get_session_by_name(id_or_name))
+        .ok()
+        .flatten()
+    {
         return session.id;
     }
     eprintln!("Session '{id_or_name}' not found");

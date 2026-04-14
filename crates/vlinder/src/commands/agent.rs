@@ -439,7 +439,11 @@ fn resolve_session(
         }
     }
     // Try by petname
-    if let Some(session) = store.get_session_by_name(name_or_id).ok().flatten() {
+    if let Some(session) = rt
+        .block_on(store.get_session_by_name(name_or_id))
+        .ok()
+        .flatten()
+    {
         return session;
     }
     eprintln!("Session '{name_or_id}' not found");
