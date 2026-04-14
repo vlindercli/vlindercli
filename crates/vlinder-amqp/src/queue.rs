@@ -481,7 +481,7 @@ impl MessageQueue for AmqpQueue {
         Ok(vlinder_core::domain::BranchId::from(1))
     }
 
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeployAgentMessage,
@@ -489,12 +489,10 @@ impl MessageQueue for AmqpQueue {
         let rk = routing::deploy_agent_routing_key(&key);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize deploy: {e}")))?;
-        self.inner
-            .runtime
-            .block_on(self.publish(&rk, key.submission.as_str(), &payload))
+        self.publish(&rk, key.submission.as_str(), &payload).await
     }
 
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
@@ -502,8 +500,6 @@ impl MessageQueue for AmqpQueue {
         let rk = routing::delete_agent_routing_key(&key);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize delete: {e}")))?;
-        self.inner
-            .runtime
-            .block_on(self.publish(&rk, key.submission.as_str(), &payload))
+        self.publish(&rk, key.submission.as_str(), &payload).await
     }
 }

@@ -1137,7 +1137,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn insert_deploy_agent_node(
+    async fn insert_deploy_agent_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -1185,7 +1185,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn insert_delete_agent_node(
+    async fn insert_delete_agent_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -1710,6 +1710,7 @@ mod tests {
                 &key,
                 &msg,
             )
+            .await
             .unwrap();
 
         let node = store.get_node(&dag_id).await.unwrap().unwrap();
@@ -1739,6 +1740,7 @@ mod tests {
                 &key,
                 &msg,
             )
+            .await
             .unwrap();
 
         let node = store.get_node(&dag_id).await.unwrap().unwrap();

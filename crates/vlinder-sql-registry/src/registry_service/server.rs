@@ -383,10 +383,9 @@ impl RegistryService for RegistryServer {
         };
         let msg = DeployAgentMessage::new(manifest);
 
-        let queue = Arc::clone(&self.queue);
-        tokio::task::spawn_blocking(move || queue.send_deploy_agent(key, msg))
+        self.queue
+            .send_deploy_agent(key, msg)
             .await
-            .map_err(|e| Status::internal(format!("task join error: {e}")))?
             .map_err(|e| Status::internal(format!("queue error: {e}")))?;
 
         Ok(Response::new(DeployAgentResponse {
@@ -407,10 +406,9 @@ impl RegistryService for RegistryServer {
         };
         let msg = DeleteAgentMessage::new(AgentName::new(req.name));
 
-        let queue = Arc::clone(&self.queue);
-        tokio::task::spawn_blocking(move || queue.send_delete_agent(key, msg))
+        self.queue
+            .send_delete_agent(key, msg)
             .await
-            .map_err(|e| Status::internal(format!("task join error: {e}")))?
             .map_err(|e| Status::internal(format!("queue error: {e}")))?;
 
         Ok(Response::new(SubmitDeleteAgentResponse {

@@ -240,7 +240,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(BranchId::from(1))
     }
 
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         _key: InfraRoutingKey,
         _msg: DeployAgentMessage,
@@ -248,7 +248,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         _key: InfraRoutingKey,
         _msg: DeleteAgentMessage,

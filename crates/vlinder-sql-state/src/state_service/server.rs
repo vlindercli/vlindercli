@@ -908,6 +908,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .insert_deploy_agent_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+            .await
         {
             Ok(()) => Ok(Response::new(InsertDeployAgentNodeResponse {
                 success: true,
@@ -948,6 +949,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .insert_delete_agent_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+            .await
         {
             Ok(()) => Ok(Response::new(InsertDeleteAgentNodeResponse {
                 success: true,

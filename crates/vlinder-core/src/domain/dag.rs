@@ -398,7 +398,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Insert a typed deploy-agent node. Writes to `dag_nodes` + `deploy_agent_nodes`.
-    fn insert_deploy_agent_node(
+    async fn insert_deploy_agent_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -412,7 +412,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Insert a typed delete-agent node. Writes to `dag_nodes` + `delete_agent_nodes`.
-    fn insert_delete_agent_node(
+    async fn insert_delete_agent_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,

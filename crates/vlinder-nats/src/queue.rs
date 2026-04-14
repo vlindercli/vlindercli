@@ -542,7 +542,7 @@ impl MessageQueue for NatsQueue {
         Ok(BranchId::from(1))
     }
 
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeployAgentMessage,
@@ -551,22 +551,20 @@ impl MessageQueue for NatsQueue {
         let body = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize deploy_agent: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, body.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-            Ok(())
-        })
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, body.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        Ok(())
     }
 
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
@@ -575,19 +573,17 @@ impl MessageQueue for NatsQueue {
         let body = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize delete_agent: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, body.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-            Ok(())
-        })
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, body.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        Ok(())
     }
 
     async fn receive_deploy_agent(

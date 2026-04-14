@@ -575,23 +575,23 @@ impl MessageQueue for RecordingQueue {
         Ok(default_branch)
     }
 
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeployAgentMessage,
     ) -> Result<(), QueueError> {
-        self.record_deploy_agent(&key, &msg);
-        let _ = self.inner.send_deploy_agent(key, msg);
+        self.record_deploy_agent(&key, &msg).await;
+        let _ = self.inner.send_deploy_agent(key, msg).await;
         Ok(())
     }
 
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
     ) -> Result<(), QueueError> {
-        self.record_delete_agent(&key, &msg);
-        let _ = self.inner.send_delete_agent(key, msg);
+        self.record_delete_agent(&key, &msg).await;
+        let _ = self.inner.send_delete_agent(key, msg).await;
         Ok(())
     }
 
@@ -696,7 +696,7 @@ impl RecordingQueue {
     }
 
     /// Record a deploy-agent DAG node.
-    fn record_deploy_agent(&self, key: &InfraRoutingKey, msg: &DeployAgentMessage) {
+    async fn record_deploy_agent(&self, key: &InfraRoutingKey, msg: &DeployAgentMessage) {
         // HACK: hash_dag_node requires a SessionId, but infra nodes are cluster-scoped
         // and have no session. Using a synthetic zero UUID as a placeholder. The real fix
         // is to make session_id optional in hash_dag_node.
@@ -711,14 +711,18 @@ impl RecordingQueue {
             &synthetic_session,
         );
 
-        if let Err(e) = self.store.insert_deploy_agent_node(
-            &id,
-            &DagNodeId::root(),
-            Utc::now(),
-            &Snapshot::empty(),
-            key,
-            msg,
-        ) {
+        if let Err(e) = self
+            .store
+            .insert_deploy_agent_node(
+                &id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                key,
+                msg,
+            )
+            .await
+        {
             tracing::warn!(
                 dag_id = %id,
                 agent = %msg.manifest.name,
@@ -730,7 +734,7 @@ impl RecordingQueue {
     }
 
     /// Record a delete-agent DAG node.
-    fn record_delete_agent(&self, key: &InfraRoutingKey, msg: &DeleteAgentMessage) {
+    async fn record_delete_agent(&self, key: &InfraRoutingKey, msg: &DeleteAgentMessage) {
         // HACK: same synthetic session as record_deploy_agent — see comment above.
         let synthetic_session =
             crate::domain::SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string())
@@ -743,14 +747,18 @@ impl RecordingQueue {
             &synthetic_session,
         );
 
-        if let Err(e) = self.store.insert_delete_agent_node(
-            &id,
-            &DagNodeId::root(),
-            Utc::now(),
-            &Snapshot::empty(),
-            key,
-            msg,
-        ) {
+        if let Err(e) = self
+            .store
+            .insert_delete_agent_node(
+                &id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                key,
+                msg,
+            )
+            .await
+        {
             tracing::warn!(
                 dag_id = %id,
                 agent = %msg.agent,

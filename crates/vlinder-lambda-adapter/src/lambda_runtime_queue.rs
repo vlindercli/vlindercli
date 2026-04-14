@@ -182,19 +182,19 @@ impl MessageQueue for LambdaRuntimeQueue {
         self.inner.send_session_start(key, msg).await
     }
 
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeployAgentMessage,
     ) -> Result<(), QueueError> {
-        self.inner.send_deploy_agent(key, msg)
+        self.inner.send_deploy_agent(key, msg).await
     }
 
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
     ) -> Result<(), QueueError> {
-        self.inner.send_delete_agent(key, msg)
+        self.inner.send_delete_agent(key, msg).await
     }
 }

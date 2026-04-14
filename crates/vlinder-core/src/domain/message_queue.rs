@@ -207,7 +207,7 @@ pub trait MessageQueue: Send + Sync {
     // -------------------------------------------------------------------------
 
     /// Enqueue an agent deploy on the infra plane.
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeployAgentMessage,
@@ -221,7 +221,7 @@ pub trait MessageQueue: Send + Sync {
     }
 
     /// Enqueue an agent delete on the infra plane.
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
@@ -489,14 +489,14 @@ mod routing_contract_proofs {
         ) -> Result<super::super::BranchId, QueueError> {
             Ok(super::super::BranchId::from(1))
         }
-        fn send_deploy_agent(
+        async fn send_deploy_agent(
             &self,
             _: InfraRoutingKey,
             _: DeployAgentMessage,
         ) -> Result<(), QueueError> {
             Ok(())
         }
-        fn send_delete_agent(
+        async fn send_delete_agent(
             &self,
             _: InfraRoutingKey,
             _: DeleteAgentMessage,
@@ -559,14 +559,14 @@ mod routing_contract_proofs {
         ) -> Result<super::super::BranchId, QueueError> {
             Ok(super::super::BranchId::from(1))
         }
-        fn send_deploy_agent(
+        async fn send_deploy_agent(
             &self,
             _: InfraRoutingKey,
             _: DeployAgentMessage,
         ) -> Result<(), QueueError> {
             Ok(())
         }
-        fn send_delete_agent(
+        async fn send_delete_agent(
             &self,
             _: InfraRoutingKey,
             _: DeleteAgentMessage,

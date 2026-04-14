@@ -9,6 +9,7 @@ use vlinder_core::domain::{Branch, BranchId, DagNode, DagNodeId, DagStore};
 /// `DagStore` implementation that makes gRPC calls to a remote State Service.
 pub struct GrpcStateClient {
     client: StateServiceClient<Channel>,
+    #[allow(dead_code)]
     runtime: tokio::runtime::Runtime,
 }
 
@@ -599,7 +600,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn insert_deploy_agent_node(
+    async fn insert_deploy_agent_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -625,9 +626,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_deploy_agent_node(request).await })
+        let response = client
+            .insert_deploy_agent_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -638,7 +639,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn insert_delete_agent_node(
+    async fn insert_delete_agent_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -661,9 +662,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_delete_agent_node(request).await })
+        let response = client
+            .insert_delete_agent_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
