@@ -360,6 +360,7 @@ impl StateService for StateServiceServer {
         let result = self
             .store
             .get_request_node(&dag_hash)
+            .await
             .map_err(Status::internal)?;
 
         let node = result.map(|msg| RequestNodeProto {

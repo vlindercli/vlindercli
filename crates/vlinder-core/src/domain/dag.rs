@@ -487,7 +487,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Retrieve typed request data by DAG node hash.
-    fn get_request_node(
+    async fn get_request_node(
         &self,
         dag_hash: &super::DagNodeId,
     ) -> Result<Option<super::RequestMessage>, String> {
