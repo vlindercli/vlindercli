@@ -567,7 +567,7 @@ pub trait DagStore: Send + Sync {
     /// If this returns `true`, the consumer should ack and skip processing.
     ///
     /// Default returns `false` (no check). SQL-backed stores query `dag_nodes`.
-    fn exists_in_submission(
+    async fn exists_in_submission(
         &self,
         _submission: &super::SubmissionId,
         _branch: super::BranchId,

@@ -1244,7 +1244,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(session_row_to_domain))
     }
 
-    fn exists_in_submission(
+    async fn exists_in_submission(
         &self,
         submission: &SubmissionId,
         branch: BranchId,
@@ -1756,6 +1756,7 @@ mod tests {
         let (store, _dir) = test_store().await;
         assert!(!store
             .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
+            .await
             .unwrap());
     }
 
@@ -1769,6 +1770,7 @@ mod tests {
 
         assert!(store
             .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
+            .await
             .unwrap());
     }
 
@@ -1782,6 +1784,7 @@ mod tests {
 
         assert!(!store
             .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
+            .await
             .unwrap());
     }
 
@@ -1795,6 +1798,7 @@ mod tests {
 
         assert!(!store
             .exists_in_submission(&sub(), BranchId::from(2), MessageType::Complete)
+            .await
             .unwrap());
     }
 
@@ -1809,6 +1813,7 @@ mod tests {
         let other_sub = SubmissionId::from("sub-other".to_string());
         assert!(!store
             .exists_in_submission(&other_sub, BranchId::from(1), MessageType::Complete)
+            .await
             .unwrap());
     }
 }
