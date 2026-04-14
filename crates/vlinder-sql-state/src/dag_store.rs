@@ -579,7 +579,7 @@ impl DagStore for SqliteDagStore {
         Ok(rows.into_iter().map(dag_node_row_to_domain).collect())
     }
 
-    fn get_children(&self, parent_hash: &DagNodeId) -> Result<Vec<DagNode>, String> {
+    async fn get_children(&self, parent_hash: &DagNodeId) -> Result<Vec<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1400,12 +1400,12 @@ mod tests {
         store.insert_node(&parent).unwrap();
         store.insert_node(&child).unwrap();
 
-        let children = store.get_children(&parent.id).unwrap();
+        let children = store.get_children(&parent.id).await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].id, child.id);
 
         // Root has one child (the parent node, whose parent_id is root)
-        let root_children = store.get_children(&DagNodeId::root()).unwrap();
+        let root_children = store.get_children(&DagNodeId::root()).await.unwrap();
         assert_eq!(root_children.len(), 1);
         assert_eq!(root_children[0].id, parent.id);
     }

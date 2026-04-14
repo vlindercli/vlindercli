@@ -84,15 +84,15 @@ impl DagStore for GrpcStateClient {
             .collect()
     }
 
-    fn get_children(&self, parent_hash: &DagNodeId) -> Result<Vec<DagNode>, String> {
+    async fn get_children(&self, parent_hash: &DagNodeId) -> Result<Vec<DagNode>, String> {
         let request = proto::GetChildrenRequest {
             parent_hash: parent_hash.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_children(request).await })
+        let response = client
+            .get_children(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         response

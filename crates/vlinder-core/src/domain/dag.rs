@@ -439,7 +439,7 @@ pub trait DagStore: Send + Sync {
     fn get_session_nodes(&self, session_id: &super::SessionId) -> Result<Vec<DagNode>, String>;
 
     /// Get all children of a given parent ID.
-    fn get_children(&self, parent_id: &super::DagNodeId) -> Result<Vec<DagNode>, String>;
+    async fn get_children(&self, parent_id: &super::DagNodeId) -> Result<Vec<DagNode>, String>;
 
     // -------------------------------------------------------------------------
     // Branch methods
@@ -764,7 +764,7 @@ impl DagStore for InMemoryDagStore {
         Ok(result)
     }
 
-    fn get_children(&self, parent_id: &super::DagNodeId) -> Result<Vec<DagNode>, String> {
+    async fn get_children(&self, parent_id: &super::DagNodeId) -> Result<Vec<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         Ok(nodes
             .iter()

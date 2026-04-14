@@ -95,6 +95,7 @@ impl StateService for StateServiceServer {
         let nodes = self
             .store
             .get_children(&DagNodeId::from(req.parent_hash))
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)

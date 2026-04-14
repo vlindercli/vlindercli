@@ -944,7 +944,10 @@ mod tests {
             ) -> Result<Vec<DagNode>, String> {
                 Ok(vec![])
             }
-            fn get_children(&self, _: &crate::domain::DagNodeId) -> Result<Vec<DagNode>, String> {
+            async fn get_children(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Vec<DagNode>, String> {
                 Ok(vec![])
             }
             async fn create_branch(
