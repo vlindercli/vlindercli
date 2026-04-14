@@ -165,6 +165,7 @@ impl StateService for StateServiceServer {
         let sessions = self
             .store
             .list_sessions()
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)

@@ -67,7 +67,7 @@ fn list(agent_name: &str) {
     let store = require_dag_store(&config);
     let rt = Runtime::new().expect("Failed to create tokio runtime");
 
-    let sessions = store.list_sessions().unwrap_or_else(|e| {
+    let sessions = rt.block_on(store.list_sessions()).unwrap_or_else(|e| {
         eprintln!("Failed to list sessions: {e}");
         std::process::exit(1);
     });

@@ -113,9 +113,10 @@ fn run_server(server: &tiny_http::Server, store: &dyn DagStore, stop: &AtomicBoo
 #[cfg(feature = "server")]
 fn handle_request(request: tiny_http::Request, store: &dyn DagStore) {
     let url = request.url().to_string();
+    let rt = Runtime::new().unwrap();
 
     if url == "/" {
-        let body = render_index(store);
+        let body = render_index(store, &rt);
         let _ = request.respond(html_response(200, &body));
     } else if let Some(raw_id) = url.strip_prefix("/session/") {
         if raw_id.contains("..") || raw_id.contains('/') || raw_id.contains('\\') {
@@ -123,7 +124,6 @@ fn handle_request(request: tiny_http::Request, store: &dyn DagStore) {
             let _ = request.respond(html_response(404, &body));
             return;
         }
-        let rt = Runtime::new().unwrap();
         let session = SessionId::try_from(raw_id.to_string())
             .ok()
             .and_then(|sid| rt.block_on(store.get_session(&sid)).ok().flatten());
@@ -155,8 +155,8 @@ fn handle_request(request: tiny_http::Request, store: &dyn DagStore) {
 // =============================================================================
 
 #[cfg(feature = "server")]
-fn render_index(store: &dyn DagStore) -> String {
-    let Ok(sessions) = store.list_sessions() else {
+fn render_index(store: &dyn DagStore, rt: &Runtime) -> String {
+    let Ok(sessions) = rt.block_on(store.list_sessions()) else {
         return html_page(
             "Vlinder Sessions",
             "<h1>Sessions</h1><p>Error loading sessions.</p>",
@@ -593,7 +593,8 @@ mod tests {
     #[test]
     fn render_index_empty_store() {
         let store = InMemoryDagStore::new();
-        let html = render_index(&store);
+        let rt = Runtime::new().unwrap();
+        let html = render_index(&store, &rt);
         assert!(html.contains("No conversations yet"));
     }
 }

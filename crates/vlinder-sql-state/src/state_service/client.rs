@@ -156,11 +156,11 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn list_sessions(&self) -> Result<Vec<vlinder_core::domain::SessionSummary>, String> {
+    async fn list_sessions(&self) -> Result<Vec<vlinder_core::domain::SessionSummary>, String> {
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_sessions(proto::ListSessionsRequest {}).await })
+        let response = client
+            .list_sessions(proto::ListSessionsRequest {})
+            .await
             .map_err(|e| e.to_string())?;
 
         response

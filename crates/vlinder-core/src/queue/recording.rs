@@ -970,7 +970,7 @@ mod tests {
             ) -> Result<Option<crate::domain::Branch>, String> {
                 Ok(None)
             }
-            fn list_sessions(&self) -> Result<Vec<crate::domain::SessionSummary>, String> {
+            async fn list_sessions(&self) -> Result<Vec<crate::domain::SessionSummary>, String> {
                 Ok(vec![])
             }
             fn get_nodes_by_submission(&self, _: &str) -> Result<Vec<DagNode>, String> {

@@ -664,7 +664,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(branch_row_to_domain))
     }
 
-    fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+    async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
         let rows: Vec<SessionSummaryRow> = diesel::sql_query(
             "SELECT
