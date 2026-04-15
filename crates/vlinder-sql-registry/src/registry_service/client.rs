@@ -44,20 +44,16 @@ impl GrpcRegistryClient {
     /// Submit an agent deploy via the infra plane (CQRS write path).
     ///
     /// Returns a submission ID for polling status.
-    pub fn deploy_agent(
+    pub async fn deploy_agent(
         &self,
         manifest: &vlinder_core::domain::AgentManifest,
     ) -> Result<SubmissionId, String> {
         let manifest_json =
             serde_json::to_string(&manifest).map_err(|e| format!("serialize manifest: {e}"))?;
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async {
-                client
-                    .deploy_agent(proto::DeployAgentRequest { manifest_json })
-                    .await
-            })
+        let response = client
+            .deploy_agent(proto::DeployAgentRequest { manifest_json })
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         Ok(SubmissionId::from(resp.submission_id))

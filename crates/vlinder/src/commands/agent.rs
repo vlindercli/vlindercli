@@ -167,10 +167,12 @@ fn deploy(path: Option<PathBuf>) {
     }
 
     // Enqueue deploy via infra plane (CQRS write path)
-    let _submission = client.deploy_agent(&manifest).unwrap_or_else(|e| {
-        eprintln!("Failed to submit deploy: {e}");
-        std::process::exit(1);
-    });
+    let _submission = rt
+        .block_on(client.deploy_agent(&manifest))
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to submit deploy: {e}");
+            std::process::exit(1);
+        });
 
     // Poll for state transition, printing status changes
     let mut last_status: Option<AgentStatus> = None;
