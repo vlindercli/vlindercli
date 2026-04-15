@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::worker_async;
 use crate::worker_role::WorkerRole;
 use tokio::runtime::Runtime as TokioRuntime;
 use vlinder_core::domain::Registry;
@@ -49,7 +50,16 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
         #[cfg(feature = "ollama")]
         WorkerRole::InferenceOllama => run_inference_ollama_worker(&config, shutdown),
         #[cfg(feature = "openrouter")]
-        WorkerRole::InferenceOpenRouter => run_inference_openrouter_worker(&config, shutdown),
+        WorkerRole::InferenceOpenRouter => {
+            let queue = crate::queue_factory::recording_from_config(&config)
+                .expect("Failed to create queue");
+            let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
+            rt.block_on(worker_async::run_inference_openrouter_worker(
+                &config,
+                queue,
+                Arc::clone(shutdown),
+            ));
+        }
         #[cfg(feature = "sqlite-kv")]
         WorkerRole::StorageObjectSqlite => run_storage_object_sqlite_worker(&config, shutdown),
         #[cfg(feature = "sqlite-vec")]
@@ -481,28 +491,6 @@ fn run_inference_ollama_worker(config: &Config, shutdown: &AtomicBool) {
         tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for Ollama worker");
 
     tracing::info!(endpoint = %config.ollama.endpoint, "Ollama inference worker ready");
-
-    while !shutdown.load(Ordering::Relaxed) {
-        rt.block_on(worker.tick());
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
-#[cfg(feature = "openrouter")]
-fn run_inference_openrouter_worker(config: &Config, shutdown: &AtomicBool) {
-    use vlinder_infer_openrouter::OpenRouterWorker;
-
-    let queue =
-        crate::queue_factory::recording_from_config(config).expect("Failed to create queue");
-    let worker = OpenRouterWorker::new(
-        queue,
-        config.openrouter.endpoint.clone(),
-        config.openrouter.api_key.clone(),
-    );
-    let rt = tokio::runtime::Runtime::new()
-        .expect("Failed to create tokio runtime for OpenRouter worker");
-
-    tracing::info!(endpoint = %config.openrouter.endpoint, "OpenRouter inference worker ready");
 
     while !shutdown.load(Ordering::Relaxed) {
         rt.block_on(worker.tick());
