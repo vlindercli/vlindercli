@@ -529,11 +529,12 @@ fn run_storage_object_sqlite_worker(config: &Config, shutdown: &AtomicBool) {
         registry,
         ServiceBackend::Kv(ObjectStorageType::Sqlite),
     );
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for KV worker");
 
     tracing::info!(registry = %registry_addr, "SQLite object storage worker ready");
 
     while !shutdown.load(Ordering::Relaxed) {
-        worker.tick();
+        rt.block_on(worker.tick());
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }

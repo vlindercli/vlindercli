@@ -70,7 +70,6 @@ pub struct KvWorker {
     stores: RwLock<HashMap<String, Arc<SqliteObjectStorage>>>,
     state_stores: RwLock<HashMap<String, Arc<SqliteStateStore>>>,
     service: ServiceBackend,
-    rt: tokio::runtime::Runtime,
 }
 
 impl KvWorker {
@@ -79,15 +78,12 @@ impl KvWorker {
         registry: Arc<dyn Registry>,
         service: ServiceBackend,
     ) -> Self {
-        let rt =
-            tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for KvWorker");
         Self {
             queue,
             registry,
             stores: RwLock::new(HashMap::new()),
             state_stores: RwLock::new(HashMap::new()),
             service,
-            rt,
         }
     }
 
@@ -95,7 +91,7 @@ impl KvWorker {
     ///
     /// Storage is scoped to the session: each session gets its own database
     /// under `<agent_storage_dir>/sessions/<session_id>/objects.db`.
-    fn get_or_open(
+    async fn get_or_open(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -111,8 +107,9 @@ impl KvWorker {
         }
 
         let agent = self
-            .rt
-            .block_on(self.registry.get_agent_by_name(agent_id))
+            .registry
+            .get_agent_by_name(agent_id)
+            .await
             .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
         let uri = agent
             .object_storage
@@ -138,7 +135,7 @@ impl KvWorker {
     ///
     /// State store is co-located with the session-scoped object storage:
     /// `<agent_storage_dir>/sessions/<session_id>/state.db`.
-    fn get_or_open_state_store(
+    async fn get_or_open_state_store(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -154,8 +151,9 @@ impl KvWorker {
         }
 
         let agent = self
-            .rt
-            .block_on(self.registry.get_agent_by_name(agent_id))
+            .registry
+            .get_agent_by_name(agent_id)
+            .await
             .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
         let uri = agent
             .object_storage
@@ -192,32 +190,34 @@ impl KvWorker {
     }
 
     /// Process one message if available. Returns true if processed.
-    pub fn tick(&self) -> bool {
-        if self.try_get_v2() {
+    pub async fn tick(&self) -> bool {
+        if self.try_get_v2().await {
             return true;
         }
-        if self.try_put_v2() {
+        if self.try_put_v2().await {
             return true;
         }
-        if self.try_list_v2() {
+        if self.try_list_v2().await {
             return true;
         }
-        if self.try_delete_v2() {
+        if self.try_delete_v2().await {
             return true;
         }
         false
     }
 
-    fn try_get_v2(&self) -> bool {
+    async fn try_get_v2(&self) -> bool {
         match self
-            .rt
-            .block_on(self.queue.receive_request(self.service, Operation::Get))
+            .queue
+            .receive_request(self.service, Operation::Get)
+            .await
         {
             Ok((key, msg, ack)) => {
                 let (agent, session) = extract_agent_session(&key);
                 let start = std::time::Instant::now();
-                let response_payload =
-                    self.handle_get(agent, session, &msg.payload, msg.state.as_deref());
+                let response_payload = self
+                    .handle_get(agent, session, &msg.payload, msg.state.as_deref())
+                    .await;
                 let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let diag = ServiceDiagnostics::storage(
                     self.service.service_type(),
@@ -237,26 +237,26 @@ impl KvWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self
-                    .rt
-                    .block_on(self.queue.send_response(response_key, response));
-                let _ = self.rt.block_on(ack());
+                let _ = self.queue.send_response(response_key, response).await;
+                let _ = ack().await;
                 true
             }
             Err(_) => false,
         }
     }
 
-    fn try_put_v2(&self) -> bool {
+    async fn try_put_v2(&self) -> bool {
         match self
-            .rt
-            .block_on(self.queue.receive_request(self.service, Operation::Put))
+            .queue
+            .receive_request(self.service, Operation::Put)
+            .await
         {
             Ok((key, msg, ack)) => {
                 let (agent, session) = extract_agent_session(&key);
                 let start = std::time::Instant::now();
-                let (response_payload, new_state) =
-                    self.handle_put(agent, session, &msg.payload, msg.state.as_deref());
+                let (response_payload, new_state) = self
+                    .handle_put(agent, session, &msg.payload, msg.state.as_deref())
+                    .await;
                 let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let diag = ServiceDiagnostics::storage(
                     self.service.service_type(),
@@ -276,26 +276,26 @@ impl KvWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self
-                    .rt
-                    .block_on(self.queue.send_response(response_key, response));
-                let _ = self.rt.block_on(ack());
+                let _ = self.queue.send_response(response_key, response).await;
+                let _ = ack().await;
                 true
             }
             Err(_) => false,
         }
     }
 
-    fn try_list_v2(&self) -> bool {
+    async fn try_list_v2(&self) -> bool {
         match self
-            .rt
-            .block_on(self.queue.receive_request(self.service, Operation::List))
+            .queue
+            .receive_request(self.service, Operation::List)
+            .await
         {
             Ok((key, msg, ack)) => {
                 let (agent, session) = extract_agent_session(&key);
                 let start = std::time::Instant::now();
-                let response_payload =
-                    self.handle_list(agent, session, &msg.payload, msg.state.as_deref());
+                let response_payload = self
+                    .handle_list(agent, session, &msg.payload, msg.state.as_deref())
+                    .await;
                 let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let diag = ServiceDiagnostics::storage(
                     self.service.service_type(),
@@ -315,25 +315,24 @@ impl KvWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self
-                    .rt
-                    .block_on(self.queue.send_response(response_key, response));
-                let _ = self.rt.block_on(ack());
+                let _ = self.queue.send_response(response_key, response).await;
+                let _ = ack().await;
                 true
             }
             Err(_) => false,
         }
     }
 
-    fn try_delete_v2(&self) -> bool {
+    async fn try_delete_v2(&self) -> bool {
         match self
-            .rt
-            .block_on(self.queue.receive_request(self.service, Operation::Delete))
+            .queue
+            .receive_request(self.service, Operation::Delete)
+            .await
         {
             Ok((key, msg, ack)) => {
                 let (agent, session) = extract_agent_session(&key);
                 let start = std::time::Instant::now();
-                let response_payload = self.handle_delete(agent, session, &msg.payload);
+                let response_payload = self.handle_delete(agent, session, &msg.payload).await;
                 let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let diag = ServiceDiagnostics::storage(
                     self.service.service_type(),
@@ -353,17 +352,15 @@ impl KvWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self
-                    .rt
-                    .block_on(self.queue.send_response(response_key, response));
-                let _ = self.rt.block_on(ack());
+                let _ = self.queue.send_response(response_key, response).await;
+                let _ = ack().await;
                 true
             }
             Err(_) => false,
         }
     }
 
-    fn handle_get(
+    async fn handle_get(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -379,7 +376,10 @@ impl KvWorker {
         // State comes from the envelope, not the payload.
         if let Some(state_hash) = state {
             if !state_hash.is_empty() {
-                return match self.versioned_get(agent_id, session_id, state_hash, &req.path) {
+                return match self
+                    .versioned_get(agent_id, session_id, state_hash, &req.path)
+                    .await
+                {
                     Ok(Some(content)) => content,
                     Ok(None) => Vec::new(),
                     Err(e) => format!("[error] {e}").into_bytes(),
@@ -388,7 +388,7 @@ impl KvWorker {
         }
 
         // Unversioned fallback
-        let store = match self.get_or_open(agent_id, session_id) {
+        let store = match self.get_or_open(agent_id, session_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -401,7 +401,7 @@ impl KvWorker {
     }
 
     /// Returns `(response_payload, new_state_option)`.
-    fn handle_put(
+    async fn handle_put(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -413,7 +413,7 @@ impl KvWorker {
             Err(e) => return (format!("[error] invalid request: {e}").into_bytes(), None),
         };
 
-        let store = match self.get_or_open(agent_id, session_id) {
+        let store = match self.get_or_open(agent_id, session_id).await {
             Ok(s) => s,
             Err(e) => return (format!("[error] {e}").into_bytes(), None),
         };
@@ -428,7 +428,9 @@ impl KvWorker {
 
         // Versioned put (ADR 055): state comes from the envelope
         if let Some(parent_state) = state {
-            return match self.versioned_put(agent_id, session_id, parent_state, &req.path, content)
+            return match self
+                .versioned_put(agent_id, session_id, parent_state, &req.path, content)
+                .await
             {
                 Ok(new_state) => {
                     let response = serde_json::json!({"state": new_state});
@@ -445,7 +447,7 @@ impl KvWorker {
         (b"ok".to_vec(), None)
     }
 
-    fn handle_list(
+    async fn handle_list(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -460,7 +462,10 @@ impl KvWorker {
         // Versioned list: resolve paths from the state snapshot
         if let Some(state_hash) = state {
             if !state_hash.is_empty() {
-                return match self.versioned_list(agent_id, session_id, state_hash, &req.path) {
+                return match self
+                    .versioned_list(agent_id, session_id, state_hash, &req.path)
+                    .await
+                {
                     Ok(files) => serde_json::to_string(&files).map_or_else(
                         |e| format!("[error] {e}").into_bytes(),
                         std::string::String::into_bytes,
@@ -471,7 +476,7 @@ impl KvWorker {
         }
 
         // Unversioned fallback
-        let store = match self.get_or_open(agent_id, session_id) {
+        let store = match self.get_or_open(agent_id, session_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -485,13 +490,13 @@ impl KvWorker {
         }
     }
 
-    fn handle_delete(&self, agent_id: &str, session_id: &str, payload: &[u8]) -> Vec<u8> {
+    async fn handle_delete(&self, agent_id: &str, session_id: &str, payload: &[u8]) -> Vec<u8> {
         let req: KvDeleteRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return format!("[error] invalid request: {e}").into_bytes(),
         };
 
-        let store = match self.get_or_open(agent_id, session_id) {
+        let store = match self.get_or_open(agent_id, session_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -506,7 +511,7 @@ impl KvWorker {
     // --- Versioned operations (ADR 055) ---
 
     /// Versioned put: store value, update snapshot, create state commit.
-    fn versioned_put(
+    async fn versioned_put(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -514,7 +519,7 @@ impl KvWorker {
         path: &str,
         content: &[u8],
     ) -> Result<String, String> {
-        let state_store = self.get_or_open_state_store(agent_id, session_id)?;
+        let state_store = self.get_or_open_state_store(agent_id, session_id).await?;
 
         // 1. Store value
         let value_hash = hash_value(content);
@@ -548,14 +553,14 @@ impl KvWorker {
     }
 
     /// Versioned get: resolve through state commit -> snapshot -> value.
-    fn versioned_get(
+    async fn versioned_get(
         &self,
         agent_id: &str,
         session_id: &str,
         state_hash: &str,
         path: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        let state_store = self.get_or_open_state_store(agent_id, session_id)?;
+        let state_store = self.get_or_open_state_store(agent_id, session_id).await?;
 
         // Load state commit
         let commit = state_store
@@ -577,14 +582,14 @@ impl KvWorker {
     }
 
     /// Versioned list: return paths from the snapshot that match a prefix.
-    fn versioned_list(
+    async fn versioned_list(
         &self,
         agent_id: &str,
         session_id: &str,
         state_hash: &str,
         prefix: &str,
     ) -> Result<Vec<String>, String> {
-        let state_store = self.get_or_open_state_store(agent_id, session_id)?;
+        let state_store = self.get_or_open_state_store(agent_id, session_id).await?;
 
         let commit = state_store
             .get_state_commit(state_hash)?
@@ -616,10 +621,6 @@ mod tests {
         ServiceBackend, SessionId, SubmissionId,
     };
     use vlinder_core::queue::InMemoryQueue;
-
-    fn block_on<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Runtime::new().unwrap().block_on(f)
-    }
 
     fn test_secret_store() -> Arc<dyn SecretStore> {
         Arc::new(InMemorySecretStore::new())
@@ -689,8 +690,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn handles_put_and_get() {
+    #[tokio::test]
+    async fn handles_put_and_get() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -699,10 +700,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(registry.register_agent(agent))
-            .unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -729,18 +727,20 @@ mod tests {
         );
         let put_msg = make_request_msg(serde_json::to_vec(&put_payload).unwrap(), None);
 
-        block_on(queue.send_request(put_key, put_msg)).unwrap();
-        assert!(handler.tick());
-        let (_key, response, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Put,
-            Sequence::first(),
-        ))
-        .unwrap();
+        queue.send_request(put_key, put_msg).await.unwrap();
+        assert!(handler.tick().await);
+        let (_key, response, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
 
         // Get request
         let get_payload = serde_json::json!({"path": "/hello.txt"});
@@ -754,22 +754,24 @@ mod tests {
         );
         let get_msg = make_request_msg(serde_json::to_vec(&get_payload).unwrap(), None);
 
-        block_on(queue.send_request(get_key, get_msg)).unwrap();
-        assert!(handler.tick());
-        let (_key, response, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Get,
-            Sequence::from(2),
-        ))
-        .unwrap();
+        queue.send_request(get_key, get_msg).await.unwrap();
+        assert!(handler.tick().await);
+        let (_key, response, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Get,
+                Sequence::from(2),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.payload.as_slice(), b"hello world");
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn versioned_put_returns_state_hash() {
+    #[tokio::test]
+    async fn versioned_put_returns_state_hash() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -778,10 +780,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(registry.register_agent(agent))
-            .unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -810,18 +809,20 @@ mod tests {
             Some(String::new()), // root state via envelope
         );
 
-        block_on(queue.send_request(put_key, put_msg)).unwrap();
-        assert!(handler.tick());
+        queue.send_request(put_key, put_msg).await.unwrap();
+        assert!(handler.tick().await);
 
-        let (_key, response, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Put,
-            Sequence::first(),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
 
         // Response should be JSON with a state field
         let resp: serde_json::Value = serde_json::from_slice(response.payload.as_slice()).unwrap();
@@ -832,9 +833,9 @@ mod tests {
         assert_eq!(response.state, Some(state.to_string()));
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
-    fn versioned_put_chains_state() {
+    async fn versioned_put_chains_state() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -843,10 +844,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(registry.register_agent(agent))
-            .unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -869,17 +867,19 @@ mod tests {
             Sequence::first(),
         );
         let msg1 = make_request_msg(serde_json::to_vec(&put1).unwrap(), Some(String::new()));
-        block_on(queue.send_request(key1, msg1)).unwrap();
-        handler.tick();
-        let (_key, resp1, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Put,
-            Sequence::first(),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(key1, msg1).await.unwrap();
+        handler.tick().await;
+        let (_key, resp1, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
         let hash1 = state1["state"].as_str().unwrap().to_string();
 
@@ -897,17 +897,19 @@ mod tests {
             serde_json::to_vec(&put2).unwrap(),
             Some(hash1.clone()), // chain from previous state via envelope
         );
-        block_on(queue.send_request(key2, msg2)).unwrap();
-        handler.tick();
-        let (_key, resp2, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Put,
-            Sequence::from(2),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(key2, msg2).await.unwrap();
+        handler.tick().await;
+        let (_key, resp2, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::from(2),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
         let hash2 = state2["state"].as_str().unwrap().to_string();
 
@@ -928,23 +930,25 @@ mod tests {
             serde_json::to_vec(&get).unwrap(),
             Some(hash2.clone()), // state via envelope
         );
-        block_on(queue.send_request(get_key, get_msg)).unwrap();
-        handler.tick();
-        let (_key, resp, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Get,
-            Sequence::from(3),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(get_key, get_msg).await.unwrap();
+        handler.tick().await;
+        let (_key, resp, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Get,
+                Sequence::from(3),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
         assert_eq!(resp.payload.as_slice(), b"aaa");
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
-    fn versioned_list_reflects_state_snapshot() {
+    async fn versioned_list_reflects_state_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -953,10 +957,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(registry.register_agent(agent))
-            .unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -980,17 +981,19 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/a.txt", "content": "aaa"})).unwrap(),
             Some(String::new()),
         );
-        block_on(queue.send_request(key1, msg1)).unwrap();
-        handler.tick();
-        let (_key, resp1, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Put,
-            Sequence::first(),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(key1, msg1).await.unwrap();
+        handler.tick().await;
+        let (_key, resp1, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
         let hash1 = state1["state"].as_str().unwrap().to_string();
 
@@ -1007,17 +1010,19 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/b.txt", "content": "bbb"})).unwrap(),
             Some(hash1.clone()),
         );
-        block_on(queue.send_request(key2, msg2)).unwrap();
-        handler.tick();
-        let (_key, resp2, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Put,
-            Sequence::from(2),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(key2, msg2).await.unwrap();
+        handler.tick().await;
+        let (_key, resp2, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::from(2),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
         let hash2 = state2["state"].as_str().unwrap().to_string();
 
@@ -1034,17 +1039,19 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/"})).unwrap(),
             Some(hash2),
         );
-        block_on(queue.send_request(list_key2, list_msg2)).unwrap();
-        handler.tick();
-        let (_key, resp, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::List,
-            Sequence::from(3),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(list_key2, list_msg2).await.unwrap();
+        handler.tick().await;
+        let (_key, resp, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::List,
+                Sequence::from(3),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
         assert_eq!(files, vec!["/a.txt", "/b.txt"]);
 
@@ -1061,23 +1068,25 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/"})).unwrap(),
             Some(hash1),
         );
-        block_on(queue.send_request(list_key1, list_msg1)).unwrap();
-        handler.tick();
-        let (_key, resp, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::List,
-            Sequence::from(4),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(list_key1, list_msg1).await.unwrap();
+        handler.tick().await;
+        let (_key, resp, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::List,
+                Sequence::from(4),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
         assert_eq!(files, vec!["/a.txt"]);
     }
 
-    #[test]
-    fn kv_get_response_echoes_state() {
+    #[tokio::test]
+    async fn kv_get_response_echoes_state() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -1086,10 +1095,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(registry.register_agent(agent))
-            .unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -1111,17 +1117,19 @@ mod tests {
             Sequence::first(),
         );
         let put_msg = make_request_msg(serde_json::to_vec(&put_payload).unwrap(), None);
-        block_on(queue.send_request(put_key, put_msg)).unwrap();
-        handler.tick();
-        let (_key, _resp, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Put,
-            Sequence::first(),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(put_key, put_msg).await.unwrap();
+        handler.tick().await;
+        let (_key, _resp, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Put,
+                Sequence::first(),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
 
         // Get with state in envelope — should echo it back
         let get_payload = serde_json::json!({"path": "/hello.txt"});
@@ -1137,17 +1145,19 @@ mod tests {
             serde_json::to_vec(&get_payload).unwrap(),
             Some("hash123".to_string()),
         );
-        block_on(queue.send_request(get_key, get_msg)).unwrap();
-        handler.tick();
-        let (_key, response, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Get,
-            Sequence::from(2),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(get_key, get_msg).await.unwrap();
+        handler.tick().await;
+        let (_key, response, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Get,
+                Sequence::from(2),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
 
         assert_eq!(
             response.state,
