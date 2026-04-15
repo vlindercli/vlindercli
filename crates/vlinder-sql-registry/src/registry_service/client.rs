@@ -13,32 +13,15 @@ use async_trait::async_trait;
 /// Registry implementation that makes gRPC calls to a remote server.
 pub struct GrpcRegistryClient {
     client: RegistryClient<Channel>,
-    #[allow(dead_code)]
-    runtime: Option<tokio::runtime::Runtime>,
     id: ResourceId,
 }
 
 impl GrpcRegistryClient {
-    /// Connect to a registry server.
-    pub fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let runtime = tokio::runtime::Runtime::new()?;
-        let client = runtime.block_on(async { RegistryClient::connect(addr.to_string()).await })?;
-
-        Ok(Self {
-            client,
-            runtime: Some(runtime),
-            id: ResourceId::new(addr),
-        })
-    }
-
     /// Connect from within an existing async runtime.
-    ///
-    /// Background tasks are owned by the caller's ambient runtime.
     pub async fn connect_async(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = RegistryClient::connect(addr.to_string()).await?;
         Ok(Self {
             client,
-            runtime: None,
             id: ResourceId::new(addr),
         })
     }
@@ -105,26 +88,6 @@ impl GrpcRegistryClient {
             None => Ok(None),
         }
     }
-}
-
-/// Ping a registry server at the given address, returning its protocol version.
-///
-/// Creates a temporary connection and sends a Ping. Returns the server's
-/// version on success, None on any connection or transport error.
-pub fn ping_registry(addr: &str) -> Option<(u32, u32, u32)> {
-    let Ok(runtime) = tokio::runtime::Runtime::new() else {
-        return None;
-    };
-
-    runtime.block_on(async {
-        let Ok(mut client) = RegistryClient::connect(addr.to_string()).await else {
-            return None;
-        };
-        client.ping(proto::PingRequest {}).await.ok().map(|r| {
-            let v = r.into_inner();
-            (v.major, v.minor, v.patch)
-        })
-    })
 }
 
 pub async fn ping_registry_async(addr: &str) -> Option<(u32, u32, u32)> {

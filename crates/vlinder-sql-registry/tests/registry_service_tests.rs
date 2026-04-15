@@ -67,7 +67,10 @@ fn grpc_register_and_get_agent() {
     let addr = start_server_background(registry.clone());
 
     // Create gRPC client
-    let client = GrpcRegistryClient::connect(&format!("http://{addr}")).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let client = rt
+        .block_on(GrpcRegistryClient::connect_async(&format!("http://{addr}")))
+        .unwrap();
 
     // Register an agent via gRPC
     let agent = Agent {
@@ -85,8 +88,6 @@ fn grpc_register_and_get_agent() {
         image_digest: None,
         public_key: None,
     };
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(client.register_agent(agent)).unwrap();
 
     // Retrieve via gRPC using registry-assigned ID
@@ -101,8 +102,10 @@ fn grpc_list_agents() {
     let registry = Arc::new(InMemoryRegistry::new(test_secret_store()));
     registry.register_runtime(RuntimeType::Container);
     let addr = start_server_background(registry.clone());
-    let client = GrpcRegistryClient::connect(&format!("http://{addr}")).unwrap();
     let rt = tokio::runtime::Runtime::new().unwrap();
+    let client = rt
+        .block_on(GrpcRegistryClient::connect_async(&format!("http://{addr}")))
+        .unwrap();
 
     // Register two agents
     for i in 0..2 {
@@ -134,7 +137,10 @@ fn grpc_job_lifecycle() {
     let registry = Arc::new(InMemoryRegistry::new(test_secret_store()));
     registry.register_runtime(RuntimeType::Container);
     let addr = start_server_background(registry.clone());
-    let client = GrpcRegistryClient::connect(&format!("http://{addr}")).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let client = rt
+        .block_on(GrpcRegistryClient::connect_async(&format!("http://{addr}")))
+        .unwrap();
 
     // Register an agent first
     let agent = Agent {
@@ -152,7 +158,6 @@ fn grpc_job_lifecycle() {
         image_digest: None,
         public_key: None,
     };
-    let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(client.register_agent(agent)).unwrap();
 
     // Create a job via gRPC using registry-assigned ID

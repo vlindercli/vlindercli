@@ -10,7 +10,7 @@ mod client;
 mod server;
 
 #[cfg(feature = "client")]
-pub use client::{ping_harness, ping_harness_async, GrpcHarnessClient};
+pub use client::{ping_harness_async, GrpcHarnessClient};
 #[cfg(feature = "server")]
 pub use server::HarnessServer;
 

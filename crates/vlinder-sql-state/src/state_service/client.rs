@@ -9,53 +9,14 @@ use vlinder_core::domain::{Branch, BranchId, DagNode, DagNodeId, DagStore};
 /// `DagStore` implementation that makes gRPC calls to a remote State Service.
 pub struct GrpcStateClient {
     client: StateServiceClient<Channel>,
-    #[allow(dead_code)]
-    runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl GrpcStateClient {
-    /// Connect to a state service server.
-    pub fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let runtime = tokio::runtime::Runtime::new()?;
-        let client =
-            runtime.block_on(async { StateServiceClient::connect(addr.to_string()).await })?;
-
-        Ok(Self {
-            client,
-            runtime: Some(runtime),
-        })
-    }
-
     /// Connect from within an existing async runtime.
-    ///
-    /// Background tasks are owned by the caller's ambient runtime.
     pub async fn connect_async(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = StateServiceClient::connect(addr.to_string()).await?;
-        Ok(Self {
-            client,
-            runtime: None,
-        })
+        Ok(Self { client })
     }
-}
-
-/// Ping a state service at the given address, returning its protocol version.
-///
-/// Creates a temporary connection and sends a Ping. Returns the server's
-/// version on success, None on any connection or transport error.
-pub fn ping_state_service(addr: &str) -> Option<(u32, u32, u32)> {
-    let Ok(runtime) = tokio::runtime::Runtime::new() else {
-        return None;
-    };
-
-    runtime.block_on(async {
-        let Ok(mut client) = StateServiceClient::connect(addr.to_string()).await else {
-            return None;
-        };
-        client.ping(proto::PingRequest {}).await.ok().map(|r| {
-            let v = r.into_inner();
-            (v.major, v.minor, v.patch)
-        })
-    })
 }
 
 pub async fn ping_state_service_async(addr: &str) -> Option<(u32, u32, u32)> {

@@ -8,35 +8,7 @@ use std::sync::Arc;
 use crate::config::{Config, StateBackend};
 use vlinder_core::domain::DagStore;
 
-/// Create a `DagStore` client from configuration.
-///
-/// Returns `GrpcStateClient` in production. In test builds, `Memory`
-/// backend returns an `InMemoryDagStore` (no network required).
-pub fn from_config(config: &Config) -> Result<Arc<dyn DagStore>, Box<dyn std::error::Error>> {
-    match config.state.backend {
-        StateBackend::Grpc => {
-            use vlinder_sql_state::state_service::GrpcStateClient;
-
-            let addr = if config.distributed.state_addr.starts_with("http://")
-                || config.distributed.state_addr.starts_with("https://")
-            {
-                config.distributed.state_addr.clone()
-            } else {
-                format!("http://{}", config.distributed.state_addr)
-            };
-
-            let client = GrpcStateClient::connect(&addr)?;
-            Ok(Arc::new(client))
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        StateBackend::Memory => {
-            use vlinder_core::domain::InMemoryDagStore;
-            Ok(Arc::new(InMemoryDagStore::new()))
-        }
-    }
-}
-
-/// Async variant of `from_config` — callable from within a Tokio runtime.
+/// Create a `DagStore` client from configuration, callable from within a Tokio runtime.
 pub async fn from_config_async(
     config: &Config,
 ) -> Result<Arc<dyn DagStore>, Box<dyn std::error::Error>> {
