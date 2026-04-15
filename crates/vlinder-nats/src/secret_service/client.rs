@@ -9,31 +9,13 @@ use vlinder_core::domain::{SecretStore, SecretStoreError};
 /// `SecretStore` implementation that makes gRPC calls to a remote Secret Service.
 pub struct GrpcSecretClient {
     client: SecretStoreServiceClient<Channel>,
-    /// Kept alive so the tonic channel's background connection tasks continue running.
-    /// `None` when constructed via `connect_async` — the caller's runtime keeps tasks alive.
-    _runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl GrpcSecretClient {
-    /// Connect to a secret service server.
-    pub fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let runtime = tokio::runtime::Runtime::new()?;
-        let client = runtime
-            .block_on(async { SecretStoreServiceClient::connect(addr.to_string()).await })?;
-
-        Ok(Self {
-            client,
-            _runtime: Some(runtime),
-        })
-    }
-
-    /// Async variant of `connect` — callable from within an existing Tokio runtime.
+    /// Connect from within an existing Tokio runtime.
     pub async fn connect_async(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let client = SecretStoreServiceClient::connect(addr.to_string()).await?;
-        Ok(Self {
-            client,
-            _runtime: None,
-        })
+        Ok(Self { client })
     }
 }
 
