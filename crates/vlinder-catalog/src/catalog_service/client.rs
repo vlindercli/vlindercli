@@ -42,6 +42,16 @@ pub fn ping_catalog_service(addr: &str) -> Option<(u32, u32, u32)> {
     })
 }
 
+pub async fn ping_catalog_service_async(addr: &str) -> Option<(u32, u32, u32)> {
+    let Ok(mut client) = CatalogServiceClient::connect(addr.to_string()).await else {
+        return None;
+    };
+    client.ping(proto::PingRequest {}).await.ok().map(|r| {
+        let v = r.into_inner();
+        (v.major, v.minor, v.patch)
+    })
+}
+
 impl CatalogService for GrpcCatalogClient {
     fn catalogs(&self) -> Vec<String> {
         let mut client = self.client.clone();

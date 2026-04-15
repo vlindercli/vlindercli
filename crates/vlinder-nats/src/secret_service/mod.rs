@@ -10,7 +10,7 @@ mod client;
 mod server;
 
 #[cfg(feature = "secret-client")]
-pub use client::{ping_secret_service, GrpcSecretClient};
+pub use client::{ping_secret_service, ping_secret_service_async, GrpcSecretClient};
 #[cfg(feature = "secret-store")]
 pub use server::SecretServer;
 

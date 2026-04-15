@@ -57,6 +57,16 @@ pub fn ping_secret_service(addr: &str) -> Option<(u32, u32, u32)> {
     })
 }
 
+pub async fn ping_secret_service_async(addr: &str) -> Option<(u32, u32, u32)> {
+    let Ok(mut client) = SecretStoreServiceClient::connect(addr.to_string()).await else {
+        return None;
+    };
+    client.ping(proto::PingRequest {}).await.ok().map(|r| {
+        let v = r.into_inner();
+        (v.major, v.minor, v.patch)
+    })
+}
+
 #[async_trait]
 impl SecretStore for GrpcSecretClient {
     async fn put(&self, name: &str, value: &[u8]) -> Result<(), SecretStoreError> {

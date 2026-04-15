@@ -28,6 +28,16 @@ pub fn ping_harness(addr: &str) -> Option<(u32, u32, u32)> {
     })
 }
 
+pub async fn ping_harness_async(addr: &str) -> Option<(u32, u32, u32)> {
+    let Ok(mut client) = HarnessClient::connect(addr.to_string()).await else {
+        return None;
+    };
+    client.ping(proto::PingRequest {}).await.ok().map(|r| {
+        let v = r.into_inner();
+        (v.major, v.minor, v.patch)
+    })
+}
+
 /// Harness implementation that makes gRPC calls to a remote server.
 pub struct GrpcHarnessClient {
     client: HarnessClient<Channel>,

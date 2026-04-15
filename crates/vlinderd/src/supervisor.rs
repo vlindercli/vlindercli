@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 use crate::config::Config;
 use crate::worker_role::WorkerRole;
 #[cfg(any(feature = "ollama", feature = "openrouter"))]
-use vlinder_catalog::catalog_service::ping_catalog_service;
-use vlinder_harness::harness_service::ping_harness;
-use vlinder_nats::secret_service::ping_secret_service;
-use vlinder_sql_registry::registry_service::ping_registry;
-use vlinder_sql_state::state_service::ping_state_service;
+use vlinder_catalog::catalog_service::ping_catalog_service_async;
+use vlinder_harness::harness_service::ping_harness_async;
+use vlinder_nats::secret_service::ping_secret_service_async;
+use vlinder_sql_registry::registry_service::ping_registry_async;
+use vlinder_sql_state::state_service::ping_state_service_async;
 
 /// Process manager for distributed worker processes.
 pub struct Supervisor {
@@ -41,22 +41,24 @@ fn ensure_http(addr: &str) -> String {
 
 /// Wait for a gRPC service to become ready, polling with the given ping function.
 /// Returns the version if ready, or None if the deadline is exceeded.
-fn wait_for_service(
+async fn wait_for_service<F>(
     addr: &str,
     service_name: &str,
-    ping: impl Fn(&str) -> Option<(u32, u32, u32)>,
+    ping: F,
     policy: HealthCheckPolicy,
     workers: &mut [Child],
-) {
+) where
+    F: Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<(u32, u32, u32)>>>>,
+{
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut version = None;
 
     while Instant::now() < deadline {
-        if let Some(v) = ping(addr) {
+        if let Some(v) = ping(addr.to_string()).await {
             version = Some(v);
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     match (version, policy) {
@@ -95,7 +97,7 @@ fn spawn_n(workers: &mut Vec<Child>, role: WorkerRole, count: u32) {
 impl Supervisor {
     /// Spawn worker processes based on config.
     #[allow(clippy::too_many_lines)]
-    pub fn new(config: &Config) -> Self {
+    pub async fn new(config: &Config) -> Self {
         let counts = &config.distributed.workers;
         let mut workers = Vec::new();
 
@@ -104,10 +106,11 @@ impl Supervisor {
         wait_for_service(
             &ensure_http(&config.distributed.secret_addr),
             "Secret service",
-            ping_secret_service,
+            |a: String| Box::pin(async move { ping_secret_service_async(&a).await }),
             HealthCheckPolicy::Warn,
             &mut workers,
-        );
+        )
+        .await;
 
         // State service — must start before registry (registry's RecordingQueue
         // connects to it for DAG recording).
@@ -115,10 +118,11 @@ impl Supervisor {
         wait_for_service(
             &ensure_http(&config.distributed.state_addr),
             "State service",
-            ping_state_service,
+            |a: String| Box::pin(async move { ping_state_service_async(&a).await }),
             HealthCheckPolicy::Warn,
             &mut workers,
-        );
+        )
+        .await;
 
         // Registry — depends on secret service and state service.
         spawn_n(&mut workers, WorkerRole::Registry, counts.registry);
@@ -126,10 +130,11 @@ impl Supervisor {
             wait_for_service(
                 &ensure_http(&config.distributed.registry_addr),
                 "Registry",
-                ping_registry,
+                |a: String| Box::pin(async move { ping_registry_async(&a).await }),
                 HealthCheckPolicy::Fatal,
                 &mut workers,
-            );
+            )
+            .await;
         }
 
         // Catalog service — model catalog queries.
@@ -139,10 +144,11 @@ impl Supervisor {
             wait_for_service(
                 &ensure_http(&config.distributed.catalog_addr),
                 "Catalog service",
-                ping_catalog_service,
+                |a: String| Box::pin(async move { ping_catalog_service_async(&a).await }),
                 HealthCheckPolicy::Warn,
                 &mut workers,
-            );
+            )
+            .await;
         }
 
         // Harness — gRPC bridge for CLI→daemon agent invocation.
@@ -151,10 +157,11 @@ impl Supervisor {
             wait_for_service(
                 &ensure_http(&config.distributed.harness_addr),
                 "Harness",
-                ping_harness,
+                |a: String| Box::pin(async move { ping_harness_async(&a).await }),
                 HealthCheckPolicy::Fatal,
                 &mut workers,
-            );
+            )
+            .await;
         }
 
         // Agent runtimes

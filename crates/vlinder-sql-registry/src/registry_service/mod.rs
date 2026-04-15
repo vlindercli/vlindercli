@@ -11,7 +11,7 @@ mod convert;
 mod server;
 
 #[cfg(feature = "client")]
-pub use client::{ping_registry, GrpcRegistryClient};
+pub use client::{ping_registry, ping_registry_async, GrpcRegistryClient};
 #[cfg(feature = "server")]
 pub use server::RegistryServer;
 

@@ -58,6 +58,16 @@ pub fn ping_state_service(addr: &str) -> Option<(u32, u32, u32)> {
     })
 }
 
+pub async fn ping_state_service_async(addr: &str) -> Option<(u32, u32, u32)> {
+    let Ok(mut client) = StateServiceClient::connect(addr.to_string()).await else {
+        return None;
+    };
+    client.ping(proto::PingRequest {}).await.ok().map(|r| {
+        let v = r.into_inner();
+        (v.major, v.minor, v.patch)
+    })
+}
+
 #[async_trait]
 impl DagStore for GrpcStateClient {
     async fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {

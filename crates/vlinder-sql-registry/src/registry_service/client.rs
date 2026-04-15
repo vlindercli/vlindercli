@@ -127,6 +127,16 @@ pub fn ping_registry(addr: &str) -> Option<(u32, u32, u32)> {
     })
 }
 
+pub async fn ping_registry_async(addr: &str) -> Option<(u32, u32, u32)> {
+    let Ok(mut client) = RegistryClient::connect(addr.to_string()).await else {
+        return None;
+    };
+    client.ping(proto::PingRequest {}).await.ok().map(|r| {
+        let v = r.into_inner();
+        (v.major, v.minor, v.patch)
+    })
+}
+
 #[async_trait]
 impl Registry for GrpcRegistryClient {
     fn id(&self) -> ResourceId {

@@ -9,10 +9,11 @@ use std::sync::Arc;
 
 use vlinderd::config::Config;
 use vlinderd::supervisor::Supervisor;
-use vlinderd::worker::run_worker_loop;
+use vlinderd::worker_async;
 use vlinderd::worker_role::WorkerRole;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Both async-nats (ring) and AWS SDK (aws-lc-rs) activate rustls crypto
     // providers. With both present, rustls can't auto-select — pick ring.
     rustls::crypto::ring::default_provider()
@@ -23,13 +24,13 @@ fn main() {
     vlinderd::tracing_setup::init_tracing(&config);
 
     if let Some(role) = WorkerRole::from_env() {
-        run_as_worker(role);
+        run_as_worker(role).await;
     } else {
-        run_as_supervisor(&config);
+        run_as_supervisor(&config).await;
     }
 }
 
-fn run_as_worker(role: WorkerRole) {
+async fn run_as_worker(role: WorkerRole) {
     tracing::info!(role = %role, "Starting as worker process");
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -41,13 +42,13 @@ fn run_as_worker(role: WorkerRole) {
     })
     .expect("Failed to set signal handler");
 
-    run_worker_loop(&role, &shutdown);
+    worker_async::run_worker_loop(&role, &shutdown).await;
 }
 
-fn run_as_supervisor(config: &Config) {
+async fn run_as_supervisor(config: &Config) {
     tracing::info!("Starting vlinder supervisor (distributed mode)");
 
-    let mut supervisor = Supervisor::new(config);
+    let mut supervisor = Supervisor::new(config).await;
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = Arc::clone(&shutdown);
@@ -60,7 +61,7 @@ fn run_as_supervisor(config: &Config) {
 
     // Wait for shutdown signal
     while !shutdown.load(Ordering::Relaxed) {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
     supervisor.shutdown();

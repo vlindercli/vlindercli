@@ -11,7 +11,7 @@ mod convert;
 mod server;
 
 #[cfg(feature = "client")]
-pub use client::{ping_state_service, GrpcStateClient};
+pub use client::{ping_state_service, ping_state_service_async, GrpcStateClient};
 #[cfg(feature = "server")]
 pub use server::StateServiceServer;
 
