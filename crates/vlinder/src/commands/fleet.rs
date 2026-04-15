@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 
 use crate::config::CliConfig;
-use tokio::runtime::Runtime;
 use vlinder_core::domain::{agent_routing_key, DagNodeId, Fleet, FleetManifest, Registry};
 
 use super::connect::{connect_harness, connect_registry};
@@ -32,10 +31,10 @@ pub enum FleetCommand {
     },
 }
 
-pub fn execute(cmd: FleetCommand) {
+pub async fn execute(cmd: FleetCommand) {
     match cmd {
-        FleetCommand::Deploy { path } => deploy(path),
-        FleetCommand::Run { name, prompt } => run(&name, prompt.as_deref()),
+        FleetCommand::Deploy { path } => deploy(path).await,
+        FleetCommand::Run { name, prompt } => run(&name, prompt.as_deref()).await,
         FleetCommand::New { name } => scaffold(&name),
     }
 }
@@ -88,7 +87,7 @@ fn scaffold(name: &str) {
     println!("  vlinder fleet run {name}");
 }
 
-pub fn deploy(path: Option<PathBuf>) {
+pub async fn deploy(path: Option<PathBuf>) {
     let config = CliConfig::load();
     let fleet_path =
         path.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
@@ -106,24 +105,23 @@ pub fn deploy(path: Option<PathBuf>) {
     });
 
     // Deploy all agents in the fleet via registry gRPC
-    let registry = connect_registry(&config);
+    let registry = connect_registry(&config).await;
 
     // Deploy fleet-level models from <fleet_dir>/models/*.toml
-    let rt = Runtime::new().expect("Failed to create tokio runtime");
-    let fleet_models = rt.block_on(deploy_fleet_models(&absolute_path, &*registry));
+    let fleet_models = deploy_fleet_models(&absolute_path, &*registry).await;
     for name in &fleet_models {
         println!("  Model: {name} (fleet-level)");
     }
 
     for (name, agent_entry) in &manifest.agents {
         let agent_path = absolute_path.join(&agent_entry.path);
-        let agent = super::agent::deploy_agent_from_path(&agent_path, &*registry);
+        let agent = super::agent::deploy_agent_from_path(&agent_path, &*registry).await;
         println!("  Agent: {} ({})", name, agent.id);
     }
 
     // Build Fleet from manifest + registry, then register
-    let fleet = rt
-        .block_on(Fleet::from_manifest(manifest, &*registry))
+    let fleet = Fleet::from_manifest(manifest, &*registry)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to build fleet: {e}");
             std::process::exit(1);
@@ -132,11 +130,10 @@ pub fn deploy(path: Option<PathBuf>) {
     let fleet_name = fleet.name.clone();
     let entry_id = fleet.entry.clone();
 
-    rt.block_on(registry.register_fleet(fleet))
-        .unwrap_or_else(|e| {
-            eprintln!("Failed to register fleet: {e}");
-            std::process::exit(1);
-        });
+    registry.register_fleet(fleet).await.unwrap_or_else(|e| {
+        eprintln!("Failed to register fleet: {e}");
+        std::process::exit(1);
+    });
 
     println!("Deployed fleet '{fleet_name}' (entry: {entry_id})");
 }
@@ -177,12 +174,11 @@ async fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<S
     deployed
 }
 
-pub fn run(name: &str, prompt: Option<&str>) {
+pub async fn run(name: &str, prompt: Option<&str>) {
     let config = CliConfig::load();
-    let registry = connect_registry(&config);
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let registry = connect_registry(&config).await;
 
-    let Some(fleet) = rt.block_on(registry.get_fleet(name)) else {
+    let Some(fleet) = registry.get_fleet(name).await else {
         eprintln!("Fleet '{name}' not found — deploy it first with: vlinder fleet deploy");
         std::process::exit(1);
     };
@@ -191,13 +187,13 @@ pub fn run(name: &str, prompt: Option<&str>) {
     let entry_agent_name = agent_routing_key(&entry_agent_id);
 
     // Build fleet context for the entry agent
-    let fleet_context = rt.block_on(build_fleet_context(&*registry, &fleet));
+    let fleet_context = build_fleet_context(&*registry, &fleet).await;
 
     // Connect harness via gRPC — the daemon owns queue and registry
-    let harness = rt.block_on(connect_harness(&config));
+    let harness = connect_harness(&config).await;
 
     // New session — start fresh, no prior state
-    let (session_id, branch_id) = rt.block_on(harness.start_session(entry_agent_name.as_str()));
+    let (session_id, branch_id) = harness.start_session(entry_agent_name.as_str()).await;
 
     tracing::debug!(fleet = %fleet.name, "Fleet session started");
 
@@ -207,20 +203,19 @@ pub fn run(name: &str, prompt: Option<&str>) {
     );
 
     let invoke = |input: &str| -> String {
-        let rt = Runtime::new().expect("Failed to create tokio runtime");
         let enriched_input = format!("{fleet_context}\n\n{input}");
-        match rt.block_on(harness.run_agent(
-            &entry_agent_id,
-            &enriched_input,
-            session_id.clone(),
-            branch_id,
-            false,
-            None,
-            DagNodeId::root(),
-        )) {
-            Ok(result) => result,
-            Err(e) => format!("[error] {e}"),
-        }
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(harness.run_agent(
+                &entry_agent_id,
+                &enriched_input,
+                session_id.clone(),
+                branch_id,
+                false,
+                None,
+                DagNodeId::root(),
+            ))
+        })
+        .unwrap_or_else(|e| format!("[error] {e}"))
     };
 
     if let Some(message) = prompt {

@@ -18,7 +18,8 @@ pub enum ContextCommand {
     Delete { name: String },
 }
 
-pub fn execute(cmd: ContextCommand) {
+#[allow(clippy::unused_async)]
+pub async fn execute(cmd: ContextCommand) {
     match cmd {
         ContextCommand::New { name } => new_context(&name),
         ContextCommand::List => list_contexts(),

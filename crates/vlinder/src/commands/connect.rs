@@ -8,31 +8,35 @@ use std::sync::Arc;
 use crate::config::CliConfig;
 use vlinder_core::domain::{DagStore, Harness, Registry};
 use vlinder_harness::harness_service::{ping_harness, GrpcHarnessClient};
-use vlinder_sql_registry::registry_service::{ping_registry, GrpcRegistryClient};
+use vlinder_sql_registry::registry_service::{ping_registry_async, GrpcRegistryClient};
 use vlinder_sql_state::state_service::GrpcStateClient;
 
 /// Connect to the registry via gRPC, exiting on failure.
-pub fn connect_registry(config: &CliConfig) -> Arc<dyn Registry> {
+pub async fn connect_registry(config: &CliConfig) -> Arc<dyn Registry> {
     let registry_addr = normalize_addr(&config.daemon.registry_addr);
 
-    if ping_registry(&registry_addr).is_none() {
+    if ping_registry_async(&registry_addr).await.is_none() {
         eprintln!("Cannot reach registry at {registry_addr}. Is the daemon running?");
         std::process::exit(1);
     }
 
-    Arc::new(GrpcRegistryClient::connect(&registry_addr).expect("Failed to connect to registry"))
+    Arc::new(
+        GrpcRegistryClient::connect_async(&registry_addr)
+            .await
+            .expect("Failed to connect to registry"),
+    )
 }
 
 /// Connect to the registry via gRPC, returning None on failure.
-pub fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
+pub async fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
     let registry_addr = normalize_addr(&config.daemon.registry_addr);
 
-    if ping_registry(&registry_addr).is_none() {
+    if ping_registry_async(&registry_addr).await.is_none() {
         eprintln!("Cannot reach registry at {registry_addr}. Is the daemon running?");
         return None;
     }
 
-    match GrpcRegistryClient::connect(&registry_addr) {
+    match GrpcRegistryClient::connect_async(&registry_addr).await {
         Ok(client) => Some(Arc::new(client)),
         Err(e) => {
             eprintln!("Failed to connect to registry: {e}");
@@ -61,9 +65,9 @@ pub async fn connect_harness(config: &CliConfig) -> Box<dyn Harness> {
 }
 
 /// Open the `DagStore` via gRPC state service.
-pub fn open_dag_store(config: &CliConfig) -> Option<Box<dyn DagStore>> {
+pub async fn open_dag_store(config: &CliConfig) -> Option<Box<dyn DagStore>> {
     let state_addr = normalize_addr(&config.daemon.state_addr);
-    match GrpcStateClient::connect(&state_addr) {
+    match GrpcStateClient::connect_async(&state_addr).await {
         Ok(client) => Some(Box::new(client)),
         Err(e) => {
             tracing::warn!(error = %e, "Failed to connect to state service, skipping state read");

@@ -62,8 +62,7 @@ pub enum ModelCommand {
     },
 }
 
-pub fn execute(cmd: ModelCommand) {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+pub async fn execute(cmd: ModelCommand) {
     let config = CliConfig::load();
 
     match cmd {
@@ -72,14 +71,14 @@ pub fn execute(cmd: ModelCommand) {
             catalog,
             endpoint: _,
         } => {
-            let registry = open_registry(&config);
+            let registry = open_registry(&config).await;
             let Some(registry) = registry else { return };
 
             let model = if Path::new(&name)
                 .extension()
                 .is_some_and(|ext| ext == "toml")
             {
-                match rt.block_on(load_and_register_model(Path::new(&name), &*registry)) {
+                match load_and_register_model(Path::new(&name), &*registry).await {
                     Ok(m) => m,
                     Err(e) => {
                         eprintln!("{e}");
@@ -87,11 +86,10 @@ pub fn execute(cmd: ModelCommand) {
                     }
                 }
             } else {
-                let Some(model) = rt.block_on(resolve_from_catalog(&name, &catalog, &config))
-                else {
+                let Some(model) = resolve_from_catalog(&name, &catalog, &config).await else {
                     return;
                 };
-                if let Err(e) = rt.block_on(registry.register_model(model.clone())) {
+                if let Err(e) = registry.register_model(model.clone()).await {
                     eprintln!("Failed to register model: {e}");
                     return;
                 }
@@ -107,12 +105,12 @@ pub fn execute(cmd: ModelCommand) {
             filter,
             ref catalog,
             endpoint: _,
-        } => rt.block_on(list_available(catalog, filter.as_deref(), &config)),
+        } => list_available(catalog, filter.as_deref(), &config).await,
         ModelCommand::List => {
-            let registry = open_registry(&config);
+            let registry = open_registry(&config).await;
             let Some(registry) = registry else { return };
 
-            let models = rt.block_on(registry.get_models());
+            let models = registry.get_models().await;
             if models.is_empty() {
                 println!("No models registered yet. Use 'vlinder model add <name>' to add models.");
                 return;
@@ -126,10 +124,10 @@ pub fn execute(cmd: ModelCommand) {
             }
         }
         ModelCommand::Remove { name } => {
-            let registry = open_registry(&config);
+            let registry = open_registry(&config).await;
             let Some(registry) = registry else { return };
 
-            match rt.block_on(registry.delete_model(&name)) {
+            match registry.delete_model(&name).await {
                 Ok(true) => println!("Removed model '{name}'"),
                 Ok(false) => println!("Model '{name}' not found"),
                 Err(e) => eprintln!("Failed to remove model: {e}"),
@@ -138,8 +136,8 @@ pub fn execute(cmd: ModelCommand) {
     }
 }
 
-fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
-    super::connect::open_registry(config)
+async fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
+    super::connect::open_registry(config).await
 }
 
 /// Connect to the daemon's gRPC catalog service.
