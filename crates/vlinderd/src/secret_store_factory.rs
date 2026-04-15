@@ -32,3 +32,23 @@ pub fn from_config(config: &Config) -> Result<Arc<dyn SecretStore>, SecretStoreE
         }
     }
 }
+
+/// Async variant of `from_config` — callable from within a Tokio runtime.
+pub async fn from_config_async(config: &Config) -> Result<Arc<dyn SecretStore>, SecretStoreError> {
+    match config.queue.backend {
+        QueueBackend::Nats => {
+            let store = NatsSecretStore::connect_async(&config.queue.nats_config()).await?;
+            Ok(Arc::new(store))
+        }
+        #[cfg(feature = "amqp")]
+        QueueBackend::Amqp => {
+            use vlinder_core::domain::InMemorySecretStore;
+            Ok(Arc::new(InMemorySecretStore::new()))
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        QueueBackend::Memory => {
+            use vlinder_core::domain::InMemorySecretStore;
+            Ok(Arc::new(InMemorySecretStore::new()))
+        }
+    }
+}

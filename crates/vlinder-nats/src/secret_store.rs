@@ -21,7 +21,8 @@ pub struct NatsSecretStore {
 
 struct NatsSecretStoreInner {
     /// Kept alive so the NATS client's background connection tasks continue running.
-    _runtime: Runtime,
+    /// `None` when constructed via `connect_async` — the caller's runtime keeps tasks alive.
+    _runtime: Option<Runtime>,
     kv: kv::Store,
 }
 
@@ -55,9 +56,34 @@ impl NatsSecretStore {
 
         Ok(Self {
             inner: Arc::new(NatsSecretStoreInner {
-                _runtime: runtime,
+                _runtime: Some(runtime),
                 kv,
             }),
+        })
+    }
+
+    /// Async variant of `connect` — callable from within an existing Tokio runtime.
+    pub async fn connect_async(config: &crate::NatsConfig) -> Result<Self, SecretStoreError> {
+        let client = crate::connect::nats_connect(config)
+            .await
+            .map_err(SecretStoreError::StoreFailed)?;
+
+        let jetstream = jetstream::new(client);
+
+        let kv = jetstream
+            .create_key_value(kv::Config {
+                bucket: "vlinder-secrets".to_string(),
+                history: 1,
+                max_bytes: 10 * 1024 * 1024, // 10 MiB — required by NGS
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| {
+                SecretStoreError::StoreFailed(format!("failed to create KV bucket: {e}"))
+            })?;
+
+        Ok(Self {
+            inner: Arc::new(NatsSecretStoreInner { _runtime: None, kv }),
         })
     }
 }

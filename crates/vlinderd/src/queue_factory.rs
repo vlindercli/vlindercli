@@ -45,6 +45,24 @@ pub fn recording_from_config(
     Ok(Arc::new(RecordingQueue::new(inner, store)))
 }
 
+/// Async variant of `from_config` — callable from within a Tokio runtime.
+pub async fn from_config_async(
+    config: &Config,
+) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
+    let queue: Arc<dyn MessageQueue + Send + Sync> = match config.queue.backend {
+        QueueBackend::Nats => {
+            Arc::new(NatsQueue::connect_async(&config.queue.nats_config()).await?)
+        }
+        #[cfg(feature = "amqp")]
+        QueueBackend::Amqp => Arc::new(vlinder_amqp::AmqpQueue::connect(
+            &config.queue.amqp_config(),
+        )?),
+        #[cfg(any(test, feature = "test-support"))]
+        QueueBackend::Memory => Arc::new(vlinder_core::queue::InMemoryQueue::new()),
+    };
+    Ok(queue)
+}
+
 /// Async variant of `recording_from_config` — callable from within a Tokio runtime.
 pub async fn recording_from_config_async(
     config: &Config,
