@@ -14,7 +14,7 @@ use async_trait::async_trait;
 pub struct GrpcRegistryClient {
     client: RegistryClient<Channel>,
     #[allow(dead_code)]
-    runtime: tokio::runtime::Runtime,
+    runtime: Option<tokio::runtime::Runtime>,
     id: ResourceId,
 }
 
@@ -26,7 +26,19 @@ impl GrpcRegistryClient {
 
         Ok(Self {
             client,
-            runtime,
+            runtime: Some(runtime),
+            id: ResourceId::new(addr),
+        })
+    }
+
+    /// Connect from within an existing async runtime.
+    ///
+    /// Background tasks are owned by the caller's ambient runtime.
+    pub async fn connect_async(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let client = RegistryClient::connect(addr.to_string()).await?;
+        Ok(Self {
+            client,
+            runtime: None,
             id: ResourceId::new(addr),
         })
     }

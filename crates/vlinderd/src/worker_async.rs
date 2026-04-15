@@ -62,3 +62,59 @@ pub async fn run_inference_ollama_worker(config: &Config, shutdown: Arc<AtomicBo
         }
     }
 }
+
+#[cfg(feature = "sqlite-kv")]
+pub async fn run_storage_object_sqlite_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+    use vlinder_core::domain::{ObjectStorageType, ServiceBackend};
+    use vlinder_sqlite_kv::KvWorker;
+
+    let queue = crate::queue_factory::recording_from_config_async(config)
+        .await
+        .expect("Failed to create queue");
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+    let worker = KvWorker::new(
+        queue,
+        registry,
+        ServiceBackend::Kv(ObjectStorageType::Sqlite),
+    );
+
+    let registry_addr = &config.distributed.registry_addr;
+    tracing::info!(registry = %registry_addr, "SQLite object storage worker ready");
+
+    loop {
+        tokio::select! {
+            _ = worker.tick() => {}
+            () = shutdown_signal(&shutdown) => break,
+        }
+    }
+}
+
+#[cfg(feature = "sqlite-vec")]
+pub async fn run_storage_vector_sqlite_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+    use vlinder_core::domain::{ServiceBackend, VectorStorageType};
+    use vlinder_sqlite_vec::SqliteVecWorker;
+
+    let queue = crate::queue_factory::recording_from_config_async(config)
+        .await
+        .expect("Failed to create queue");
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+    let worker = SqliteVecWorker::new(
+        queue,
+        registry,
+        ServiceBackend::Vec(VectorStorageType::SqliteVec),
+    );
+
+    let registry_addr = &config.distributed.registry_addr;
+    tracing::info!(registry = %registry_addr, "SQLite-vec vector storage worker ready");
+
+    loop {
+        tokio::select! {
+            _ = worker.tick() => {}
+            () = shutdown_signal(&shutdown) => break,
+        }
+    }
+}

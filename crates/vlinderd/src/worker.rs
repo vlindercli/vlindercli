@@ -64,9 +64,21 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
             ));
         }
         #[cfg(feature = "sqlite-kv")]
-        WorkerRole::StorageObjectSqlite => run_storage_object_sqlite_worker(&config, shutdown),
+        WorkerRole::StorageObjectSqlite => {
+            let rt = TokioRuntime::new().expect("runtime");
+            rt.block_on(worker_async::run_storage_object_sqlite_worker(
+                &config,
+                Arc::clone(shutdown),
+            ));
+        }
         #[cfg(feature = "sqlite-vec")]
-        WorkerRole::StorageVectorSqlite => run_storage_vector_sqlite_worker(&config, shutdown),
+        WorkerRole::StorageVectorSqlite => {
+            let rt = TokioRuntime::new().expect("runtime");
+            rt.block_on(worker_async::run_storage_vector_sqlite_worker(
+                &config,
+                Arc::clone(shutdown),
+            ));
+        }
         WorkerRole::Secret => run_secret_worker(&config, shutdown),
         WorkerRole::State => run_state_worker(&config, shutdown),
         #[cfg(any(feature = "ollama", feature = "openrouter"))]
@@ -479,65 +491,6 @@ fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
     let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
     while !shutdown.load(Ordering::Relaxed) {
         rt.block_on(async { runtime.tick().await });
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
-#[cfg(feature = "sqlite-kv")]
-fn run_storage_object_sqlite_worker(config: &Config, shutdown: &AtomicBool) {
-    use vlinder_core::domain::{ObjectStorageType, ServiceBackend};
-    use vlinder_sql_registry::registry_service::GrpcRegistryClient;
-    use vlinder_sqlite_kv::KvWorker;
-
-    let queue =
-        crate::queue_factory::recording_from_config(config).expect("Failed to create queue");
-
-    let registry_addr = grpc_registry_addr(config);
-    let registry: Arc<dyn Registry> = Arc::new(
-        GrpcRegistryClient::connect(&registry_addr).expect("Failed to connect to registry"),
-    );
-
-    let worker = KvWorker::new(
-        queue,
-        registry,
-        ServiceBackend::Kv(ObjectStorageType::Sqlite),
-    );
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for KV worker");
-
-    tracing::info!(registry = %registry_addr, "SQLite object storage worker ready");
-
-    while !shutdown.load(Ordering::Relaxed) {
-        rt.block_on(worker.tick());
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
-#[cfg(feature = "sqlite-vec")]
-fn run_storage_vector_sqlite_worker(config: &Config, shutdown: &AtomicBool) {
-    use vlinder_core::domain::{ServiceBackend, VectorStorageType};
-    use vlinder_sql_registry::registry_service::GrpcRegistryClient;
-    use vlinder_sqlite_vec::SqliteVecWorker;
-
-    let queue =
-        crate::queue_factory::recording_from_config(config).expect("Failed to create queue");
-
-    let registry_addr = grpc_registry_addr(config);
-    let registry: Arc<dyn Registry> = Arc::new(
-        GrpcRegistryClient::connect(&registry_addr).expect("Failed to connect to registry"),
-    );
-
-    let worker = SqliteVecWorker::new(
-        queue,
-        registry,
-        ServiceBackend::Vec(VectorStorageType::SqliteVec),
-    );
-    let rt = tokio::runtime::Runtime::new()
-        .expect("Failed to create tokio runtime for SqliteVec worker");
-
-    tracing::info!(registry = %registry_addr, "SQLite-vec vector storage worker ready");
-
-    while !shutdown.load(Ordering::Relaxed) {
-        rt.block_on(worker.tick());
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
