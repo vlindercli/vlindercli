@@ -518,13 +518,15 @@ fn delete(name: &str) {
         std::process::exit(1);
     });
 
-    let _submission = client.submit_delete_agent(name).unwrap_or_else(|e| {
-        eprintln!("Failed to submit delete: {e}");
-        std::process::exit(1);
-    });
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
+    let _submission = rt
+        .block_on(client.submit_delete_agent(name))
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to submit delete: {e}");
+            std::process::exit(1);
+        });
 
     // Poll for deletion completion, printing status changes
-    let rt = Runtime::new().expect("Failed to create tokio runtime");
     let mut last_status: Option<AgentStatus> = None;
     loop {
         match rt.block_on(client.get_agent_state(name)) {

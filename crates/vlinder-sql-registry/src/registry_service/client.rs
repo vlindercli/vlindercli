@@ -60,17 +60,13 @@ impl GrpcRegistryClient {
     }
 
     /// Submit an agent delete via the infra plane (CQRS write path).
-    pub fn submit_delete_agent(&self, name: &str) -> Result<SubmissionId, String> {
+    pub async fn submit_delete_agent(&self, name: &str) -> Result<SubmissionId, String> {
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async {
-                client
-                    .submit_delete_agent(proto::SubmitDeleteAgentRequest {
-                        name: name.to_string(),
-                    })
-                    .await
+        let response = client
+            .submit_delete_agent(proto::SubmitDeleteAgentRequest {
+                name: name.to_string(),
             })
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         Ok(SubmissionId::from(resp.submission_id))
