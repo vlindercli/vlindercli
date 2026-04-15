@@ -113,12 +113,9 @@ pub async fn connect_async(
     match config {
         QueueConfig::Nats(nats) => Ok(Arc::new(NatsQueue::connect_async(nats).await?)),
         #[cfg(feature = "amqp")]
-        QueueConfig::Amqp(_) => {
-            // TODO: spec 3 will implement AmqpQueue::connect_async
-            Err(QueueError::SendFailed(
-                "AMQP connect_async not yet implemented — see AmqpQueue spec".into(),
-            ))
-        }
+        QueueConfig::Amqp(amqp) => Ok(Arc::new(
+            vlinder_amqp::AmqpQueue::connect_async(amqp).await?,
+        )),
     }
 }
 

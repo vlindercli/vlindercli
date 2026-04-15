@@ -36,7 +36,7 @@ pub struct AmqpQueue {
 }
 
 struct AmqpQueueInner {
-    runtime: Runtime,
+    _runtime: Option<Runtime>,
     channel: Channel,
     #[allow(dead_code)]
     connection: Connection,
@@ -77,9 +77,45 @@ impl AmqpQueue {
 
         Ok(Self {
             inner: Arc::new(AmqpQueueInner {
-                runtime,
+                _runtime: Some(runtime),
                 channel,
                 connection,
+                consumers: Mutex::new(HashMap::new()),
+            }),
+        })
+    }
+
+    /// Connect to an AMQP broker using the caller's ambient async runtime.
+    ///
+    /// Use this from async contexts (e.g. `vlinderd`). The caller's Tokio
+    /// runtime drives the lapin background tasks, so no owned runtime is needed.
+    pub async fn connect_async(config: &AmqpConfig) -> Result<Self, QueueError> {
+        let conn = Connection::connect(&config.url, ConnectionProperties::default())
+            .await
+            .map_err(|e| QueueError::SendFailed(format!("AMQP connect failed: {e}")))?;
+
+        let ch = conn
+            .create_channel()
+            .await
+            .map_err(|e| QueueError::SendFailed(format!("AMQP channel failed: {e}")))?;
+
+        ch.exchange_declare(
+            EXCHANGE_NAME,
+            ExchangeKind::Topic,
+            ExchangeDeclareOptions {
+                durable: true,
+                ..ExchangeDeclareOptions::default()
+            },
+            FieldTable::default(),
+        )
+        .await
+        .map_err(|e| QueueError::SendFailed(format!("exchange declare failed: {e}")))?;
+
+        Ok(Self {
+            inner: Arc::new(AmqpQueueInner {
+                _runtime: None,
+                channel: ch,
+                connection: conn,
                 consumers: Mutex::new(HashMap::new()),
             }),
         })
@@ -148,32 +184,33 @@ impl AmqpQueue {
 
     /// Fetch one message from a binding pattern, returning the routing key,
     /// payload, and an ack closure.
-    fn fetch_one(&self, binding: &str) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
-        self.inner.runtime.block_on(async {
-            let mut consumer = self.get_or_create_consumer(binding).await?;
+    async fn fetch_one(
+        &self,
+        binding: &str,
+    ) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+        let mut consumer = self.get_or_create_consumer(binding).await?;
 
-            let delivery = tokio::time::timeout(Duration::from_millis(100), consumer.next())
-                .await
-                .map_err(|_| QueueError::Timeout)?
-                .ok_or(QueueError::Timeout)?
-                .map_err(|e| QueueError::ReceiveFailed(format!("consumer error: {e}")))?;
+        let delivery = tokio::time::timeout(Duration::from_millis(100), consumer.next())
+            .await
+            .map_err(|_| QueueError::Timeout)?
+            .ok_or(QueueError::Timeout)?
+            .map_err(|e| QueueError::ReceiveFailed(format!("consumer error: {e}")))?;
 
-            let routing_key = delivery.routing_key.to_string();
-            let payload = delivery.data.clone();
-            let delivery_tag = delivery.delivery_tag;
-            let channel = self.inner.channel.clone();
+        let routing_key = delivery.routing_key.to_string();
+        let payload = delivery.data.clone();
+        let delivery_tag = delivery.delivery_tag;
+        let channel = self.inner.channel.clone();
 
-            let ack_fn: Acknowledgement = Box::new(move || {
-                Box::pin(async move {
-                    channel
-                        .basic_ack(delivery_tag, BasicAckOptions::default())
-                        .await
-                        .map_err(|e| QueueError::ReceiveFailed(format!("ack failed: {e}")))
-                })
-            });
+        let ack_fn: Acknowledgement = Box::new(move || {
+            Box::pin(async move {
+                channel
+                    .basic_ack(delivery_tag, BasicAckOptions::default())
+                    .await
+                    .map_err(|e| QueueError::ReceiveFailed(format!("ack failed: {e}")))
+            })
+        });
 
-            Ok((routing_key, payload, ack_fn))
-        })
+        Ok((routing_key, payload, ack_fn))
     }
 
     /// Publish a JSON-serialized message to the topic exchange.
@@ -235,7 +272,7 @@ impl MessageQueue for AmqpQueue {
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
         let binding = routing::invoke_binding(agent);
-        let (rk, payload, ack) = self.fetch_one(&binding)?;
+        let (rk, payload, ack) = self.fetch_one(&binding).await?;
         let key = routing::invoke_parse(&rk).ok_or_else(|| {
             QueueError::ReceiveFailed(format!("invalid invoke routing key: {rk}"))
         })?;
@@ -251,7 +288,7 @@ impl MessageQueue for AmqpQueue {
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
         let binding = routing::complete_binding(submission, agent, harness);
-        let (rk, payload, ack) = self.fetch_one(&binding)?;
+        let (rk, payload, ack) = self.fetch_one(&binding).await?;
         let key = routing::complete_parse(&rk).ok_or_else(|| {
             QueueError::ReceiveFailed(format!("invalid complete routing key: {rk}"))
         })?;
@@ -266,7 +303,7 @@ impl MessageQueue for AmqpQueue {
         operation: Operation,
     ) -> Result<(DataRoutingKey, RequestMessage, Acknowledgement), QueueError> {
         let binding = routing::request_binding(service, operation);
-        let (rk, payload, ack) = self.fetch_one(&binding)?;
+        let (rk, payload, ack) = self.fetch_one(&binding).await?;
         let key = routing::request_parse(&rk).ok_or_else(|| {
             QueueError::ReceiveFailed(format!("invalid request routing key: {rk}"))
         })?;
@@ -284,7 +321,7 @@ impl MessageQueue for AmqpQueue {
         sequence: Sequence,
     ) -> Result<(DataRoutingKey, ResponseMessage, Acknowledgement), QueueError> {
         let binding = routing::response_binding(submission, agent, service, operation, sequence);
-        let (rk, payload, ack) = self.fetch_one(&binding)?;
+        let (rk, payload, ack) = self.fetch_one(&binding).await?;
         let key = routing::response_parse(&rk).ok_or_else(|| {
             QueueError::ReceiveFailed(format!("invalid response routing key: {rk}"))
         })?;
@@ -297,7 +334,7 @@ impl MessageQueue for AmqpQueue {
         &self,
     ) -> Result<(SessionRoutingKey, ForkMessage, Acknowledgement), QueueError> {
         let binding = routing::fork_binding();
-        let (rk, payload, ack) = self.fetch_one(binding)?;
+        let (rk, payload, ack) = self.fetch_one(binding).await?;
         let key = routing::fork_parse(&rk)
             .ok_or_else(|| QueueError::ReceiveFailed(format!("invalid fork routing key: {rk}")))?;
         let msg: ForkMessage = serde_json::from_slice(&payload)
@@ -309,7 +346,7 @@ impl MessageQueue for AmqpQueue {
         &self,
     ) -> Result<(SessionRoutingKey, PromoteMessage, Acknowledgement), QueueError> {
         let binding = routing::promote_binding();
-        let (rk, payload, ack) = self.fetch_one(binding)?;
+        let (rk, payload, ack) = self.fetch_one(binding).await?;
         let key = routing::promote_parse(&rk).ok_or_else(|| {
             QueueError::ReceiveFailed(format!("invalid promote routing key: {rk}"))
         })?;
@@ -322,7 +359,7 @@ impl MessageQueue for AmqpQueue {
         &self,
     ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
         let binding = routing::deploy_agent_binding();
-        let (rk, payload, ack) = self.fetch_one(binding)?;
+        let (rk, payload, ack) = self.fetch_one(binding).await?;
         let key = routing::deploy_agent_parse(&rk).ok_or_else(|| {
             QueueError::ReceiveFailed(format!("invalid deploy routing key: {rk}"))
         })?;
@@ -335,7 +372,7 @@ impl MessageQueue for AmqpQueue {
         &self,
     ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
         let binding = routing::delete_agent_binding();
-        let (rk, payload, ack) = self.fetch_one(binding)?;
+        let (rk, payload, ack) = self.fetch_one(binding).await?;
         let key = routing::delete_agent_parse(&rk).ok_or_else(|| {
             QueueError::ReceiveFailed(format!("invalid delete routing key: {rk}"))
         })?;
@@ -346,7 +383,7 @@ impl MessageQueue for AmqpQueue {
 
     async fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
         let binding = "vlinder.#";
-        let (rk, payload, ack) = self.fetch_one(binding)?;
+        let (rk, payload, ack) = self.fetch_one(binding).await?;
         Ok((rk, payload, ack))
     }
 
