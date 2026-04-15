@@ -54,9 +54,9 @@ pub async fn from_config_async(
             Arc::new(NatsQueue::connect_async(&config.queue.nats_config()).await?)
         }
         #[cfg(feature = "amqp")]
-        QueueBackend::Amqp => Arc::new(vlinder_amqp::AmqpQueue::connect(
-            &config.queue.amqp_config(),
-        )?),
+        QueueBackend::Amqp => {
+            Arc::new(vlinder_amqp::AmqpQueue::connect_async(&config.queue.amqp_config()).await?)
+        }
         #[cfg(any(test, feature = "test-support"))]
         QueueBackend::Memory => Arc::new(vlinder_core::queue::InMemoryQueue::new()),
     };
@@ -74,9 +74,9 @@ pub async fn recording_from_config_async(
             Arc::new(NatsQueue::connect_async(&config.queue.nats_config()).await?)
         }
         #[cfg(feature = "amqp")]
-        QueueBackend::Amqp => Arc::new(vlinder_amqp::AmqpQueue::connect(
-            &config.queue.amqp_config(),
-        )?),
+        QueueBackend::Amqp => {
+            Arc::new(vlinder_amqp::AmqpQueue::connect_async(&config.queue.amqp_config()).await?)
+        }
         #[cfg(any(test, feature = "test-support"))]
         QueueBackend::Memory => Arc::new(vlinder_core::queue::InMemoryQueue::new()),
     };
