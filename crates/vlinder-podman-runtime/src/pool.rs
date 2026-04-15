@@ -512,7 +512,15 @@ impl ContainerRuntime {
 
 impl Drop for ContainerRuntime {
     fn drop(&mut self) {
-        self.shutdown();
+        for (name, pod) in self.pods.drain() {
+            tracing::info!(event = "pod.stopped", agent = %name, pod = %pod.pod_id, "Stopping pod");
+            self.podman.pod_stop_and_remove(&pod.pod_id, 5);
+            for vol_name in &pod.mount_volumes {
+                tracing::info!(event = "volume.removed", volume = %vol_name, "Removing mount volume");
+                self.podman.volume_rm(vol_name);
+                remove_s3_credentials(vol_name);
+            }
+        }
     }
 }
 
@@ -532,7 +540,7 @@ impl Runtime for ContainerRuntime {
         self.pods.len() != before
     }
 
-    fn shutdown(&mut self) {
+    async fn shutdown(&mut self) {
         for (name, pod) in self.pods.drain() {
             tracing::info!(event = "pod.stopped", agent = %name, pod = %pod.pod_id, "Stopping pod");
             self.podman.pod_stop_and_remove(&pod.pod_id, 5);

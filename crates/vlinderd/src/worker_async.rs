@@ -627,6 +627,69 @@ pub async fn run_registry_worker(config: &Config, shutdown: Arc<AtomicBool>) {
     }
 }
 
+#[cfg(feature = "lambda")]
+pub async fn run_agent_lambda_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+    use crate::config::dag_db_path;
+    use vlinder_core::domain::Runtime;
+    use vlinder_lambda_runtime::{LambdaRuntime, LambdaRuntimeConfig};
+    use vlinder_sql_state::SqliteDagStore;
+
+    let queue = crate::queue_factory::from_config_async(config)
+        .await
+        .expect("Failed to create queue for Lambda runtime");
+
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
+
+    let queue_backend = match config.queue.backend {
+        crate::config::QueueBackend::Nats => "nats",
+        #[cfg(feature = "amqp")]
+        crate::config::QueueBackend::Amqp => "amqp",
+        #[cfg(any(test, feature = "test-support"))]
+        crate::config::QueueBackend::Memory => "nats",
+    };
+
+    let lambda_config = LambdaRuntimeConfig {
+        registry_addr: config.distributed.registry_addr.clone(),
+        region: config.runtime.lambda_region.clone(),
+        memory_mb: config.runtime.lambda_memory_mb,
+        timeout_secs: config.runtime.lambda_timeout_secs,
+        queue_backend: queue_backend.to_string(),
+        nats_url: config.queue.nats_url.clone(),
+        amqp_url: config.queue.amqp_url.clone(),
+        state_url: config.distributed.state_addr.clone(),
+        secret_url: if config.distributed.secret_addr.is_empty() {
+            None
+        } else {
+            Some(config.distributed.secret_addr.clone())
+        },
+        vpc_subnet_ids: config.runtime.lambda_vpc_subnet_ids.clone(),
+        vpc_security_group_ids: config.runtime.lambda_vpc_security_group_ids.clone(),
+    };
+
+    let mut runtime = LambdaRuntime::new_async(&lambda_config, registry, repo, queue)
+        .await
+        .expect("Failed to create Lambda runtime");
+
+    tracing::info!(
+        region = config.runtime.lambda_region.as_str(),
+        "Lambda agent worker ready"
+    );
+
+    loop {
+        tokio::select! {
+            _ = runtime.tick() => {}
+            () = shutdown_signal(&shutdown) => break,
+        }
+    }
+}
+
 pub async fn run_session_viewer_worker(_config: &Config, shutdown: Arc<AtomicBool>) {
     use crate::config::dag_db_path;
     use vlinder_sql_state::{SessionServer, SqliteDagStore};

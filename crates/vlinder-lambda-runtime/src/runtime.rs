@@ -40,16 +40,16 @@ pub struct LambdaRuntime {
 }
 
 impl LambdaRuntime {
-    /// Create a new Lambda runtime connected to the given registry.
+    /// Create a new Lambda runtime connected to the given registry (async).
     ///
     /// Returns `Err` if the AWS client cannot be initialized (bad region, no creds).
-    pub fn new(
+    pub async fn new_async(
         config: &LambdaRuntimeConfig,
         registry: Arc<dyn Registry>,
         repo: Arc<dyn RegistryRepository>,
         queue: Arc<dyn MessageQueue + Send + Sync>,
     ) -> Result<Self, LambdaError> {
-        let client = AwsLambdaClient::new(&config.region)?;
+        let client = AwsLambdaClient::new_async(&config.region).await?;
         Ok(Self::with_client(
             config,
             registry,
@@ -86,25 +86,21 @@ impl LambdaRuntime {
     }
 
     /// Reconcile deployed functions with registry state.
-    fn ensure_functions(&mut self) -> bool {
-        let registry = Arc::clone(&self.registry);
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let agents = rt.block_on(registry.get_agents_by_runtime(RuntimeType::Lambda));
-            let _ = tx.send(agents);
-        });
-        let agents = rx.recv().unwrap();
+    async fn ensure_functions(&mut self) -> bool {
+        let agents = self
+            .registry
+            .get_agents_by_runtime(RuntimeType::Lambda)
+            .await;
         let desired: HashMap<String, &Agent> = agents.iter().map(|a| (a.name.clone(), a)).collect();
         let before = self.functions.len();
 
-        self.stop_orphan_functions(&desired);
+        self.stop_orphan_functions(&desired).await;
 
         for (name, agent) in &desired {
             let status = self.repo.get_derived_status(name).ok().flatten();
             match status.as_ref() {
-                Some(AgentStatus::Deploying) => self.ensure_deployed(name, agent),
-                Some(AgentStatus::Deleting) => self.ensure_deleted(name),
+                Some(AgentStatus::Deploying) => self.ensure_deployed(name, agent).await,
+                Some(AgentStatus::Deleting) => self.ensure_deleted(name).await,
                 _ => {}
             }
         }
@@ -113,7 +109,7 @@ impl LambdaRuntime {
     }
 
     /// Stop functions that are deployed but no longer in the registry.
-    fn stop_orphan_functions(&mut self, desired: &HashMap<String, &Agent>) {
+    async fn stop_orphan_functions(&mut self, desired: &HashMap<String, &Agent>) {
         let orphans: Vec<String> = self
             .functions
             .keys()
@@ -123,18 +119,18 @@ impl LambdaRuntime {
 
         for name in orphans {
             tracing::info!(agent = name.as_str(), "Removing orphan Lambda function");
-            self.undeploy(&name);
+            self.undeploy(&name).await;
         }
     }
 
     /// Ensure a Lambda function is deployed and mark readiness.
-    fn ensure_deployed(&mut self, name: &str, agent: &Agent) {
+    async fn ensure_deployed(&mut self, name: &str, agent: &Agent) {
         if self.functions.contains_key(name) {
             return;
         }
 
         tracing::info!(agent = name, "Deploying Lambda function");
-        match self.deploy(name, agent) {
+        match self.deploy(name, agent).await {
             Ok(()) => {
                 let agent_name = AgentName::new(name);
                 let check =
@@ -153,10 +149,10 @@ impl LambdaRuntime {
     }
 
     /// Tear down a Lambda function and mark deleted.
-    fn ensure_deleted(&mut self, name: &str) {
+    async fn ensure_deleted(&mut self, name: &str) {
         if self.functions.contains_key(name) {
             tracing::info!(agent = name, "Tearing down Lambda function");
-            self.undeploy(name);
+            self.undeploy(name).await;
         }
         let agent_name = AgentName::new(name);
         let check = ReadinessCheck::pending(agent_name, RuntimeType::Lambda.as_str()).deleted();
@@ -168,15 +164,15 @@ impl LambdaRuntime {
     ///
     /// Passes platform URLs as environment variables so the lambda adapter
     /// inside the container can connect back to NATS, registry, and state.
-    fn deploy(&mut self, name: &str, agent: &Agent) -> Result<(), LambdaError> {
+    async fn deploy(&mut self, name: &str, agent: &Agent) -> Result<(), LambdaError> {
         let role_name = format!("vlinder-agent-{name}");
         let function_name = format!("vlinder-{name}");
 
-        let role_arn = self.client.create_role(&role_name)?;
+        let role_arn = self.client.create_role(&role_name).await?;
 
         // IAM is eventually consistent — Lambda can't assume a role that was
         // just created. Wait for IAM to propagate before creating the function.
-        std::thread::sleep(std::time::Duration::from_secs(10));
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
         let mut env_vars: Vec<(&str, &str)> = vec![
             ("VLINDER_AGENT", &agent.name),
@@ -193,20 +189,23 @@ impl LambdaRuntime {
             env_vars.push(("VLINDER_SECRET_URL", secret_url));
         }
 
-        let function_arn = self.client.create_function(&CreateFunctionRequest {
-            function_name: &function_name,
-            ecr_image_uri: &agent.executable,
-            role_arn: &role_arn,
-            memory_mb: self.config.memory_mb,
-            timeout_secs: self.config.timeout_secs,
-            env_vars: &env_vars,
-            vpc_subnet_ids: &self.config.vpc_subnet_ids,
-            vpc_security_group_ids: &self.config.vpc_security_group_ids,
-        })?;
+        let function_arn = self
+            .client
+            .create_function(&CreateFunctionRequest {
+                function_name: &function_name,
+                ecr_image_uri: &agent.executable,
+                role_arn: &role_arn,
+                memory_mb: self.config.memory_mb,
+                timeout_secs: self.config.timeout_secs,
+                env_vars: &env_vars,
+                vpc_subnet_ids: &self.config.vpc_subnet_ids,
+                vpc_security_group_ids: &self.config.vpc_security_group_ids,
+            })
+            .await?;
 
         // Wait for the function to become Active — Lambda needs time to
         // download the container image from ECR.
-        self.client.wait_for_active(&function_name)?;
+        self.client.wait_for_active(&function_name).await?;
 
         self.functions.insert(
             name.to_string(),
@@ -248,7 +247,11 @@ impl LambdaRuntime {
                 let json_bytes =
                     serde_json::to_vec(&json_payload).unwrap_or_else(|_| b"{}".to_vec());
 
-                match self.client.invoke_function(&function_name, &json_bytes) {
+                match self
+                    .client
+                    .invoke_function(&function_name, &json_bytes)
+                    .await
+                {
                     Ok(_) => {
                         tracing::info!(
                             event = "lambda.invoke_ok",
@@ -288,12 +291,12 @@ impl LambdaRuntime {
     }
 
     /// Tear down a deployed function: delete Lambda first, then IAM role.
-    fn undeploy(&mut self, name: &str) {
+    async fn undeploy(&mut self, name: &str) {
         let function_name = format!("vlinder-{name}");
         let role_name = format!("vlinder-agent-{name}");
 
-        self.client.delete_function(&function_name);
-        self.client.delete_role(&role_name);
+        self.client.delete_function(&function_name).await;
+        self.client.delete_role(&role_name).await;
 
         self.functions.remove(name);
     }
@@ -310,16 +313,16 @@ impl Runtime for LambdaRuntime {
     }
 
     async fn tick(&mut self) -> bool {
-        let changed = self.ensure_functions();
+        let changed = self.ensure_functions().await;
         self.dispatch_invocations().await;
         changed
     }
 
-    fn shutdown(&mut self) {
+    async fn shutdown(&mut self) {
         let names: Vec<String> = self.functions.keys().cloned().collect();
         for name in names {
             tracing::info!(agent = name.as_str(), "Shutting down Lambda function");
-            self.undeploy(&name);
+            self.undeploy(&name).await;
         }
     }
 }
@@ -327,7 +330,11 @@ impl Runtime for LambdaRuntime {
 impl Drop for LambdaRuntime {
     fn drop(&mut self) {
         if !self.functions.is_empty() {
-            self.shutdown();
+            tracing::warn!(
+                count = self.functions.len(),
+                "LambdaRuntime dropped with active functions — AWS resources not cleaned up. \
+                 Call shutdown() before dropping."
+            );
         }
     }
 }
@@ -360,21 +367,25 @@ mod tests {
         }
     }
 
+    #[async_trait(?Send)]
     impl LambdaClient for MockLambdaClient {
-        fn check_connectivity(&self) -> Result<(), LambdaError> {
+        async fn check_connectivity(&self) -> Result<(), LambdaError> {
             Ok(())
         }
 
-        fn create_role(&self, role_name: &str) -> Result<String, LambdaError> {
+        async fn create_role(&self, role_name: &str) -> Result<String, LambdaError> {
             self.roles.borrow_mut().insert(role_name.to_string());
             Ok(format!("arn:aws:iam::123456789012:role/{role_name}"))
         }
 
-        fn delete_role(&self, role_name: &str) {
+        async fn delete_role(&self, role_name: &str) {
             self.roles.borrow_mut().remove(role_name);
         }
 
-        fn create_function(&self, req: &CreateFunctionRequest) -> Result<String, LambdaError> {
+        async fn create_function(
+            &self,
+            req: &CreateFunctionRequest<'_>,
+        ) -> Result<String, LambdaError> {
             self.functions
                 .borrow_mut()
                 .insert(req.function_name.to_string());
@@ -386,7 +397,7 @@ mod tests {
             ))
         }
 
-        fn get_function(
+        async fn get_function(
             &self,
             function_name: &str,
         ) -> Result<Option<crate::lambda_client::FunctionInfo>, LambdaError> {
@@ -402,11 +413,11 @@ mod tests {
             }
         }
 
-        fn delete_function(&self, function_name: &str) {
+        async fn delete_function(&self, function_name: &str) {
             self.functions.borrow_mut().remove(function_name);
         }
 
-        fn invoke_function(
+        async fn invoke_function(
             &self,
             _function_name: &str,
             payload: &[u8],
@@ -419,25 +430,29 @@ mod tests {
     /// Mock client where `invoke_function` always fails (deploy succeeds).
     struct FailingLambdaClient;
 
+    #[async_trait(?Send)]
     impl LambdaClient for FailingLambdaClient {
-        fn check_connectivity(&self) -> Result<(), LambdaError> {
+        async fn check_connectivity(&self) -> Result<(), LambdaError> {
             Ok(())
         }
 
-        fn create_role(&self, role_name: &str) -> Result<String, LambdaError> {
+        async fn create_role(&self, role_name: &str) -> Result<String, LambdaError> {
             Ok(format!("arn:aws:iam::123456789012:role/{role_name}"))
         }
 
-        fn delete_role(&self, _role_name: &str) {}
+        async fn delete_role(&self, _role_name: &str) {}
 
-        fn create_function(&self, req: &CreateFunctionRequest) -> Result<String, LambdaError> {
+        async fn create_function(
+            &self,
+            req: &CreateFunctionRequest<'_>,
+        ) -> Result<String, LambdaError> {
             Ok(format!(
                 "arn:aws:lambda:us-east-1:123456789012:function:{}",
                 req.function_name
             ))
         }
 
-        fn get_function(
+        async fn get_function(
             &self,
             function_name: &str,
         ) -> Result<Option<crate::lambda_client::FunctionInfo>, LambdaError> {
@@ -449,9 +464,9 @@ mod tests {
             }))
         }
 
-        fn delete_function(&self, _function_name: &str) {}
+        async fn delete_function(&self, _function_name: &str) {}
 
-        fn invoke_function(
+        async fn invoke_function(
             &self,
             _function_name: &str,
             _payload: &[u8],
@@ -604,7 +619,7 @@ mod tests {
         runtime.tick().await;
         assert_eq!(runtime.functions.len(), 2);
 
-        runtime.shutdown();
+        runtime.shutdown().await;
         assert!(runtime.functions.is_empty());
     }
 
@@ -772,15 +787,19 @@ mod tests {
             captured: StdArc<Mutex<CapturedVpc>>,
         }
 
+        #[async_trait(?Send)]
         impl LambdaClient for CapturingClient {
-            fn check_connectivity(&self) -> Result<(), LambdaError> {
+            async fn check_connectivity(&self) -> Result<(), LambdaError> {
                 Ok(())
             }
-            fn create_role(&self, role_name: &str) -> Result<String, LambdaError> {
+            async fn create_role(&self, role_name: &str) -> Result<String, LambdaError> {
                 Ok(format!("arn:aws:iam::123456789012:role/{role_name}"))
             }
-            fn delete_role(&self, _: &str) {}
-            fn create_function(&self, req: &CreateFunctionRequest) -> Result<String, LambdaError> {
+            async fn delete_role(&self, _: &str) {}
+            async fn create_function(
+                &self,
+                req: &CreateFunctionRequest<'_>,
+            ) -> Result<String, LambdaError> {
                 let mut c = self.captured.lock().unwrap();
                 c.subnet_ids = req.vpc_subnet_ids.to_vec();
                 c.security_group_ids = req.vpc_security_group_ids.to_vec();
@@ -789,7 +808,7 @@ mod tests {
                     req.function_name
                 ))
             }
-            fn get_function(
+            async fn get_function(
                 &self,
                 function_name: &str,
             ) -> Result<Option<crate::lambda_client::FunctionInfo>, LambdaError> {
@@ -800,8 +819,8 @@ mod tests {
                     state: "Active".to_string(),
                 }))
             }
-            fn delete_function(&self, _: &str) {}
-            fn invoke_function(&self, _: &str, p: &[u8]) -> Result<Vec<u8>, LambdaError> {
+            async fn delete_function(&self, _: &str) {}
+            async fn invoke_function(&self, _: &str, p: &[u8]) -> Result<Vec<u8>, LambdaError> {
                 Ok(p.to_vec())
             }
         }

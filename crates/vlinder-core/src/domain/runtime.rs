@@ -76,7 +76,7 @@ pub trait Runtime {
     ///
     /// Called on graceful shutdown. Implementations should stop running
     /// agents and clean up any external resources (containers, connections, etc).
-    fn shutdown(&mut self);
+    async fn shutdown(&mut self);
 }
 
 #[cfg(test)]
@@ -121,7 +121,7 @@ mod tests {
             }
         }
 
-        fn shutdown(&mut self) {}
+        async fn shutdown(&mut self) {}
     }
 
     #[tokio::test]
