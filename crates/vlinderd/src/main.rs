@@ -42,13 +42,11 @@ async fn run_as_worker(role: WorkerRole) {
     })
     .expect("Failed to set signal handler");
 
-    worker_async::run_worker_loop(&role, &shutdown).await;
+    worker_async::run_worker_loop(role, shutdown).await;
 }
 
 async fn run_as_supervisor(config: &Config) {
     tracing::info!("Starting vlinder supervisor (distributed mode)");
-
-    let mut supervisor = Supervisor::new(config).await;
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = Arc::clone(&shutdown);
@@ -59,11 +57,21 @@ async fn run_as_supervisor(config: &Config) {
     })
     .expect("Failed to set signal handler");
 
-    // Wait for shutdown signal
-    while !shutdown.load(Ordering::Relaxed) {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    // Workers use !Send types (async_trait(?Send) on Runtime/LambdaClient),
+    // so they must run as local tasks pinned to one thread.
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let supervisor = Supervisor::new(config, Arc::clone(&shutdown)).await;
 
-    supervisor.shutdown();
+            // Wait for shutdown signal
+            while !shutdown.load(Ordering::Relaxed) {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
+            supervisor.shutdown();
+        })
+        .await;
+
     tracing::info!("Supervisor stopped");
 }

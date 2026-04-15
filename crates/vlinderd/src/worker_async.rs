@@ -690,7 +690,7 @@ pub async fn run_agent_lambda_worker(config: &Config, shutdown: Arc<AtomicBool>)
     }
 }
 
-pub async fn run_worker_loop(role: &crate::worker_role::WorkerRole, shutdown: &Arc<AtomicBool>) {
+pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: Arc<AtomicBool>) {
     use crate::worker_role::WorkerRole;
 
     let config = Config::load();
@@ -698,37 +698,37 @@ pub async fn run_worker_loop(role: &crate::worker_role::WorkerRole, shutdown: &A
     tracing::info!(role = %role, "Starting worker");
 
     match role {
-        WorkerRole::Registry => run_registry_worker(&config, Arc::clone(shutdown)).await,
-        WorkerRole::Harness => run_harness_worker(&config, Arc::clone(shutdown)).await,
+        WorkerRole::Registry => run_registry_worker(&config, shutdown).await,
+        WorkerRole::Harness => run_harness_worker(&config, shutdown).await,
         #[cfg(feature = "container")]
         WorkerRole::AgentContainer => {
-            run_agent_container_worker(&config, Arc::clone(shutdown)).await;
+            run_agent_container_worker(&config, shutdown).await;
         }
         #[cfg(feature = "lambda")]
-        WorkerRole::AgentLambda => run_agent_lambda_worker(&config, Arc::clone(shutdown)).await,
+        WorkerRole::AgentLambda => run_agent_lambda_worker(&config, shutdown).await,
         #[cfg(feature = "ollama")]
         WorkerRole::InferenceOllama => {
-            run_inference_ollama_worker(&config, Arc::clone(shutdown)).await;
+            run_inference_ollama_worker(&config, shutdown).await;
         }
         #[cfg(feature = "openrouter")]
         WorkerRole::InferenceOpenRouter => {
-            run_inference_openrouter_worker(&config, Arc::clone(shutdown)).await;
+            run_inference_openrouter_worker(&config, shutdown).await;
         }
         #[cfg(feature = "sqlite-kv")]
         WorkerRole::StorageObjectSqlite => {
-            run_storage_object_sqlite_worker(&config, Arc::clone(shutdown)).await;
+            run_storage_object_sqlite_worker(&config, shutdown).await;
         }
         #[cfg(feature = "sqlite-vec")]
         WorkerRole::StorageVectorSqlite => {
-            run_storage_vector_sqlite_worker(&config, Arc::clone(shutdown)).await;
+            run_storage_vector_sqlite_worker(&config, shutdown).await;
         }
-        WorkerRole::Secret => run_secret_worker(&config, Arc::clone(shutdown)).await,
-        WorkerRole::State => run_state_worker(&config, Arc::clone(shutdown)).await,
+        WorkerRole::Secret => run_secret_worker(&config, shutdown).await,
+        WorkerRole::State => run_state_worker(&config, shutdown).await,
         #[cfg(any(feature = "ollama", feature = "openrouter"))]
-        WorkerRole::Catalog => run_catalog_worker(&config, Arc::clone(shutdown)).await,
-        WorkerRole::Infra => run_infra_worker(&config, Arc::clone(shutdown)).await,
-        WorkerRole::DagGit => run_dag_git_worker(&config, Arc::clone(shutdown)).await,
-        WorkerRole::SessionViewer => run_session_viewer_worker(&config, Arc::clone(shutdown)).await,
+        WorkerRole::Catalog => run_catalog_worker(&config, shutdown).await,
+        WorkerRole::Infra => run_infra_worker(&config, shutdown).await,
+        WorkerRole::DagGit => run_dag_git_worker(&config, shutdown).await,
+        WorkerRole::SessionViewer => run_session_viewer_worker(&config, shutdown).await,
     }
 
     tracing::info!(role = %role, "Worker shutdown complete");
