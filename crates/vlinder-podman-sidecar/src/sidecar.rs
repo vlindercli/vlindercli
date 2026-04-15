@@ -28,22 +28,23 @@ impl Sidecar {
     ///
     /// Connects to NATS (with DAG recording) and the Registry Service,
     /// then fetches the Agent from the registry to determine storage backends.
-    pub fn new(config: &SidecarConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(config: &SidecarConfig) -> Result<Self, Box<dyn std::error::Error>> {
         use crate::config::QueueBackendConfig;
 
         let queue = match &config.queue {
             QueueBackendConfig::Nats { url } => {
-                let nats_config = factory::resolve_nats_config(config.secret_url.as_deref(), url);
-                factory::connect(&factory::QueueConfig::Nats(nats_config))?
+                let nats_config =
+                    factory::resolve_nats_config(config.secret_url.as_deref(), url).await;
+                factory::connect_async(&factory::QueueConfig::Nats(nats_config)).await?
             }
             QueueBackendConfig::Amqp { url } => {
                 let amqp_config = vlinder_amqp::AmqpConfig { url: url.clone() };
-                factory::connect(&factory::QueueConfig::Amqp(amqp_config))?
+                factory::connect_async(&factory::QueueConfig::Amqp(amqp_config)).await?
             }
         };
-        let store = factory::connect_state(&config.state_url)?;
+        let store = factory::connect_state_async(&config.state_url).await?;
         let queue = factory::with_recording(queue, store);
-        let registry = factory::connect_registry(&config.registry_url)?;
+        let registry = factory::connect_registry_async(&config.registry_url).await?;
         let image_ref = config
             .image_ref
             .as_ref()
@@ -72,40 +73,31 @@ impl Sidecar {
     }
 
     /// Main loop: wait for agent, then poll invoke/delegate/response queues.
-    pub fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
         health::wait_for_ready(
             &mut self.health,
             self.dispatch.container_port,
             &self.agent_name,
         )
+        .await
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
         tracing::info!(event = "sidecar.started", agent = %self.agent_name, "Sidecar loop started");
 
-        let rt =
-            tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for sidecar");
-
         loop {
             let agent_id = AgentName::new(&self.agent_name);
 
-            if let Ok((key, invoke, ack)) =
-                rt.block_on(self.dispatch.queue.receive_invoke(&agent_id))
-            {
-                let _ = rt.block_on(ack());
+            if let Ok((key, invoke, ack)) = self.dispatch.queue.receive_invoke(&agent_id).await {
+                let _ = ack().await;
                 tracing::info!(
                     event = "dispatch.started",
                     submission = %key.submission,
                     session = %key.session,
                     "Dispatching invoke to container"
                 );
-                rt.block_on(dispatch::handle_invoke(
-                    &self.dispatch,
-                    &mut self.health,
-                    &key,
-                    &invoke,
-                ));
+                dispatch::handle_invoke(&self.dispatch, &mut self.health, &key, &invoke).await;
             } else {
-                std::thread::sleep(Duration::from_millis(50));
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
     }

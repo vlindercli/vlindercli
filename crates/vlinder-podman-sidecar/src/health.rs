@@ -75,7 +75,7 @@ pub fn build_diagnostics(
 ///
 /// Every poll attempt is recorded as a `HealthSnapshot` — including
 /// failures before the container is ready.
-pub fn wait_for_ready(
+pub async fn wait_for_ready(
     health: &mut HealthWindow,
     port: u16,
     agent_name: &str,
@@ -106,6 +106,6 @@ pub fn wait_for_ready(
             return Ok(());
         }
 
-        std::thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

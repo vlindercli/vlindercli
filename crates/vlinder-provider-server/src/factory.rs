@@ -17,9 +17,9 @@ use vlinder_sql_state::state_service::GrpcStateClient;
 /// fetches `sidecar.nats.creds` for inline credentials. On any failure or
 /// missing secrets, falls back to the provided `fallback_nats_url`.
 /// Resolve NATS connection config, optionally fetching credentials from the secret store.
-pub fn resolve_nats_config(secret_url: Option<&str>, fallback_nats_url: &str) -> NatsConfig {
+pub async fn resolve_nats_config(secret_url: Option<&str>, fallback_nats_url: &str) -> NatsConfig {
     if let Some(secret_url) = secret_url {
-        match resolve_from_secrets(secret_url) {
+        match resolve_from_secrets(secret_url).await {
             Some(config) => return config,
             None => {
                 tracing::info!(
@@ -38,11 +38,11 @@ pub fn resolve_nats_config(secret_url: Option<&str>, fallback_nats_url: &str) ->
 }
 
 /// Try to build `NatsConfig` from the secret store. Returns None on any failure.
-fn resolve_from_secrets(secret_url: &str) -> Option<NatsConfig> {
+async fn resolve_from_secrets(secret_url: &str) -> Option<NatsConfig> {
     use vlinder_core::domain::SecretStore;
     use vlinder_nats::secret_service::GrpcSecretClient;
 
-    let client = match GrpcSecretClient::connect(secret_url) {
+    let client = match GrpcSecretClient::connect_async(secret_url).await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
@@ -54,16 +54,15 @@ fn resolve_from_secrets(secret_url: &str) -> Option<NatsConfig> {
         }
     };
 
-    let rt = tokio::runtime::Runtime::new().ok()?;
-
-    let Ok(nats_url_bytes) = rt.block_on(client.get("sidecar.nats.url")) else {
+    let Ok(nats_url_bytes) = client.get("sidecar.nats.url").await else {
         return None;
     };
 
     let nats_url = String::from_utf8(nats_url_bytes).ok()?;
 
-    let creds_content = rt
-        .block_on(client.get("sidecar.nats.creds"))
+    let creds_content = client
+        .get("sidecar.nats.creds")
+        .await
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok());
 
@@ -105,6 +104,46 @@ pub fn with_recording(
     store: Arc<dyn DagStore>,
 ) -> Arc<dyn MessageQueue + Send + Sync> {
     Arc::new(RecordingQueue::new(queue, store))
+}
+
+/// Connect to a queue backend (async).
+pub async fn connect_async(
+    config: &QueueConfig,
+) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
+    match config {
+        QueueConfig::Nats(nats) => Ok(Arc::new(NatsQueue::connect_async(nats).await?)),
+        #[cfg(feature = "amqp")]
+        QueueConfig::Amqp(_) => {
+            // TODO: spec 3 will implement AmqpQueue::connect_async
+            Err(QueueError::SendFailed(
+                "AMQP connect_async not yet implemented — see AmqpQueue spec".into(),
+            ))
+        }
+    }
+}
+
+/// Connect to the State Service via gRPC (async).
+pub async fn connect_state_async(state_url: &str) -> Result<Arc<dyn DagStore>, QueueError> {
+    Ok(Arc::new(
+        GrpcStateClient::connect_async(state_url)
+            .await
+            .map_err(|e| {
+                QueueError::SendFailed(format!("state service at {state_url} unreachable: {e}"))
+            })?,
+    ))
+}
+
+/// Connect to the Registry Service via gRPC (async).
+pub async fn connect_registry_async(
+    registry_url: &str,
+) -> Result<Arc<dyn Registry>, Box<dyn std::error::Error>> {
+    let url = if registry_url.starts_with("http://") || registry_url.starts_with("https://") {
+        registry_url.to_string()
+    } else {
+        format!("http://{registry_url}")
+    };
+    let client = GrpcRegistryClient::connect_async(&url).await?;
+    Ok(Arc::new(client))
 }
 
 /// Connect to the State Service via gRPC.
