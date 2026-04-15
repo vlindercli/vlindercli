@@ -1,5 +1,6 @@
 //! `OpenRouter` model catalog - queries `OpenRouter` API for available models.
 
+use async_trait::async_trait;
 use serde::Deserialize;
 
 use vlinder_core::domain::{
@@ -25,9 +26,10 @@ impl OpenRouterCatalog {
     }
 }
 
+#[async_trait]
 impl ModelCatalog for OpenRouterCatalog {
-    fn resolve(&self, name: &str) -> Result<Model, CatalogError> {
-        let models = self.list()?;
+    async fn resolve(&self, name: &str) -> Result<Model, CatalogError> {
+        let models = self.list().await?;
         let info = models
             .iter()
             .find(|m| m.name == name)
@@ -49,21 +51,21 @@ impl ModelCatalog for OpenRouterCatalog {
         })
     }
 
-    fn list(&self) -> Result<Vec<ModelInfo>, CatalogError> {
+    async fn list(&self) -> Result<Vec<ModelInfo>, CatalogError> {
         let url = format!("{}/models", self.endpoint);
 
-        let mut request = ureq::get(&url);
+        let client = reqwest::Client::new();
+        let mut request = client.get(&url);
         if !self.api_key.is_empty() {
-            request = request.header("Authorization", &format!("Bearer {}", self.api_key));
+            request = request.header("Authorization", format!("Bearer {}", self.api_key));
         }
 
-        let mut response = request
-            .call()
-            .map_err(|e| CatalogError::Network(e.to_string()))?;
-
-        let body: ModelsResponse = response
-            .body_mut()
-            .read_json()
+        let body: ModelsResponse = request
+            .send()
+            .await
+            .map_err(|e| CatalogError::Network(e.to_string()))?
+            .json()
+            .await
             .map_err(|e| CatalogError::Parse(e.to_string()))?;
 
         Ok(body
@@ -78,8 +80,9 @@ impl ModelCatalog for OpenRouterCatalog {
             .collect())
     }
 
-    fn available(&self, name: &str) -> bool {
+    async fn available(&self, name: &str) -> bool {
         self.list()
+            .await
             .map(|models| models.iter().any(|m| m.name == name))
             .unwrap_or(false)
     }

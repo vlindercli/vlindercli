@@ -48,11 +48,16 @@ fn response_key_from_request(req_key: &DataRoutingKey) -> DataRoutingKey {
 pub struct OllamaWorker {
     queue: Arc<dyn MessageQueue + Send + Sync>,
     endpoint: String,
+    client: reqwest::Client,
 }
 
 impl OllamaWorker {
     pub fn new(queue: Arc<dyn MessageQueue + Send + Sync>, endpoint: String) -> Self {
-        Self { queue, endpoint }
+        Self {
+            queue,
+            endpoint,
+            client: reqwest::Client::new(),
+        }
     }
 
     /// Process one message if available. Polls inference and embed queues.
@@ -94,9 +99,9 @@ impl OllamaWorker {
         let start = Instant::now();
 
         let (http_response, metrics) = match operation {
-            Operation::Run => self.handle_openai(&msg.payload),
-            Operation::Chat => self.handle_chat(&msg.payload),
-            Operation::Generate => self.handle_generate(&msg.payload),
+            Operation::Run => self.handle_openai(&msg.payload).await,
+            Operation::Chat => self.handle_chat(&msg.payload).await,
+            Operation::Generate => self.handle_generate(&msg.payload).await,
             _ => error_result(400, "unsupported operation"),
         };
 
@@ -136,7 +141,7 @@ impl OllamaWorker {
         ack: vlinder_core::domain::Acknowledgement,
     ) {
         let start = Instant::now();
-        let (http_response, metrics) = self.handle_embed(&msg.payload);
+        let (http_response, metrics) = self.handle_embed(&msg.payload).await;
 
         let status_code = http_response.status().as_u16();
         let wire = vlinder_core::domain::wire::WireResponse {
@@ -169,7 +174,7 @@ impl OllamaWorker {
 
     // ---- OpenAI-compatible: /v1/chat/completions ----
 
-    fn handle_openai(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle_openai(&self, payload: &[u8]) -> HandlerResult {
         let req: CreateChatCompletionRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string()),
@@ -177,7 +182,7 @@ impl OllamaWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw("/v1/chat/completions", &req) {
+        let http_response = match self.call_upstream_raw("/v1/chat/completions", &req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e),
         };
@@ -203,7 +208,7 @@ impl OllamaWorker {
 
     // ---- Native: /api/chat ----
 
-    fn handle_chat(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle_chat(&self, payload: &[u8]) -> HandlerResult {
         let req: OllamaChatRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string()),
@@ -211,7 +216,7 @@ impl OllamaWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw("/api/chat", &req) {
+        let http_response = match self.call_upstream_raw("/api/chat", &req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e),
         };
@@ -234,7 +239,7 @@ impl OllamaWorker {
 
     // ---- Native: /api/generate ----
 
-    fn handle_generate(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle_generate(&self, payload: &[u8]) -> HandlerResult {
         let req: OllamaGenerateRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string()),
@@ -242,7 +247,7 @@ impl OllamaWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw("/api/generate", &req) {
+        let http_response = match self.call_upstream_raw("/api/generate", &req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e),
         };
@@ -265,7 +270,7 @@ impl OllamaWorker {
 
     // ---- Embed: /api/embed ----
 
-    fn handle_embed(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle_embed(&self, payload: &[u8]) -> HandlerResult {
         let req: OllamaEmbedRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string()),
@@ -273,7 +278,7 @@ impl OllamaWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw("/api/embed", &req) {
+        let http_response = match self.call_upstream_raw("/api/embed", &req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e),
         };
@@ -299,14 +304,20 @@ impl OllamaWorker {
     // ---- HTTP ----
 
     /// Call the upstream Ollama endpoint and return the full HTTP response.
-    fn call_upstream_raw(
+    async fn call_upstream_raw(
         &self,
         path: &str,
-        req: &impl serde::Serialize,
+        req: &(impl serde::Serialize + Send + Sync),
     ) -> Result<http::Response<Vec<u8>>, String> {
         let url = format!("{}{}", self.endpoint, path);
 
-        let mut response = ureq::post(&url).send_json(req).map_err(|e| e.to_string())?;
+        let response = self
+            .client
+            .post(&url)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
 
         let status = response.status();
         let mut builder = http::Response::builder().status(status);
@@ -319,9 +330,10 @@ impl OllamaWorker {
         }
 
         let body = response
-            .body_mut()
-            .read_to_vec()
-            .map_err(|e| format!("failed to read response body: {e}"))?;
+            .bytes()
+            .await
+            .map_err(|e| format!("failed to read response body: {e}"))?
+            .to_vec();
 
         builder
             .body(body)

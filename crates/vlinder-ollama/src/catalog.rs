@@ -1,5 +1,6 @@
 //! Ollama model catalog - queries Ollama API for available models.
 
+use async_trait::async_trait;
 use serde::Deserialize;
 
 use vlinder_core::domain::{
@@ -22,10 +23,11 @@ impl OllamaCatalog {
     }
 }
 
+#[async_trait]
 impl ModelCatalog for OllamaCatalog {
-    fn resolve(&self, name: &str) -> Result<Model, CatalogError> {
+    async fn resolve(&self, name: &str) -> Result<Model, CatalogError> {
         // Verify model exists by listing and checking
-        let models = self.list()?;
+        let models = self.list().await?;
         let info = models
             .iter()
             .find(|m| m.name == name || m.name.starts_with(&format!("{name}:")))
@@ -54,16 +56,14 @@ impl ModelCatalog for OllamaCatalog {
         })
     }
 
-    fn list(&self) -> Result<Vec<ModelInfo>, CatalogError> {
+    async fn list(&self) -> Result<Vec<ModelInfo>, CatalogError> {
         let url = format!("{}/api/tags", self.endpoint);
 
-        let mut response = ureq::get(&url)
-            .call()
-            .map_err(|e| CatalogError::Network(e.to_string()))?;
-
-        let body: TagsResponse = response
-            .body_mut()
-            .read_json()
+        let body: TagsResponse = reqwest::get(&url)
+            .await
+            .map_err(|e| CatalogError::Network(e.to_string()))?
+            .json()
+            .await
             .map_err(|e| CatalogError::Parse(e.to_string()))?;
 
         Ok(body
@@ -78,8 +78,9 @@ impl ModelCatalog for OllamaCatalog {
             .collect())
     }
 
-    fn available(&self, name: &str) -> bool {
+    async fn available(&self, name: &str) -> bool {
         self.list()
+            .await
             .map(|models| {
                 models
                     .iter()

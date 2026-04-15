@@ -502,7 +502,7 @@ pub async fn run_catalog_worker(config: &Config, shutdown: Arc<AtomicBool>) {
         .unwrap_or(&config.distributed.catalog_addr);
     let addr: std::net::SocketAddr = addr_str.parse().expect("Invalid catalog service address");
 
-    let catalog_names = composite.catalogs();
+    let catalog_names = composite.catalogs().await;
     tracing::info!(?addr, catalogs = ?catalog_names, "Starting catalog gRPC server");
 
     let service = CatalogServiceServer::new(Arc::new(composite)).into_service();

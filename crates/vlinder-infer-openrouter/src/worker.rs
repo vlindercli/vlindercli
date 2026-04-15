@@ -41,6 +41,7 @@ pub struct OpenRouterWorker {
     queue: Arc<dyn MessageQueue + Send + Sync>,
     endpoint: String,
     api_key: String,
+    client: reqwest::Client,
 }
 
 impl OpenRouterWorker {
@@ -53,6 +54,7 @@ impl OpenRouterWorker {
             queue,
             endpoint,
             api_key,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -80,7 +82,7 @@ impl OpenRouterWorker {
         ack: vlinder_core::domain::Acknowledgement,
     ) {
         let start = Instant::now();
-        let (http_response, metrics) = self.handle(&msg.payload);
+        let (http_response, metrics) = self.handle(&msg.payload).await;
 
         let status_code = http_response.status().as_u16();
         let wire = vlinder_core::domain::wire::WireResponse {
@@ -111,7 +113,7 @@ impl OpenRouterWorker {
         let _ = ack().await;
     }
 
-    fn handle(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle(&self, payload: &[u8]) -> HandlerResult {
         let req: CreateChatCompletionRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string(), "invalid_request_error"),
@@ -119,7 +121,7 @@ impl OpenRouterWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw(&req) {
+        let http_response = match self.call_upstream_raw(&req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e, "server_error"),
         };
@@ -143,15 +145,19 @@ impl OpenRouterWorker {
         )
     }
 
-    fn call_upstream_raw(
+    async fn call_upstream_raw(
         &self,
         req: &CreateChatCompletionRequest,
     ) -> Result<http::Response<Vec<u8>>, String> {
         let url = format!("{}/chat/completions", self.endpoint);
 
-        let mut response = ureq::post(&url)
-            .header("Authorization", &format!("Bearer {}", self.api_key))
-            .send_json(req)
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(req)
+            .send()
+            .await
             .map_err(|e| e.to_string())?;
 
         let status = response.status();
@@ -165,9 +171,10 @@ impl OpenRouterWorker {
         }
 
         let body = response
-            .body_mut()
-            .read_to_vec()
-            .map_err(|e| format!("failed to read response body: {e}"))?;
+            .bytes()
+            .await
+            .map_err(|e| format!("failed to read response body: {e}"))?
+            .to_vec();
 
         builder
             .body(body)

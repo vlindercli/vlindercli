@@ -43,7 +43,7 @@ impl GrpcCatalogService for CatalogServiceServer {
         &self,
         _request: Request<ListCatalogsRequest>,
     ) -> Result<Response<ListCatalogsResponse>, Status> {
-        let names = self.service.catalogs();
+        let names = self.service.catalogs().await;
         Ok(Response::new(ListCatalogsResponse { catalogs: names }))
     }
 
@@ -52,13 +52,7 @@ impl GrpcCatalogService for CatalogServiceServer {
         request: Request<ResolveRequest>,
     ) -> Result<Response<ResolveResponse>, Status> {
         let req = request.into_inner();
-        let service = self.service.clone();
-        let catalog = req.catalog;
-        let name = req.name;
-
-        let result = tokio::task::spawn_blocking(move || service.resolve(&catalog, &name))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let result = self.service.resolve(&req.catalog, &req.name).await;
 
         match result {
             Ok(model) => Ok(Response::new(ResolveResponse {
@@ -74,12 +68,7 @@ impl GrpcCatalogService for CatalogServiceServer {
 
     async fn list(&self, request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
         let req = request.into_inner();
-        let service = self.service.clone();
-        let catalog = req.catalog;
-
-        let result = tokio::task::spawn_blocking(move || service.list(&catalog))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let result = self.service.list(&req.catalog).await;
 
         match result {
             Ok(models) => Ok(Response::new(ListResponse {
@@ -98,16 +87,10 @@ impl GrpcCatalogService for CatalogServiceServer {
         request: Request<AvailableRequest>,
     ) -> Result<Response<AvailableResponse>, Status> {
         let req = request.into_inner();
-        let service = self.service.clone();
-        let catalog = req.catalog;
-        let name = req.name;
-
-        let result = tokio::task::spawn_blocking(move || service.available(&catalog, &name))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let available = self.service.available(&req.catalog, &req.name).await;
 
         Ok(Response::new(AvailableResponse {
-            available: result,
+            available,
             error: None,
         }))
     }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use clap::Subcommand;
 
 use crate::config::CliConfig;
-use vlinder_catalog::catalog_service::{ping_catalog_service, GrpcCatalogClient};
+use vlinder_catalog::catalog_service::{ping_catalog_service_async, GrpcCatalogClient};
 use vlinder_core::domain::{CatalogService, Model, Registry};
 
 /// Load a model from a TOML manifest and register it with the registry.
@@ -87,7 +87,8 @@ pub fn execute(cmd: ModelCommand) {
                     }
                 }
             } else {
-                let Some(model) = resolve_from_catalog(&name, &catalog, &config) else {
+                let Some(model) = rt.block_on(resolve_from_catalog(&name, &catalog, &config))
+                else {
                     return;
                 };
                 if let Err(e) = rt.block_on(registry.register_model(model.clone())) {
@@ -106,7 +107,7 @@ pub fn execute(cmd: ModelCommand) {
             filter,
             ref catalog,
             endpoint: _,
-        } => list_available(catalog, filter.as_deref(), &config),
+        } => rt.block_on(list_available(catalog, filter.as_deref(), &config)),
         ModelCommand::List => {
             let registry = open_registry(&config);
             let Some(registry) = registry else { return };
@@ -142,7 +143,7 @@ fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
 }
 
 /// Connect to the daemon's gRPC catalog service.
-fn open_catalog_service(config: &CliConfig) -> Option<GrpcCatalogClient> {
+async fn open_catalog_service(config: &CliConfig) -> Option<GrpcCatalogClient> {
     let catalog_addr = if config.daemon.catalog_addr.starts_with("http://")
         || config.daemon.catalog_addr.starts_with("https://")
     {
@@ -151,12 +152,12 @@ fn open_catalog_service(config: &CliConfig) -> Option<GrpcCatalogClient> {
         format!("http://{}", config.daemon.catalog_addr)
     };
 
-    if ping_catalog_service(&catalog_addr).is_none() {
+    if ping_catalog_service_async(&catalog_addr).await.is_none() {
         eprintln!("Cannot reach catalog service at {catalog_addr}. Is the daemon running?");
         return None;
     }
 
-    match GrpcCatalogClient::connect(&catalog_addr) {
+    match GrpcCatalogClient::connect_async(&catalog_addr).await {
         Ok(client) => Some(client),
         Err(e) => {
             eprintln!("Failed to connect to catalog service: {e}");
@@ -166,10 +167,10 @@ fn open_catalog_service(config: &CliConfig) -> Option<GrpcCatalogClient> {
 }
 
 /// Resolve a model by name from a catalog backend (Ollama, `OpenRouter`).
-fn resolve_from_catalog(name: &str, catalog: &str, config: &CliConfig) -> Option<Model> {
-    let service = open_catalog_service(config)?;
+async fn resolve_from_catalog(name: &str, catalog: &str, config: &CliConfig) -> Option<Model> {
+    let service = open_catalog_service(config).await?;
 
-    match service.resolve(catalog, name) {
+    match service.resolve(catalog, name).await {
         Ok(m) => Some(m),
         Err(e) => {
             eprintln!("Failed to resolve model '{name}': {e}");
@@ -178,12 +179,12 @@ fn resolve_from_catalog(name: &str, catalog: &str, config: &CliConfig) -> Option
     }
 }
 
-fn list_available(catalog_name: &str, filter: Option<&str>, config: &CliConfig) {
-    let Some(service) = open_catalog_service(config) else {
+async fn list_available(catalog_name: &str, filter: Option<&str>, config: &CliConfig) {
+    let Some(service) = open_catalog_service(config).await else {
         return;
     };
 
-    let available_catalogs = service.catalogs();
+    let available_catalogs = service.catalogs().await;
     let catalogs: Vec<&str> = if catalog_name == "all" {
         available_catalogs
             .iter()
@@ -201,7 +202,7 @@ fn list_available(catalog_name: &str, filter: Option<&str>, config: &CliConfig) 
     println!();
 
     for name in &catalogs {
-        match service.list(name) {
+        match service.list(name).await {
             Ok(models) => {
                 let filtered: Vec<_> = if let Some(q) = filter {
                     let q = q.to_lowercase();
