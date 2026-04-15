@@ -493,17 +493,18 @@ fn run_inference_openrouter_worker(config: &Config, shutdown: &AtomicBool) {
 
     let queue =
         crate::queue_factory::recording_from_config(config).expect("Failed to create queue");
-
     let worker = OpenRouterWorker::new(
         queue,
         config.openrouter.endpoint.clone(),
         config.openrouter.api_key.clone(),
     );
+    let rt = tokio::runtime::Runtime::new()
+        .expect("Failed to create tokio runtime for OpenRouter worker");
 
     tracing::info!(endpoint = %config.openrouter.endpoint, "OpenRouter inference worker ready");
 
     while !shutdown.load(Ordering::Relaxed) {
-        worker.tick();
+        rt.block_on(worker.tick());
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
