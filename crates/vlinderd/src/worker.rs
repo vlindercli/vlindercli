@@ -48,7 +48,16 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
         #[cfg(feature = "lambda")]
         WorkerRole::AgentLambda => run_agent_lambda_worker(&config, shutdown),
         #[cfg(feature = "ollama")]
-        WorkerRole::InferenceOllama => run_inference_ollama_worker(&config, shutdown),
+        WorkerRole::InferenceOllama => {
+            let queue = crate::queue_factory::recording_from_config(&config)
+                .expect("Failed to create queue");
+            let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
+            rt.block_on(worker_async::run_inference_ollama_worker(
+                &config,
+                queue,
+                Arc::clone(shutdown),
+            ));
+        }
         #[cfg(feature = "openrouter")]
         WorkerRole::InferenceOpenRouter => {
             let queue = crate::queue_factory::recording_from_config(&config)
@@ -476,24 +485,6 @@ fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
     let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
     while !shutdown.load(Ordering::Relaxed) {
         rt.block_on(async { runtime.tick().await });
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
-#[cfg(feature = "ollama")]
-fn run_inference_ollama_worker(config: &Config, shutdown: &AtomicBool) {
-    use vlinder_ollama::OllamaWorker;
-
-    let queue =
-        crate::queue_factory::recording_from_config(config).expect("Failed to create queue");
-    let worker = OllamaWorker::new(queue, config.ollama.endpoint.clone());
-    let rt =
-        tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for Ollama worker");
-
-    tracing::info!(endpoint = %config.ollama.endpoint, "Ollama inference worker ready");
-
-    while !shutdown.load(Ordering::Relaxed) {
-        rt.block_on(worker.tick());
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }

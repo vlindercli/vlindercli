@@ -44,3 +44,23 @@ pub async fn run_inference_openrouter_worker(
         }
     }
 }
+
+#[cfg(feature = "ollama")]
+pub async fn run_inference_ollama_worker(
+    config: &Config,
+    queue: std::sync::Arc<dyn vlinder_core::domain::MessageQueue + Send + Sync>,
+    shutdown: Arc<AtomicBool>,
+) {
+    use vlinder_ollama::OllamaWorker;
+
+    let worker = OllamaWorker::new(queue, config.ollama.endpoint.clone());
+
+    tracing::info!(endpoint = %config.ollama.endpoint, "Ollama inference worker ready");
+
+    loop {
+        tokio::select! {
+            _ = worker.tick() => {}
+            () = shutdown_signal(&shutdown) => break,
+        }
+    }
+}
