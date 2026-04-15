@@ -118,3 +118,358 @@ pub async fn run_storage_vector_sqlite_worker(config: &Config, shutdown: Arc<Ato
         }
     }
 }
+
+#[cfg(feature = "container")]
+pub async fn run_agent_container_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+    use crate::config::dag_db_path;
+    use vlinder_core::domain::Runtime;
+    use vlinder_podman_runtime::{ContainerRuntime, PodmanRuntimeConfig};
+    use vlinder_sql_state::SqliteDagStore;
+
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
+
+    let queue_backend = match config.queue.backend {
+        crate::config::QueueBackend::Nats => "nats",
+        #[cfg(feature = "amqp")]
+        crate::config::QueueBackend::Amqp => "amqp",
+        #[cfg(any(test, feature = "test-support"))]
+        crate::config::QueueBackend::Memory => "nats",
+    };
+    let podman_config = PodmanRuntimeConfig {
+        image_policy: config.runtime.image_policy.clone(),
+        podman_socket: config.runtime.podman_socket.clone(),
+        sidecar_image: config.runtime.sidecar_image.clone(),
+        queue_backend: queue_backend.to_string(),
+        nats_url: config.queue.nats_url.clone(),
+        amqp_url: config.queue.amqp_url.clone(),
+        registry_addr: config.distributed.registry_addr.clone(),
+        state_addr: config.distributed.state_addr.clone(),
+        secret_addr: config.distributed.secret_addr.clone(),
+    };
+
+    let podman: Box<dyn vlinder_podman_runtime::PodmanClient> = if let Some(path) =
+        vlinder_podman_runtime::resolve_socket(&config.runtime.podman_socket)
+    {
+        tracing::info!(event = "podman.socket", path = %path.display(), "Using Podman socket API");
+        Box::new(vlinder_podman_runtime::PodmanApiClient::new(&path))
+    } else {
+        tracing::info!(event = "podman.cli", "Using Podman CLI");
+        Box::new(vlinder_podman_runtime::PodmanCliClient)
+    };
+
+    let engine_version = podman.engine_version();
+    if let Some(ref v) = engine_version {
+        tracing::info!(event = "podman.detected", version = %v, "Podman engine detected");
+    } else {
+        tracing::warn!(
+            event = "podman.not_found",
+            "Podman not detected — container runtime degraded"
+        );
+    }
+
+    let mut runtime = ContainerRuntime::new(&podman_config, registry, repo, podman);
+
+    tracing::info!("Container agent worker ready");
+
+    loop {
+        tokio::select! {
+            _ = runtime.tick() => {}
+            () = shutdown_signal(&shutdown) => break,
+        }
+    }
+}
+
+#[cfg(feature = "lambda")]
+pub async fn run_agent_lambda_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+    use crate::config::dag_db_path;
+    use vlinder_core::domain::Runtime;
+    use vlinder_lambda_runtime::{LambdaRuntime, LambdaRuntimeConfig};
+    use vlinder_sql_state::SqliteDagStore;
+
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
+
+    let queue = crate::queue_factory::from_config_async(config)
+        .await
+        .expect("Failed to create queue for Lambda runtime");
+
+    let queue_backend = match config.queue.backend {
+        crate::config::QueueBackend::Nats => "nats",
+        #[cfg(feature = "amqp")]
+        crate::config::QueueBackend::Amqp => "amqp",
+        #[cfg(any(test, feature = "test-support"))]
+        crate::config::QueueBackend::Memory => "nats",
+    };
+
+    let lambda_config = LambdaRuntimeConfig {
+        registry_addr: config.distributed.registry_addr.clone(),
+        region: config.runtime.lambda_region.clone(),
+        memory_mb: config.runtime.lambda_memory_mb,
+        timeout_secs: config.runtime.lambda_timeout_secs,
+        queue_backend: queue_backend.to_string(),
+        nats_url: config.queue.nats_url.clone(),
+        amqp_url: config.queue.amqp_url.clone(),
+        state_url: config.distributed.state_addr.clone(),
+        secret_url: if config.distributed.secret_addr.is_empty() {
+            None
+        } else {
+            Some(config.distributed.secret_addr.clone())
+        },
+        vpc_subnet_ids: config.runtime.lambda_vpc_subnet_ids.clone(),
+        vpc_security_group_ids: config.runtime.lambda_vpc_security_group_ids.clone(),
+    };
+
+    let mut runtime = LambdaRuntime::new(&lambda_config, registry, repo, queue)
+        .expect("Failed to create Lambda runtime");
+
+    tracing::info!(
+        region = config.runtime.lambda_region.as_str(),
+        "Lambda agent worker ready"
+    );
+
+    loop {
+        tokio::select! {
+            _ = runtime.tick() => {}
+            () = shutdown_signal(&shutdown) => break,
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+pub async fn run_infra_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+    use crate::config::dag_db_path;
+    use vlinder_core::domain::{AgentName, QueueError, ReadinessCheck, RegistryRepository};
+    use vlinder_sql_state::SqliteDagStore;
+
+    let queue = crate::queue_factory::from_config_async(config)
+        .await
+        .expect("Failed to create queue for infra worker");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path)
+        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
+    let repo: Arc<dyn RegistryRepository> = Arc::new(store);
+
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+
+    tracing::info!("Infra plane worker ready");
+
+    loop {
+        tokio::select! {
+            result = queue.receive_deploy_agent() => {
+                match result {
+                    Ok((_key, deploy_msg, ack)) => {
+                        let _ = ack().await;
+                        let agent_name = deploy_msg.manifest.name.clone();
+                        tracing::info!(agent = %agent_name, "Processing deploy-agent");
+
+                        let manifest = deploy_msg.manifest.clone();
+                        let agent_result = vlinder_core::domain::Agent::from_manifest(manifest)
+                            .map_err(|e| {
+                                vlinder_core::domain::RegistrationError::Persistence(
+                                    format!("{e:?}"),
+                                )
+                            });
+                        let reg_result = match agent_result {
+                            Ok(agent) => registry.register_agent(agent).await,
+                            Err(e) => Err(e),
+                        };
+
+                        match reg_result {
+                            Ok(()) => {
+                                let name = AgentName::new(&agent_name);
+                                if let Err(e) = queue.on_agent_deployed(&name).await {
+                                    tracing::warn!(agent = %agent_name, error = %e, "Failed to provision agent queues");
+                                }
+                                tracing::info!(agent = %agent_name, "Agent registered, awaiting runtime provisioning");
+                            }
+                            Err(e) => {
+                                let name = AgentName::new(&agent_name);
+                                let check =
+                                    ReadinessCheck::pending(name, "registry").failed(e.to_string());
+                                let _ = repo.append_readiness_check(&check);
+                                tracing::warn!(agent = %agent_name, error = %e, "Agent deploy failed");
+                            }
+                        }
+                    }
+                    Err(QueueError::Timeout) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Infra worker deploy receive error");
+                    }
+                }
+            }
+            result = queue.receive_delete_agent() => {
+                match result {
+                    Ok((_key, delete_msg, ack)) => {
+                        let _ = ack().await;
+                        let agent_name = delete_msg.agent.as_str().to_string();
+                        tracing::info!(agent = %agent_name, "Processing delete-agent");
+
+                        let name = AgentName::new(&agent_name);
+                        if let Err(e) = queue.on_agent_deleted(&name).await {
+                            tracing::warn!(agent = %agent_name, error = %e, "Failed to deprovision agent queues");
+                        }
+                        let check = ReadinessCheck::pending(name, "registry").deleted();
+                        let _ = repo.append_readiness_check(&check);
+
+                        tracing::info!(agent = %agent_name, "Agent marked for deletion, awaiting runtime teardown");
+                    }
+                    Err(QueueError::Timeout) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Infra worker delete receive error");
+                    }
+                }
+            }
+            () = shutdown_signal(&shutdown) => break,
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+pub async fn run_dag_git_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+    use crate::config::conversations_dir;
+    use vlinder_core::domain::{DagWorker, QueueError};
+    use vlinder_git_dag::GitDagWorker;
+    use vlinder_nats::{
+        complete_parse_subject, delete_agent_parse_subject, deploy_agent_parse_subject,
+        fork_parse_subject, invoke_parse_subject, promote_parse_subject, request_parse_subject,
+        response_parse_subject,
+    };
+
+    let queue = crate::queue_factory::from_config_async(config)
+        .await
+        .expect("Failed to create queue for DAG git worker");
+
+    let repo_path = conversations_dir();
+    let mut git_worker = GitDagWorker::open(&repo_path, &config.distributed.registry_addr, None)
+        .expect("Failed to open git DAG repo");
+
+    tracing::info!(git = %repo_path.display(), "DAG git worker ready");
+
+    loop {
+        tokio::select! {
+            result = queue.receive_any() => {
+                match result {
+                    Ok((subject, payload, ack)) => {
+                        tracing::debug!(subject = subject.as_str(), "DAG git received message");
+
+                        let created_at = chrono::Utc::now();
+                        if let Some(key) = complete_parse_subject(&subject) {
+                            if let Ok(complete_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::CompleteMessage>(
+                                    &payload,
+                                )
+                            {
+                                git_worker.on_complete(&key, &complete_msg, created_at);
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize CompleteMessage"
+                                );
+                            }
+                        } else if let Some(key) = request_parse_subject(&subject) {
+                            if let Ok(request_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::RequestMessage>(
+                                    &payload,
+                                )
+                            {
+                                git_worker.on_request(&key, &request_msg, created_at);
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize RequestMessageV2"
+                                );
+                            }
+                        } else if let Some(key) = response_parse_subject(&subject) {
+                            if let Ok(response_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::ResponseMessage>(
+                                    &payload,
+                                )
+                            {
+                                git_worker.on_response(&key, &response_msg, created_at);
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize ResponseMessageV2"
+                                );
+                            }
+                        } else if let Some(key) = invoke_parse_subject(&subject) {
+                            if let Ok(invoke_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::InvokeMessage>(
+                                    &payload,
+                                )
+                            {
+                                git_worker.on_invoke(&key, &invoke_msg, created_at);
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize InvokeMessage"
+                                );
+                            }
+                        } else if let Some(key) = fork_parse_subject(&subject) {
+                            if let Ok(fork_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::ForkMessage>(
+                                    &payload,
+                                )
+                            {
+                                git_worker.on_fork(&key, &fork_msg, created_at);
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize ForkMessage"
+                                );
+                            }
+                        } else if let Some(key) = promote_parse_subject(&subject) {
+                            if let Ok(promote_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::PromoteMessage>(
+                                    &payload,
+                                )
+                            {
+                                git_worker.on_promote(&key, &promote_msg, created_at);
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize PromoteMessage"
+                                );
+                            }
+                        } else if deploy_agent_parse_subject(&subject).is_some()
+                            || delete_agent_parse_subject(&subject).is_some()
+                        {
+                            tracing::debug!(subject = subject.as_str(), "DAG git: infra plane event");
+                        } else {
+                            tracing::warn!(
+                                subject = subject.as_str(),
+                                "DAG git could not reconstruct message"
+                            );
+                        }
+
+                        let _ = ack().await;
+                    }
+                    Err(QueueError::Timeout) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "DAG git fetch error");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            }
+            () = shutdown_signal(&shutdown) => break,
+        }
+    }
+}

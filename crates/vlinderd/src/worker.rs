@@ -44,9 +44,21 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
         WorkerRole::Registry => run_registry_worker(&config, shutdown),
         WorkerRole::Harness => run_harness_worker(&config, shutdown),
         #[cfg(feature = "container")]
-        WorkerRole::AgentContainer => run_agent_container_worker(&config, shutdown),
+        WorkerRole::AgentContainer => {
+            let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
+            rt.block_on(worker_async::run_agent_container_worker(
+                &config,
+                Arc::clone(shutdown),
+            ));
+        }
         #[cfg(feature = "lambda")]
-        WorkerRole::AgentLambda => run_agent_lambda_worker(&config, shutdown),
+        WorkerRole::AgentLambda => {
+            let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
+            rt.block_on(worker_async::run_agent_lambda_worker(
+                &config,
+                Arc::clone(shutdown),
+            ));
+        }
         #[cfg(feature = "ollama")]
         WorkerRole::InferenceOllama => {
             let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
@@ -83,8 +95,20 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
         WorkerRole::State => run_state_worker(&config, shutdown),
         #[cfg(any(feature = "ollama", feature = "openrouter"))]
         WorkerRole::Catalog => run_catalog_worker(&config, shutdown),
-        WorkerRole::Infra => run_infra_worker(&config, shutdown),
-        WorkerRole::DagGit => run_dag_git_worker(&config, shutdown),
+        WorkerRole::Infra => {
+            let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
+            rt.block_on(worker_async::run_infra_worker(
+                &config,
+                Arc::clone(shutdown),
+            ));
+        }
+        WorkerRole::DagGit => {
+            let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
+            rt.block_on(worker_async::run_dag_git_worker(
+                &config,
+                Arc::clone(shutdown),
+            ));
+        }
         WorkerRole::SessionViewer => run_session_viewer_worker(&config, shutdown),
     }
 
@@ -197,98 +221,6 @@ fn run_registry_worker(config: &Config, shutdown: &AtomicBool) {
     });
 }
 
-#[allow(clippy::too_many_lines)]
-fn run_infra_worker(config: &Config, shutdown: &AtomicBool) {
-    use crate::config::dag_db_path;
-    use vlinder_core::domain::{AgentName, QueueError, ReadinessCheck, RegistryRepository};
-    use vlinder_sql_state::SqliteDagStore;
-
-    let queue =
-        crate::queue_factory::from_config(config).expect("Failed to create queue for infra worker");
-
-    // Open the shared DAG database for agent state management
-    let db_path = dag_db_path();
-    let store = SqliteDagStore::open(&db_path)
-        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
-    let repo: Arc<dyn RegistryRepository> = Arc::new(store);
-
-    // Connect to registry for agent registration
-    let registry_addr = grpc_registry_addr(config);
-    let registry: Arc<dyn vlinder_core::domain::Registry> = Arc::new(
-        vlinder_sql_registry::registry_service::GrpcRegistryClient::connect(&registry_addr)
-            .expect("Failed to connect to registry"),
-    );
-
-    tracing::info!("Infra plane worker ready");
-
-    let rt =
-        tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for infra worker");
-    while !shutdown.load(Ordering::Relaxed) {
-        // Try deploy
-        match rt.block_on(queue.receive_deploy_agent()) {
-            Ok((_key, deploy_msg, ack)) => {
-                let _ = rt.block_on(ack());
-                let agent_name = deploy_msg.manifest.name.clone();
-                tracing::info!(agent = %agent_name, "Processing deploy-agent");
-
-                let manifest = deploy_msg.manifest.clone();
-                let reg_result = (|| {
-                    let agent =
-                        vlinder_core::domain::Agent::from_manifest(manifest).map_err(|e| {
-                            vlinder_core::domain::RegistrationError::Persistence(format!("{e:?}"))
-                        })?;
-                    rt.block_on(registry.register_agent(agent))
-                })();
-
-                match reg_result {
-                    Ok(()) => {
-                        let name = AgentName::new(&agent_name);
-                        if let Err(e) = rt.block_on(queue.on_agent_deployed(&name)) {
-                            tracing::warn!(agent = %agent_name, error = %e, "Failed to provision agent queues");
-                        }
-                        // Deploying state is now set by register_agent
-                        tracing::info!(agent = %agent_name, "Agent registered, awaiting runtime provisioning");
-                    }
-                    Err(e) => {
-                        let name = AgentName::new(&agent_name);
-                        let check = ReadinessCheck::pending(name, "registry").failed(e.to_string());
-                        let _ = repo.append_readiness_check(&check);
-                        tracing::warn!(agent = %agent_name, error = %e, "Agent deploy failed");
-                    }
-                }
-            }
-            Err(QueueError::Timeout) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "Infra worker deploy receive error");
-            }
-        }
-
-        // Try delete
-        match rt.block_on(queue.receive_delete_agent()) {
-            Ok((_key, delete_msg, ack)) => {
-                let _ = rt.block_on(ack());
-                let agent_name = delete_msg.agent.as_str().to_string();
-                tracing::info!(agent = %agent_name, "Processing delete-agent");
-
-                let name = AgentName::new(&agent_name);
-                if let Err(e) = rt.block_on(queue.on_agent_deleted(&name)) {
-                    tracing::warn!(agent = %agent_name, error = %e, "Failed to deprovision agent queues");
-                }
-                let check = ReadinessCheck::pending(name, "registry").deleted();
-                let _ = repo.append_readiness_check(&check);
-
-                tracing::info!(agent = %agent_name, "Agent marked for deletion, awaiting runtime teardown");
-            }
-            Err(QueueError::Timeout) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "Infra worker delete receive error");
-            }
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
 fn run_secret_worker(config: &Config, shutdown: &AtomicBool) {
     use tonic::transport::Server;
     use vlinder_nats::secret_service::SecretServer;
@@ -369,130 +301,6 @@ fn run_harness_worker(config: &Config, shutdown: &AtomicBool) {
             tracing::error!(?e, "Harness server error");
         }
     });
-}
-
-#[cfg(feature = "container")]
-fn run_agent_container_worker(config: &Config, shutdown: &AtomicBool) {
-    use crate::config::dag_db_path;
-    use vlinder_core::domain::Runtime;
-    use vlinder_podman_runtime::{ContainerRuntime, PodmanRuntimeConfig};
-    use vlinder_sql_state::SqliteDagStore;
-
-    let registry =
-        crate::registry_factory::from_config(config).expect("Failed to connect to registry");
-
-    let db_path = dag_db_path();
-    let store = SqliteDagStore::open(&db_path)
-        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
-    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
-
-    let queue_backend = match config.queue.backend {
-        crate::config::QueueBackend::Nats => "nats",
-        #[cfg(feature = "amqp")]
-        crate::config::QueueBackend::Amqp => "amqp",
-        #[cfg(any(test, feature = "test-support"))]
-        crate::config::QueueBackend::Memory => "nats",
-    };
-    let podman_config = PodmanRuntimeConfig {
-        image_policy: config.runtime.image_policy.clone(),
-        podman_socket: config.runtime.podman_socket.clone(),
-        sidecar_image: config.runtime.sidecar_image.clone(),
-        queue_backend: queue_backend.to_string(),
-        nats_url: config.queue.nats_url.clone(),
-        amqp_url: config.queue.amqp_url.clone(),
-        registry_addr: config.distributed.registry_addr.clone(),
-        state_addr: config.distributed.state_addr.clone(),
-        secret_addr: config.distributed.secret_addr.clone(),
-    };
-
-    let podman: Box<dyn vlinder_podman_runtime::PodmanClient> = if let Some(path) =
-        vlinder_podman_runtime::resolve_socket(&config.runtime.podman_socket)
-    {
-        tracing::info!(event = "podman.socket", path = %path.display(), "Using Podman socket API");
-        Box::new(vlinder_podman_runtime::PodmanApiClient::new(&path))
-    } else {
-        tracing::info!(event = "podman.cli", "Using Podman CLI");
-        Box::new(vlinder_podman_runtime::PodmanCliClient)
-    };
-
-    let engine_version = podman.engine_version();
-    if let Some(ref v) = engine_version {
-        tracing::info!(event = "podman.detected", version = %v, "Podman engine detected");
-    } else {
-        tracing::warn!(
-            event = "podman.not_found",
-            "Podman not detected — container runtime degraded"
-        );
-    }
-
-    let mut runtime = ContainerRuntime::new(&podman_config, registry, repo, podman);
-    let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
-
-    tracing::info!("Container agent worker ready");
-
-    while !shutdown.load(Ordering::Relaxed) {
-        rt.block_on(async { runtime.tick().await });
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-}
-
-#[cfg(feature = "lambda")]
-fn run_agent_lambda_worker(config: &Config, shutdown: &AtomicBool) {
-    use crate::config::dag_db_path;
-    use vlinder_core::domain::Runtime;
-    use vlinder_lambda_runtime::{LambdaRuntime, LambdaRuntimeConfig};
-    use vlinder_sql_state::SqliteDagStore;
-
-    let registry =
-        crate::registry_factory::from_config(config).expect("Failed to connect to registry");
-
-    let db_path = dag_db_path();
-    let store = SqliteDagStore::open(&db_path)
-        .unwrap_or_else(|e| panic!("Failed to open state database: {e}"));
-    let repo: Arc<dyn vlinder_core::domain::RegistryRepository> = Arc::new(store);
-
-    let queue = crate::queue_factory::from_config(config)
-        .expect("Failed to create queue for Lambda runtime");
-
-    let queue_backend = match config.queue.backend {
-        crate::config::QueueBackend::Nats => "nats",
-        #[cfg(feature = "amqp")]
-        crate::config::QueueBackend::Amqp => "amqp",
-        #[cfg(any(test, feature = "test-support"))]
-        crate::config::QueueBackend::Memory => "nats",
-    };
-
-    let lambda_config = LambdaRuntimeConfig {
-        registry_addr: config.distributed.registry_addr.clone(),
-        region: config.runtime.lambda_region.clone(),
-        memory_mb: config.runtime.lambda_memory_mb,
-        timeout_secs: config.runtime.lambda_timeout_secs,
-        queue_backend: queue_backend.to_string(),
-        nats_url: config.queue.nats_url.clone(),
-        amqp_url: config.queue.amqp_url.clone(),
-        state_url: config.distributed.state_addr.clone(),
-        secret_url: if config.distributed.secret_addr.is_empty() {
-            None
-        } else {
-            Some(config.distributed.secret_addr.clone())
-        },
-        vpc_subnet_ids: config.runtime.lambda_vpc_subnet_ids.clone(),
-        vpc_security_group_ids: config.runtime.lambda_vpc_security_group_ids.clone(),
-    };
-
-    let mut runtime = LambdaRuntime::new(&lambda_config, registry, repo, queue)
-        .expect("Failed to create Lambda runtime");
-
-    tracing::info!(
-        region = config.runtime.lambda_region.as_str(),
-        "Lambda agent worker ready"
-    );
-
-    let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
-    while !shutdown.load(Ordering::Relaxed) {
-        rt.block_on(async { runtime.tick().await });
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
 }
 
 fn run_state_worker(config: &Config, shutdown: &AtomicBool) {
@@ -589,126 +397,6 @@ fn run_catalog_worker(config: &Config, shutdown: &AtomicBool) {
             tracing::error!(?e, "Catalog server error");
         }
     });
-}
-
-#[allow(clippy::too_many_lines)]
-fn run_dag_git_worker(config: &Config, shutdown: &AtomicBool) {
-    use crate::config::conversations_dir;
-    use vlinder_core::domain::{DagWorker, QueueError};
-    use vlinder_git_dag::GitDagWorker;
-    use vlinder_nats::{
-        complete_parse_subject, delete_agent_parse_subject, deploy_agent_parse_subject,
-        fork_parse_subject, invoke_parse_subject, promote_parse_subject, request_parse_subject,
-        response_parse_subject,
-    };
-
-    let queue = crate::queue_factory::from_config(config)
-        .expect("Failed to create queue for DAG git worker");
-
-    let repo_path = conversations_dir();
-    let mut git_worker = GitDagWorker::open(&repo_path, &config.distributed.registry_addr, None)
-        .expect("Failed to open git DAG repo");
-
-    tracing::info!(git = %repo_path.display(), "DAG git worker ready");
-
-    let rt =
-        tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for DAG git worker");
-    while !shutdown.load(Ordering::Relaxed) {
-        match rt.block_on(queue.receive_any()) {
-            Ok((subject, payload, ack)) => {
-                tracing::debug!(subject = subject.as_str(), "DAG git received message",);
-
-                // Try data-plane subject first, fall back to legacy pipeline.
-                let created_at = chrono::Utc::now();
-                if let Some(key) = complete_parse_subject(&subject) {
-                    if let Ok(complete_msg) =
-                        serde_json::from_slice::<vlinder_core::domain::CompleteMessage>(&payload)
-                    {
-                        git_worker.on_complete(&key, &complete_msg, created_at);
-                    } else {
-                        tracing::warn!(
-                            subject = subject.as_str(),
-                            "DAG git: failed to deserialize CompleteMessage"
-                        );
-                    }
-                } else if let Some(key) = request_parse_subject(&subject) {
-                    if let Ok(request_msg) =
-                        serde_json::from_slice::<vlinder_core::domain::RequestMessage>(&payload)
-                    {
-                        git_worker.on_request(&key, &request_msg, created_at);
-                    } else {
-                        tracing::warn!(
-                            subject = subject.as_str(),
-                            "DAG git: failed to deserialize RequestMessageV2"
-                        );
-                    }
-                } else if let Some(key) = response_parse_subject(&subject) {
-                    if let Ok(response_msg) =
-                        serde_json::from_slice::<vlinder_core::domain::ResponseMessage>(&payload)
-                    {
-                        git_worker.on_response(&key, &response_msg, created_at);
-                    } else {
-                        tracing::warn!(
-                            subject = subject.as_str(),
-                            "DAG git: failed to deserialize ResponseMessageV2"
-                        );
-                    }
-                } else if let Some(key) = invoke_parse_subject(&subject) {
-                    if let Ok(invoke_msg) =
-                        serde_json::from_slice::<vlinder_core::domain::InvokeMessage>(&payload)
-                    {
-                        git_worker.on_invoke(&key, &invoke_msg, created_at);
-                    } else {
-                        tracing::warn!(
-                            subject = subject.as_str(),
-                            "DAG git: failed to deserialize InvokeMessage"
-                        );
-                    }
-                } else if let Some(key) = fork_parse_subject(&subject) {
-                    if let Ok(fork_msg) =
-                        serde_json::from_slice::<vlinder_core::domain::ForkMessage>(&payload)
-                    {
-                        git_worker.on_fork(&key, &fork_msg, created_at);
-                    } else {
-                        tracing::warn!(
-                            subject = subject.as_str(),
-                            "DAG git: failed to deserialize ForkMessage"
-                        );
-                    }
-                } else if let Some(key) = promote_parse_subject(&subject) {
-                    if let Ok(promote_msg) =
-                        serde_json::from_slice::<vlinder_core::domain::PromoteMessage>(&payload)
-                    {
-                        git_worker.on_promote(&key, &promote_msg, created_at);
-                    } else {
-                        tracing::warn!(
-                            subject = subject.as_str(),
-                            "DAG git: failed to deserialize PromoteMessage"
-                        );
-                    }
-                } else if deploy_agent_parse_subject(&subject).is_some()
-                    || delete_agent_parse_subject(&subject).is_some()
-                {
-                    // Infra plane — acknowledged, no git subtree yet
-                    tracing::debug!(subject = subject.as_str(), "DAG git: infra plane event");
-                } else {
-                    tracing::warn!(
-                        subject = subject.as_str(),
-                        "DAG git could not reconstruct message"
-                    );
-                }
-
-                let _ = rt.block_on(ack());
-            }
-            Err(QueueError::Timeout) => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "DAG git fetch error");
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
-    }
 }
 
 fn run_session_viewer_worker(_config: &Config, shutdown: &AtomicBool) {
