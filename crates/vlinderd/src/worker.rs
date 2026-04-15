@@ -476,13 +476,14 @@ fn run_inference_ollama_worker(config: &Config, shutdown: &AtomicBool) {
 
     let queue =
         crate::queue_factory::recording_from_config(config).expect("Failed to create queue");
-
     let worker = OllamaWorker::new(queue, config.ollama.endpoint.clone());
+    let rt =
+        tokio::runtime::Runtime::new().expect("Failed to create tokio runtime for Ollama worker");
 
     tracing::info!(endpoint = %config.ollama.endpoint, "Ollama inference worker ready");
 
     while !shutdown.load(Ordering::Relaxed) {
-        worker.tick();
+        rt.block_on(worker.tick());
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
@@ -556,11 +557,13 @@ fn run_storage_vector_sqlite_worker(config: &Config, shutdown: &AtomicBool) {
         registry,
         ServiceBackend::Vec(VectorStorageType::SqliteVec),
     );
+    let rt = tokio::runtime::Runtime::new()
+        .expect("Failed to create tokio runtime for SqliteVec worker");
 
     tracing::info!(registry = %registry_addr, "SQLite-vec vector storage worker ready");
 
     while !shutdown.load(Ordering::Relaxed) {
-        worker.tick();
+        rt.block_on(worker.tick());
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }

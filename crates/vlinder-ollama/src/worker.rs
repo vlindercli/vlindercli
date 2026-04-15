@@ -48,45 +48,43 @@ fn response_key_from_request(req_key: &DataRoutingKey) -> DataRoutingKey {
 pub struct OllamaWorker {
     queue: Arc<dyn MessageQueue + Send + Sync>,
     endpoint: String,
-    rt: tokio::runtime::Runtime,
 }
 
 impl OllamaWorker {
     pub fn new(queue: Arc<dyn MessageQueue + Send + Sync>, endpoint: String) -> Self {
-        let rt = tokio::runtime::Runtime::new()
-            .expect("Failed to create tokio runtime for OllamaWorker");
-        Self {
-            queue,
-            endpoint,
-            rt,
-        }
+        Self { queue, endpoint }
     }
 
     /// Process one message if available. Polls inference and embed queues.
     /// Returns true if a message was processed.
-    pub fn tick(&self) -> bool {
+    pub async fn tick(&self) -> bool {
         for op in [Operation::Run, Operation::Chat, Operation::Generate] {
-            if let Ok((key, msg, ack)) = self.rt.block_on(
-                self.queue
-                    .receive_request(ServiceBackend::Infer(InferenceBackendType::Ollama), op),
-            ) {
-                self.process_v2(&key, msg, ack, op);
+            if let Ok((key, msg, ack)) = self
+                .queue
+                .receive_request(ServiceBackend::Infer(InferenceBackendType::Ollama), op)
+                .await
+            {
+                self.process_v2(&key, msg, ack, op).await;
                 return true;
             }
         }
 
-        if let Ok((key, msg, ack)) = self.rt.block_on(self.queue.receive_request(
-            ServiceBackend::Embed(EmbeddingBackendType::Ollama),
-            Operation::Run,
-        )) {
-            self.process_embed_v2(&key, msg, ack);
+        if let Ok((key, msg, ack)) = self
+            .queue
+            .receive_request(
+                ServiceBackend::Embed(EmbeddingBackendType::Ollama),
+                Operation::Run,
+            )
+            .await
+        {
+            self.process_embed_v2(&key, msg, ack).await;
             return true;
         }
 
         false
     }
 
-    fn process_v2(
+    async fn process_v2(
         &self,
         key: &DataRoutingKey,
         msg: RequestMessage,
@@ -127,13 +125,11 @@ impl OllamaWorker {
             status_code,
             checkpoint: msg.checkpoint,
         };
-        let _ = self
-            .rt
-            .block_on(self.queue.send_response(response_key, response));
-        let _ = self.rt.block_on(ack());
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
     }
 
-    fn process_embed_v2(
+    async fn process_embed_v2(
         &self,
         key: &DataRoutingKey,
         msg: RequestMessage,
@@ -167,10 +163,8 @@ impl OllamaWorker {
             status_code,
             checkpoint: msg.checkpoint,
         };
-        let _ = self
-            .rt
-            .block_on(self.queue.send_response(response_key, response));
-        let _ = self.rt.block_on(ack());
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
     }
 
     // ---- OpenAI-compatible: /v1/chat/completions ----
@@ -372,10 +366,6 @@ mod tests {
     };
     use vlinder_core::queue::InMemoryQueue;
 
-    fn block_on<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Runtime::new().unwrap().block_on(f)
-    }
-
     fn test_request_diag() -> RequestDiagnostics {
         RequestDiagnostics {
             sequence: 0,
@@ -391,7 +381,7 @@ mod tests {
 
     /// Send an infer request via v2 API and return (service, operation, sequence)
     /// needed to receive the response.
-    fn send_infer_request(
+    async fn send_infer_request(
         queue: &Arc<dyn MessageQueue + Send + Sync>,
         operation: Operation,
         payload: Vec<u8>,
@@ -419,11 +409,11 @@ mod tests {
             payload,
             checkpoint: None,
         };
-        block_on(queue.send_request(key, msg)).unwrap();
+        queue.send_request(key, msg).await.unwrap();
         (submission, service, operation, sequence)
     }
 
-    fn send_embed_request(
+    async fn send_embed_request(
         queue: &Arc<dyn MessageQueue + Send + Sync>,
         payload: Vec<u8>,
         state: Option<String>,
@@ -451,7 +441,7 @@ mod tests {
             payload,
             checkpoint: None,
         };
-        block_on(queue.send_request(key, msg)).unwrap();
+        queue.send_request(key, msg).await.unwrap();
         (submission, service, operation, sequence)
     }
 
@@ -461,24 +451,25 @@ mod tests {
 
     // --- Operation::Run (OpenAI-compatible) ---
 
-    #[test]
-    fn run_rejects_invalid_payload() {
+    #[tokio::test]
+    async fn run_rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
         let (sub, svc, op, seq) =
-            send_infer_request(&queue, Operation::Run, b"not json".to_vec(), None);
-        assert!(worker.tick());
+            send_infer_request(&queue, Operation::Run, b"not json".to_vec(), None).await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.status_code, 400);
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn run_echoes_state() {
+    #[tokio::test]
+    async fn run_echoes_state() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -491,18 +482,20 @@ mod tests {
             Operation::Run,
             serde_json::to_vec(&body).unwrap(),
             Some("xyz".to_string()),
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.state, Some("xyz".to_string()));
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn run_unreachable_endpoint_returns_500() {
+    #[tokio::test]
+    async fn run_unreachable_endpoint_returns_500() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -515,36 +508,39 @@ mod tests {
             Operation::Run,
             serde_json::to_vec(&body).unwrap(),
             None,
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.status_code, 500);
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
     // --- Operation::Chat (/api/chat) ---
 
-    #[test]
-    fn chat_rejects_invalid_payload() {
+    #[tokio::test]
+    async fn chat_rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
         let (sub, svc, op, seq) =
-            send_infer_request(&queue, Operation::Chat, b"not json".to_vec(), None);
-        assert!(worker.tick());
+            send_infer_request(&queue, Operation::Chat, b"not json".to_vec(), None).await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.status_code, 400);
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn chat_echoes_state() {
+    #[tokio::test]
+    async fn chat_echoes_state() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -557,18 +553,20 @@ mod tests {
             Operation::Chat,
             serde_json::to_vec(&body).unwrap(),
             Some("abc".to_string()),
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.state, Some("abc".to_string()));
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn chat_unreachable_endpoint_returns_500() {
+    #[tokio::test]
+    async fn chat_unreachable_endpoint_returns_500() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -581,36 +579,39 @@ mod tests {
             Operation::Chat,
             serde_json::to_vec(&body).unwrap(),
             None,
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.status_code, 500);
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
     // --- Operation::Generate (/api/generate) ---
 
-    #[test]
-    fn generate_rejects_invalid_payload() {
+    #[tokio::test]
+    async fn generate_rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
         let (sub, svc, op, seq) =
-            send_infer_request(&queue, Operation::Generate, b"not json".to_vec(), None);
-        assert!(worker.tick());
+            send_infer_request(&queue, Operation::Generate, b"not json".to_vec(), None).await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.status_code, 400);
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn generate_echoes_state() {
+    #[tokio::test]
+    async fn generate_echoes_state() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -623,18 +624,20 @@ mod tests {
             Operation::Generate,
             serde_json::to_vec(&body).unwrap(),
             Some("def".to_string()),
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.state, Some("def".to_string()));
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn generate_unreachable_endpoint_returns_500() {
+    #[tokio::test]
+    async fn generate_unreachable_endpoint_returns_500() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -647,35 +650,38 @@ mod tests {
             Operation::Generate,
             serde_json::to_vec(&body).unwrap(),
             None,
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.status_code, 500);
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
     // --- Embed (/api/embed) ---
 
-    #[test]
-    fn embed_rejects_invalid_payload() {
+    #[tokio::test]
+    async fn embed_rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
-        let (sub, svc, op, seq) = send_embed_request(&queue, b"not json".to_vec(), None);
-        assert!(worker.tick());
+        let (sub, svc, op, seq) = send_embed_request(&queue, b"not json".to_vec(), None).await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.status_code, 400);
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn embed_echoes_state() {
+    #[tokio::test]
+    async fn embed_echoes_state() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -687,18 +693,20 @@ mod tests {
             &queue,
             serde_json::to_vec(&body).unwrap(),
             Some("embed-state".to_string()),
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.state, Some("embed-state".to_string()));
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn embed_unreachable_endpoint_returns_500() {
+    #[tokio::test]
+    async fn embed_unreachable_endpoint_returns_500() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -707,22 +715,23 @@ mod tests {
             "input": "hello world"
         });
         let (sub, svc, op, seq) =
-            send_embed_request(&queue, serde_json::to_vec(&body).unwrap(), None);
-        assert!(worker.tick());
+            send_embed_request(&queue, serde_json::to_vec(&body).unwrap(), None).await;
+        assert!(worker.tick().await);
 
-        let (_key, response, ack) =
-            block_on(queue.receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq))
-                .unwrap();
+        let (_key, response, ack) = queue
+            .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
+            .unwrap();
         assert_eq!(response.status_code, 500);
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 
     // --- General ---
 
-    #[test]
-    fn no_message_returns_false() {
+    #[tokio::test]
+    async fn no_message_returns_false() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
-        assert!(!worker.tick());
+        assert!(!worker.tick().await);
     }
 }

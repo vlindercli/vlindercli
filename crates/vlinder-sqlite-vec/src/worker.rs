@@ -59,7 +59,6 @@ pub struct SqliteVecWorker {
     registry: Arc<dyn Registry>,
     stores: RwLock<HashMap<String, Arc<SqliteVectorStorage>>>,
     service: ServiceBackend,
-    rt: tokio::runtime::Runtime,
 }
 
 impl SqliteVecWorker {
@@ -68,26 +67,24 @@ impl SqliteVecWorker {
         registry: Arc<dyn Registry>,
         service: ServiceBackend,
     ) -> Self {
-        let rt = tokio::runtime::Runtime::new()
-            .expect("Failed to create tokio runtime for SqliteVecWorker");
         Self {
             queue,
             registry,
             stores: RwLock::new(HashMap::new()),
             service,
-            rt,
         }
     }
 
     /// Get storage for an agent, opening lazily if needed.
-    fn get_or_open(&self, agent_id: &str) -> Result<Arc<SqliteVectorStorage>, String> {
+    async fn get_or_open(&self, agent_id: &str) -> Result<Arc<SqliteVectorStorage>, String> {
         if let Some(storage) = self.stores.read().unwrap().get(agent_id) {
             return Ok(storage.clone());
         }
 
         let agent = self
-            .rt
-            .block_on(self.registry.get_agent_by_name(agent_id))
+            .registry
+            .get_agent_by_name(agent_id)
+            .await
             .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
         let uri = agent
             .vector_storage
@@ -105,28 +102,29 @@ impl SqliteVecWorker {
     }
 
     /// Process one message if available. Returns true if processed.
-    pub fn tick(&self) -> bool {
-        if self.try_store_v2() {
+    pub async fn tick(&self) -> bool {
+        if self.try_store_v2().await {
             return true;
         }
-        if self.try_search_v2() {
+        if self.try_search_v2().await {
             return true;
         }
-        if self.try_delete_v2() {
+        if self.try_delete_v2().await {
             return true;
         }
         false
     }
 
-    fn try_store_v2(&self) -> bool {
+    async fn try_store_v2(&self) -> bool {
         match self
-            .rt
-            .block_on(self.queue.receive_request(self.service, Operation::Store))
+            .queue
+            .receive_request(self.service, Operation::Store)
+            .await
         {
             Ok((key, msg, ack)) => {
                 let agent = extract_agent(&key);
                 let start = std::time::Instant::now();
-                let response_payload = self.handle_store(agent, &msg.payload);
+                let response_payload = self.handle_store(agent, &msg.payload).await;
                 let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let diag = ServiceDiagnostics::storage(
                     self.service.service_type(),
@@ -146,25 +144,24 @@ impl SqliteVecWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self
-                    .rt
-                    .block_on(self.queue.send_response(response_key, response));
-                let _ = self.rt.block_on(ack());
+                let _ = self.queue.send_response(response_key, response).await;
+                let _ = ack().await;
                 true
             }
             Err(_) => false,
         }
     }
 
-    fn try_search_v2(&self) -> bool {
+    async fn try_search_v2(&self) -> bool {
         match self
-            .rt
-            .block_on(self.queue.receive_request(self.service, Operation::Search))
+            .queue
+            .receive_request(self.service, Operation::Search)
+            .await
         {
             Ok((key, msg, ack)) => {
                 let agent = extract_agent(&key);
                 let start = std::time::Instant::now();
-                let response_payload = self.handle_search(agent, &msg.payload);
+                let response_payload = self.handle_search(agent, &msg.payload).await;
                 let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let diag = ServiceDiagnostics::storage(
                     self.service.service_type(),
@@ -184,25 +181,24 @@ impl SqliteVecWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self
-                    .rt
-                    .block_on(self.queue.send_response(response_key, response));
-                let _ = self.rt.block_on(ack());
+                let _ = self.queue.send_response(response_key, response).await;
+                let _ = ack().await;
                 true
             }
             Err(_) => false,
         }
     }
 
-    fn try_delete_v2(&self) -> bool {
+    async fn try_delete_v2(&self) -> bool {
         match self
-            .rt
-            .block_on(self.queue.receive_request(self.service, Operation::Delete))
+            .queue
+            .receive_request(self.service, Operation::Delete)
+            .await
         {
             Ok((key, msg, ack)) => {
                 let agent = extract_agent(&key);
                 let start = std::time::Instant::now();
-                let response_payload = self.handle_delete(agent, &msg.payload);
+                let response_payload = self.handle_delete(agent, &msg.payload).await;
                 let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let diag = ServiceDiagnostics::storage(
                     self.service.service_type(),
@@ -222,23 +218,21 @@ impl SqliteVecWorker {
                     status_code: 200,
                     checkpoint: msg.checkpoint,
                 };
-                let _ = self
-                    .rt
-                    .block_on(self.queue.send_response(response_key, response));
-                let _ = self.rt.block_on(ack());
+                let _ = self.queue.send_response(response_key, response).await;
+                let _ = ack().await;
                 true
             }
             Err(_) => false,
         }
     }
 
-    fn handle_store(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
+    async fn handle_store(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
         let req: SqliteVecStoreRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return format!("[error] invalid request: {e}").into_bytes(),
         };
 
-        let store = match self.get_or_open(agent_id) {
+        let store = match self.get_or_open(agent_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -249,13 +243,13 @@ impl SqliteVecWorker {
         }
     }
 
-    fn handle_search(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
+    async fn handle_search(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
         let req: SqliteVecSearchRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return format!("[error] invalid request: {e}").into_bytes(),
         };
 
-        let store = match self.get_or_open(agent_id) {
+        let store = match self.get_or_open(agent_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -281,13 +275,13 @@ impl SqliteVecWorker {
         }
     }
 
-    fn handle_delete(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
+    async fn handle_delete(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
         let req: SqliteVecDeleteRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return format!("[error] invalid request: {e}").into_bytes(),
         };
 
-        let store = match self.get_or_open(agent_id) {
+        let store = match self.get_or_open(agent_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -312,10 +306,6 @@ mod tests {
         SessionId, SubmissionId, VectorStorageType,
     };
     use vlinder_core::queue::InMemoryQueue;
-
-    fn block_on<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Runtime::new().unwrap().block_on(f)
-    }
 
     fn test_secret_store() -> Arc<dyn SecretStore> {
         Arc::new(InMemorySecretStore::new())
@@ -384,9 +374,9 @@ mod tests {
         }
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
-    fn vector_search_response_echoes_state() {
+    async fn vector_search_response_echoes_state() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("vec.db");
 
@@ -395,10 +385,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_vector_storage(VectorStorageType::SqliteVec);
         let agent = test_agent_with_vector_storage(&db_path);
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(registry.register_agent(agent))
-            .unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = SqliteVecWorker::new(
             Arc::clone(&queue),
@@ -426,17 +413,19 @@ mod tests {
             serde_json::to_vec(&store_payload).unwrap(),
             Some("state-vec".to_string()),
         );
-        block_on(queue.send_request(store_key, store_msg)).unwrap();
-        handler.tick();
-        let (_key, store_resp, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Store,
-            Sequence::first(),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(store_key, store_msg).await.unwrap();
+        handler.tick().await;
+        let (_key, store_resp, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Store,
+                Sequence::first(),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
         assert_eq!(
             store_resp.state,
             Some("state-vec".to_string()),
@@ -458,17 +447,19 @@ mod tests {
             serde_json::to_vec(&search_payload).unwrap(),
             Some("state-vec2".to_string()),
         );
-        block_on(queue.send_request(search_key, search_msg)).unwrap();
-        handler.tick();
-        let (_key, search_resp, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Search,
-            Sequence::from(2),
-        ))
-        .unwrap();
-        block_on(ack()).unwrap();
+        queue.send_request(search_key, search_msg).await.unwrap();
+        handler.tick().await;
+        let (_key, search_resp, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Search,
+                Sequence::from(2),
+            )
+            .await
+            .unwrap();
+        ack().await.unwrap();
         assert_eq!(
             search_resp.state,
             Some("state-vec2".to_string()),
@@ -476,8 +467,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn handles_store_and_search() {
+    #[tokio::test]
+    async fn handles_store_and_search() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("vec.db");
 
@@ -486,10 +477,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_vector_storage(VectorStorageType::SqliteVec);
         let agent = test_agent_with_vector_storage(&db_path);
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(registry.register_agent(agent))
-            .unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = SqliteVecWorker::new(
             Arc::clone(&queue),
@@ -515,18 +503,20 @@ mod tests {
         );
         let store_msg = make_request_msg(serde_json::to_vec(&store_payload).unwrap(), None);
 
-        block_on(queue.send_request(store_key, store_msg)).unwrap();
-        assert!(handler.tick());
-        let (_key, response, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Store,
-            Sequence::first(),
-        ))
-        .unwrap();
+        queue.send_request(store_key, store_msg).await.unwrap();
+        assert!(handler.tick().await);
+        let (_key, response, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Store,
+                Sequence::first(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
 
         let search_payload = serde_json::json!({
             "vector": embedding,
@@ -541,20 +531,22 @@ mod tests {
         );
         let search_msg = make_request_msg(serde_json::to_vec(&search_payload).unwrap(), None);
 
-        block_on(queue.send_request(search_key, search_msg)).unwrap();
-        assert!(handler.tick());
-        let (_key, response, ack) = block_on(queue.receive_response(
-            &submission,
-            &test_agent_id(),
-            service,
-            Operation::Search,
-            Sequence::from(2),
-        ))
-        .unwrap();
+        queue.send_request(search_key, search_msg).await.unwrap();
+        assert!(handler.tick().await);
+        let (_key, response, ack) = queue
+            .receive_response(
+                &submission,
+                &test_agent_id(),
+                service,
+                Operation::Search,
+                Sequence::from(2),
+            )
+            .await
+            .unwrap();
         let results: Vec<serde_json::Value> =
             serde_json::from_slice(response.payload.as_slice()).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["key"], "doc1");
-        block_on(ack()).unwrap();
+        ack().await.unwrap();
     }
 }
