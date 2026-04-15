@@ -44,3 +44,33 @@ pub fn recording_from_config(
 
     Ok(Arc::new(RecordingQueue::new(inner, store)))
 }
+
+/// Async variant of `recording_from_config` — callable from within a Tokio runtime.
+pub async fn recording_from_config_async(
+    config: &Config,
+) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
+    use vlinder_sql_state::state_service::GrpcStateClient;
+
+    let inner: Arc<dyn MessageQueue + Send + Sync> = match config.queue.backend {
+        QueueBackend::Nats => {
+            Arc::new(NatsQueue::connect_async(&config.queue.nats_config()).await?)
+        }
+        #[cfg(feature = "amqp")]
+        QueueBackend::Amqp => Arc::new(vlinder_amqp::AmqpQueue::connect(
+            &config.queue.amqp_config(),
+        )?),
+        #[cfg(any(test, feature = "test-support"))]
+        QueueBackend::Memory => Arc::new(vlinder_core::queue::InMemoryQueue::new()),
+    };
+
+    let state_addr = if config.distributed.state_addr.starts_with("http://") {
+        config.distributed.state_addr.clone()
+    } else {
+        format!("http://{}", config.distributed.state_addr)
+    };
+    let store = GrpcStateClient::connect_async(&state_addr)
+        .await
+        .map_err(|e| QueueError::SendFailed(format!("state service unreachable: {e}")))?;
+
+    Ok(Arc::new(RecordingQueue::new(inner, Arc::new(store))))
+}

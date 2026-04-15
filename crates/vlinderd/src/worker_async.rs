@@ -22,13 +22,12 @@ async fn shutdown_signal(shutdown: &Arc<AtomicBool>) {
 }
 
 #[cfg(feature = "openrouter")]
-pub async fn run_inference_openrouter_worker(
-    config: &Config,
-    queue: std::sync::Arc<dyn vlinder_core::domain::MessageQueue + Send + Sync>,
-    shutdown: Arc<AtomicBool>,
-) {
+pub async fn run_inference_openrouter_worker(config: &Config, shutdown: Arc<AtomicBool>) {
     use vlinder_infer_openrouter::OpenRouterWorker;
 
+    let queue = crate::queue_factory::recording_from_config_async(config)
+        .await
+        .expect("Failed to create queue");
     let worker = OpenRouterWorker::new(
         queue,
         config.openrouter.endpoint.clone(),
@@ -46,13 +45,12 @@ pub async fn run_inference_openrouter_worker(
 }
 
 #[cfg(feature = "ollama")]
-pub async fn run_inference_ollama_worker(
-    config: &Config,
-    queue: std::sync::Arc<dyn vlinder_core::domain::MessageQueue + Send + Sync>,
-    shutdown: Arc<AtomicBool>,
-) {
+pub async fn run_inference_ollama_worker(config: &Config, shutdown: Arc<AtomicBool>) {
     use vlinder_ollama::OllamaWorker;
 
+    let queue = crate::queue_factory::recording_from_config_async(config)
+        .await
+        .expect("Failed to create queue");
     let worker = OllamaWorker::new(queue, config.ollama.endpoint.clone());
 
     tracing::info!(endpoint = %config.ollama.endpoint, "Ollama inference worker ready");

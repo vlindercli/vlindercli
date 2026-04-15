@@ -10,7 +10,7 @@ use vlinder_core::domain::{Branch, BranchId, DagNode, DagNodeId, DagStore};
 pub struct GrpcStateClient {
     client: StateServiceClient<Channel>,
     #[allow(dead_code)]
-    runtime: tokio::runtime::Runtime,
+    runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl GrpcStateClient {
@@ -20,7 +20,21 @@ impl GrpcStateClient {
         let client =
             runtime.block_on(async { StateServiceClient::connect(addr.to_string()).await })?;
 
-        Ok(Self { client, runtime })
+        Ok(Self {
+            client,
+            runtime: Some(runtime),
+        })
+    }
+
+    /// Connect from within an existing async runtime.
+    ///
+    /// Background tasks are owned by the caller's ambient runtime.
+    pub async fn connect_async(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let client = StateServiceClient::connect(addr.to_string()).await?;
+        Ok(Self {
+            client,
+            runtime: None,
+        })
     }
 }
 

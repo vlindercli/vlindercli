@@ -49,23 +49,17 @@ pub fn run_worker_loop(role: &WorkerRole, shutdown: &Arc<AtomicBool>) {
         WorkerRole::AgentLambda => run_agent_lambda_worker(&config, shutdown),
         #[cfg(feature = "ollama")]
         WorkerRole::InferenceOllama => {
-            let queue = crate::queue_factory::recording_from_config(&config)
-                .expect("Failed to create queue");
             let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
             rt.block_on(worker_async::run_inference_ollama_worker(
                 &config,
-                queue,
                 Arc::clone(shutdown),
             ));
         }
         #[cfg(feature = "openrouter")]
         WorkerRole::InferenceOpenRouter => {
-            let queue = crate::queue_factory::recording_from_config(&config)
-                .expect("Failed to create queue");
             let rt = TokioRuntime::new().expect("Failed to create tokio runtime");
             rt.block_on(worker_async::run_inference_openrouter_worker(
                 &config,
-                queue,
                 Arc::clone(shutdown),
             ));
         }

@@ -36,7 +36,7 @@ pub struct NatsQueue {
 
 struct NatsQueueInner {
     #[allow(dead_code)]
-    runtime: Runtime,
+    runtime: Option<Runtime>,
     client: async_nats::Client,
     jetstream: jetstream::Context,
     consumers: Mutex<HashMap<String, PullConsumer>>,
@@ -65,7 +65,26 @@ impl NatsQueue {
 
         Ok(Self {
             inner: Arc::new(NatsQueueInner {
-                runtime,
+                runtime: Some(runtime),
+                client,
+                jetstream,
+                consumers: Mutex::new(HashMap::new()),
+            }),
+        })
+    }
+
+    /// Connect from within an existing async runtime.
+    ///
+    /// Background tasks are owned by the caller's ambient runtime.
+    pub async fn connect_async(config: &crate::NatsConfig) -> Result<Self, QueueError> {
+        let client = crate::connect::nats_connect(config)
+            .await
+            .map_err(QueueError::SendFailed)?;
+        let jetstream = jetstream::new(client.clone());
+        Self::ensure_stream(&jetstream).await?;
+        Ok(Self {
+            inner: Arc::new(NatsQueueInner {
+                runtime: None,
                 client,
                 jetstream,
                 consumers: Mutex::new(HashMap::new()),
