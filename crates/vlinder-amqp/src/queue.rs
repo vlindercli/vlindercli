@@ -14,8 +14,6 @@ use lapin::{
     types::FieldTable,
     BasicProperties, Channel, Connection, ConnectionProperties, ExchangeKind,
 };
-use tokio::runtime::Runtime;
-
 use vlinder_core::domain::{
     Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataRoutingKey,
     DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey,
@@ -27,16 +25,13 @@ use vlinder_core::domain::{
 use crate::connect::{AmqpConfig, EXCHANGE_NAME};
 use crate::routing;
 
-/// AMQP 0-9-1 queue using a topic exchange.
-///
-/// Sync facade over async `lapin`. Clone is cheap (Arc).
+/// AMQP 0-9-1 queue using a topic exchange. Clone is cheap (Arc).
 #[derive(Clone)]
 pub struct AmqpQueue {
     inner: Arc<AmqpQueueInner>,
 }
 
 struct AmqpQueueInner {
-    _runtime: Option<Runtime>,
     channel: Channel,
     #[allow(dead_code)]
     connection: Connection,
@@ -45,46 +40,6 @@ struct AmqpQueueInner {
 }
 
 impl AmqpQueue {
-    /// Connect to an AMQP broker and declare the topic exchange.
-    pub fn connect(config: &AmqpConfig) -> Result<Self, QueueError> {
-        let runtime = Runtime::new()
-            .map_err(|e| QueueError::SendFailed(format!("failed to create runtime: {e}")))?;
-
-        let (connection, channel) = runtime.block_on(async {
-            let conn = Connection::connect(&config.url, ConnectionProperties::default())
-                .await
-                .map_err(|e| QueueError::SendFailed(format!("AMQP connect failed: {e}")))?;
-
-            let ch = conn
-                .create_channel()
-                .await
-                .map_err(|e| QueueError::SendFailed(format!("AMQP channel failed: {e}")))?;
-
-            ch.exchange_declare(
-                EXCHANGE_NAME,
-                ExchangeKind::Topic,
-                ExchangeDeclareOptions {
-                    durable: true,
-                    ..ExchangeDeclareOptions::default()
-                },
-                FieldTable::default(),
-            )
-            .await
-            .map_err(|e| QueueError::SendFailed(format!("exchange declare failed: {e}")))?;
-
-            Ok::<_, QueueError>((conn, ch))
-        })?;
-
-        Ok(Self {
-            inner: Arc::new(AmqpQueueInner {
-                _runtime: Some(runtime),
-                channel,
-                connection,
-                consumers: Mutex::new(HashMap::new()),
-            }),
-        })
-    }
-
     /// Connect to an AMQP broker using the caller's ambient async runtime.
     ///
     /// Use this from async contexts (e.g. `vlinderd`). The caller's Tokio
@@ -113,7 +68,6 @@ impl AmqpQueue {
 
         Ok(Self {
             inner: Arc::new(AmqpQueueInner {
-                _runtime: None,
                 channel: ch,
                 connection: conn,
                 consumers: Mutex::new(HashMap::new()),

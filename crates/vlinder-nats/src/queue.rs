@@ -1,8 +1,5 @@
 //! NATS-backed message queue with `JetStream` durability (ADR 044).
 //!
-//! Provides a sync facade over the async NATS client. The runtime is owned
-//! internally, so callers use simple blocking APIs while getting async I/O.
-//!
 //! Uses typed messages exclusively for full observability.
 
 use std::collections::HashMap;
@@ -14,8 +11,6 @@ type PullConsumer = async_nats::jetstream::consumer::Consumer<consumer::pull::Co
 use async_nats::jetstream::message::Message as JetStreamMessage;
 use async_trait::async_trait;
 use futures::StreamExt;
-use tokio::runtime::Runtime;
-
 use std::str::FromStr;
 
 use vlinder_core::domain::{
@@ -26,17 +21,13 @@ use vlinder_core::domain::{
     SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
 
-/// NATS queue with `JetStream` durability.
-///
-/// Sync facade over async internals. Clone is cheap (Arc).
+/// NATS queue with `JetStream` durability. Clone is cheap (Arc).
 #[derive(Clone)]
 pub struct NatsQueue {
     inner: Arc<NatsQueueInner>,
 }
 
 struct NatsQueueInner {
-    #[allow(dead_code)]
-    runtime: Option<Runtime>,
     client: async_nats::Client,
     jetstream: jetstream::Context,
     consumers: Mutex<HashMap<String, PullConsumer>>,
@@ -46,36 +37,6 @@ impl NatsQueue {
     /// Connect to a NATS server using the given config.
     ///
     /// Creates the VLINDER stream if it doesn't exist.
-    pub fn connect(config: &crate::NatsConfig) -> Result<Self, QueueError> {
-        let runtime = Runtime::new()
-            .map_err(|e| QueueError::SendFailed(format!("failed to create runtime: {e}")))?;
-
-        let (client, jetstream) = runtime.block_on(async {
-            let client = crate::connect::nats_connect(config)
-                .await
-                .map_err(QueueError::SendFailed)?;
-
-            let jetstream = jetstream::new(client.clone());
-
-            // Ensure stream exists
-            Self::ensure_stream(&jetstream).await?;
-
-            Ok::<_, QueueError>((client, jetstream))
-        })?;
-
-        Ok(Self {
-            inner: Arc::new(NatsQueueInner {
-                runtime: Some(runtime),
-                client,
-                jetstream,
-                consumers: Mutex::new(HashMap::new()),
-            }),
-        })
-    }
-
-    /// Connect from within an existing async runtime.
-    ///
-    /// Background tasks are owned by the caller's ambient runtime.
     pub async fn connect_async(config: &crate::NatsConfig) -> Result<Self, QueueError> {
         let client = crate::connect::nats_connect(config)
             .await
@@ -84,7 +45,6 @@ impl NatsQueue {
         Self::ensure_stream(&jetstream).await?;
         Ok(Self {
             inner: Arc::new(NatsQueueInner {
-                runtime: None,
                 client,
                 jetstream,
                 consumers: Mutex::new(HashMap::new()),

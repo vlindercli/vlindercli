@@ -89,15 +89,6 @@ pub enum QueueConfig {
     Amqp(vlinder_amqp::AmqpConfig),
 }
 
-/// Connect to a queue backend.
-pub fn connect(config: &QueueConfig) -> Result<Arc<dyn MessageQueue + Send + Sync>, QueueError> {
-    match config {
-        QueueConfig::Nats(nats) => Ok(Arc::new(NatsQueue::connect(nats)?)),
-        #[cfg(feature = "amqp")]
-        QueueConfig::Amqp(amqp) => Ok(Arc::new(vlinder_amqp::AmqpQueue::connect(amqp)?)),
-    }
-}
-
 /// Wrap a queue with synchronous DAG recording.
 pub fn with_recording(
     queue: Arc<dyn MessageQueue + Send + Sync>,
@@ -140,25 +131,5 @@ pub async fn connect_registry_async(
         format!("http://{registry_url}")
     };
     let client = GrpcRegistryClient::connect_async(&url).await?;
-    Ok(Arc::new(client))
-}
-
-/// Connect to the State Service via gRPC.
-pub fn connect_state(state_url: &str) -> Result<Arc<dyn DagStore>, QueueError> {
-    Ok(Arc::new(GrpcStateClient::connect(state_url).map_err(
-        |e| QueueError::SendFailed(format!("state service at {state_url} unreachable: {e}")),
-    )?))
-}
-
-/// Connect to the Registry Service via gRPC.
-pub fn connect_registry(
-    registry_url: &str,
-) -> Result<Arc<dyn Registry>, Box<dyn std::error::Error>> {
-    let url = if registry_url.starts_with("http://") || registry_url.starts_with("https://") {
-        registry_url.to_string()
-    } else {
-        format!("http://{registry_url}")
-    };
-    let client = GrpcRegistryClient::connect(&url)?;
     Ok(Arc::new(client))
 }
