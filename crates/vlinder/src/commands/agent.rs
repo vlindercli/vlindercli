@@ -177,7 +177,7 @@ fn deploy(path: Option<PathBuf>) {
     // Poll for state transition, printing status changes
     let mut last_status: Option<AgentStatus> = None;
     loop {
-        match client.get_agent_state(&agent_name) {
+        match rt.block_on(client.get_agent_state(&agent_name)) {
             Ok(Some(status)) => {
                 if last_status.as_ref() != Some(&status) {
                     match &status {
@@ -524,9 +524,10 @@ fn delete(name: &str) {
     });
 
     // Poll for deletion completion, printing status changes
+    let rt = Runtime::new().expect("Failed to create tokio runtime");
     let mut last_status: Option<AgentStatus> = None;
     loop {
-        match client.get_agent_state(name) {
+        match rt.block_on(client.get_agent_state(name)) {
             Ok(Some(status)) => {
                 if last_status.as_ref() != Some(&status) {
                     match &status {

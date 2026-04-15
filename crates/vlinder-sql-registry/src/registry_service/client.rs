@@ -77,20 +77,16 @@ impl GrpcRegistryClient {
     }
 
     /// Query agent deployment status.
-    pub fn get_agent_state(
+    pub async fn get_agent_state(
         &self,
         name: &str,
     ) -> Result<Option<vlinder_core::domain::AgentStatus>, String> {
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async {
-                client
-                    .get_agent_state(proto::GetAgentStateRequest {
-                        name: name.to_string(),
-                    })
-                    .await
+        let response = client
+            .get_agent_state(proto::GetAgentStateRequest {
+                name: name.to_string(),
             })
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         match resp.status {
