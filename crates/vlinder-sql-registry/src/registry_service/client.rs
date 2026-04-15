@@ -13,6 +13,7 @@ use async_trait::async_trait;
 /// Registry implementation that makes gRPC calls to a remote server.
 pub struct GrpcRegistryClient {
     client: RegistryClient<Channel>,
+    #[allow(dead_code)]
     runtime: tokio::runtime::Runtime,
     id: ResourceId,
 }
@@ -31,13 +32,11 @@ impl GrpcRegistryClient {
     }
 
     /// Ping the registry server, returning its protocol version.
-    pub fn ping(&self) -> Option<(u32, u32, u32)> {
+    pub async fn ping(&self) -> Option<(u32, u32, u32)> {
         let mut client = self.client.clone();
-        self.runtime.block_on(async {
-            client.ping(proto::PingRequest {}).await.ok().map(|r| {
-                let v = r.into_inner();
-                (v.major, v.minor, v.patch)
-            })
+        client.ping(proto::PingRequest {}).await.ok().map(|r| {
+            let v = r.into_inner();
+            (v.major, v.minor, v.patch)
         })
     }
 
