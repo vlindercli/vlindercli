@@ -91,7 +91,7 @@ impl Supervisor {
         macro_rules! spawn_n {
             ($role:expr, $count:expr) => {
                 for _ in 0..$count {
-                    handles.push(tokio::task::spawn_local(worker_async::run_worker_loop(
+                    handles.push(tokio::spawn(worker_async::run_worker_loop(
                         $role,
                         Arc::clone(&shutdown),
                     )));

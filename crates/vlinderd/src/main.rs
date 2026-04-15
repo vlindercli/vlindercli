@@ -57,21 +57,13 @@ async fn run_as_supervisor(config: &Config) {
     })
     .expect("Failed to set signal handler");
 
-    // Workers use !Send types (async_trait(?Send) on Runtime/LambdaClient),
-    // so they must run as local tasks pinned to one thread.
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let supervisor = Supervisor::new(config, Arc::clone(&shutdown)).await;
+    let supervisor = Supervisor::new(config, Arc::clone(&shutdown)).await;
 
-            // Wait for shutdown signal
-            while !shutdown.load(Ordering::Relaxed) {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
+    // Wait for shutdown signal
+    while !shutdown.load(Ordering::Relaxed) {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 
-            supervisor.shutdown();
-        })
-        .await;
-
+    supervisor.shutdown();
     tracing::info!("Supervisor stopped");
 }

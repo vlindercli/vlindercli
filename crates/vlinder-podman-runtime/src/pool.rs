@@ -524,7 +524,7 @@ impl Drop for ContainerRuntime {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Runtime for ContainerRuntime {
     fn id(&self) -> &ResourceId {
         &self.id

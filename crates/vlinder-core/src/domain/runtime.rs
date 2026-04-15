@@ -60,7 +60,7 @@ impl std::str::FromStr for RuntimeType {
 /// - Polls their input queues
 /// - Executes agent code on message arrival
 /// - Sends responses to reply queues
-#[async_trait(?Send)]
+#[async_trait]
 pub trait Runtime {
     /// Unique identifier for this runtime instance.
     /// Format: `<registry_id>/runtimes/<runtime_type>`
@@ -102,7 +102,7 @@ mod tests {
         }
     }
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl Runtime for MockRuntime {
         fn id(&self) -> &ResourceId {
             &self.id

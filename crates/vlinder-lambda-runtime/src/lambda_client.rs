@@ -54,8 +54,8 @@ pub(crate) struct CreateFunctionRequest<'a> {
 ///
 /// Object-safe so `LambdaRuntime` can hold a `Box<dyn LambdaClient>`.
 #[allow(dead_code)]
-#[async_trait(?Send)]
-pub(crate) trait LambdaClient {
+#[async_trait]
+pub(crate) trait LambdaClient: Send + Sync {
     /// Health check: can we reach the Lambda API?
     async fn check_connectivity(&self) -> Result<(), LambdaError>;
 
@@ -148,7 +148,7 @@ impl AwsLambdaClient {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl LambdaClient for AwsLambdaClient {
     async fn check_connectivity(&self) -> Result<(), LambdaError> {
         self.lambda

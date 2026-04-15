@@ -302,7 +302,7 @@ impl LambdaRuntime {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Runtime for LambdaRuntime {
     fn id(&self) -> &ResourceId {
         &self.id
@@ -342,44 +342,44 @@ impl Drop for LambdaRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
     use std::collections::HashSet;
+    use std::sync::Mutex;
     use vlinder_core::domain::InMemorySecretStore;
     use vlinder_core::queue::InMemoryQueue;
 
     // ── Mock client ─────────────────────────────────────────────────
 
     struct MockLambdaClient {
-        roles: RefCell<HashSet<String>>,
-        functions: RefCell<HashSet<String>>,
-        last_vpc_subnet_ids: RefCell<Vec<String>>,
-        last_vpc_security_group_ids: RefCell<Vec<String>>,
+        roles: Mutex<HashSet<String>>,
+        functions: Mutex<HashSet<String>>,
+        last_vpc_subnet_ids: Mutex<Vec<String>>,
+        last_vpc_security_group_ids: Mutex<Vec<String>>,
     }
 
     impl MockLambdaClient {
         fn new() -> Self {
             Self {
-                roles: RefCell::new(HashSet::new()),
-                functions: RefCell::new(HashSet::new()),
-                last_vpc_subnet_ids: RefCell::new(vec![]),
-                last_vpc_security_group_ids: RefCell::new(vec![]),
+                roles: Mutex::new(HashSet::new()),
+                functions: Mutex::new(HashSet::new()),
+                last_vpc_subnet_ids: Mutex::new(vec![]),
+                last_vpc_security_group_ids: Mutex::new(vec![]),
             }
         }
     }
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl LambdaClient for MockLambdaClient {
         async fn check_connectivity(&self) -> Result<(), LambdaError> {
             Ok(())
         }
 
         async fn create_role(&self, role_name: &str) -> Result<String, LambdaError> {
-            self.roles.borrow_mut().insert(role_name.to_string());
+            self.roles.lock().unwrap().insert(role_name.to_string());
             Ok(format!("arn:aws:iam::123456789012:role/{role_name}"))
         }
 
         async fn delete_role(&self, role_name: &str) {
-            self.roles.borrow_mut().remove(role_name);
+            self.roles.lock().unwrap().remove(role_name);
         }
 
         async fn create_function(
@@ -387,10 +387,11 @@ mod tests {
             req: &CreateFunctionRequest<'_>,
         ) -> Result<String, LambdaError> {
             self.functions
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .insert(req.function_name.to_string());
-            *self.last_vpc_subnet_ids.borrow_mut() = req.vpc_subnet_ids.to_vec();
-            *self.last_vpc_security_group_ids.borrow_mut() = req.vpc_security_group_ids.to_vec();
+            *self.last_vpc_subnet_ids.lock().unwrap() = req.vpc_subnet_ids.to_vec();
+            *self.last_vpc_security_group_ids.lock().unwrap() = req.vpc_security_group_ids.to_vec();
             Ok(format!(
                 "arn:aws:lambda:us-east-1:123456789012:function:{}",
                 req.function_name
@@ -401,7 +402,7 @@ mod tests {
             &self,
             function_name: &str,
         ) -> Result<Option<crate::lambda_client::FunctionInfo>, LambdaError> {
-            if self.functions.borrow().contains(function_name) {
+            if self.functions.lock().unwrap().contains(function_name) {
                 Ok(Some(crate::lambda_client::FunctionInfo {
                     function_arn: format!(
                         "arn:aws:lambda:us-east-1:123456789012:function:{function_name}"
@@ -414,7 +415,7 @@ mod tests {
         }
 
         async fn delete_function(&self, function_name: &str) {
-            self.functions.borrow_mut().remove(function_name);
+            self.functions.lock().unwrap().remove(function_name);
         }
 
         async fn invoke_function(
@@ -430,7 +431,7 @@ mod tests {
     /// Mock client where `invoke_function` always fails (deploy succeeds).
     struct FailingLambdaClient;
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl LambdaClient for FailingLambdaClient {
         async fn check_connectivity(&self) -> Result<(), LambdaError> {
             Ok(())
@@ -787,7 +788,7 @@ mod tests {
             captured: StdArc<Mutex<CapturedVpc>>,
         }
 
-        #[async_trait(?Send)]
+        #[async_trait]
         impl LambdaClient for CapturingClient {
             async fn check_connectivity(&self) -> Result<(), LambdaError> {
                 Ok(())
