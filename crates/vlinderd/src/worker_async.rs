@@ -745,8 +745,9 @@ pub async fn run_session_viewer_worker(_config: &Config, shutdown: Arc<AtomicBoo
 
     let store =
         SqliteDagStore::open(&dag_db_path()).expect("Failed to open DAG store for session viewer");
-    let server =
-        SessionServer::start(Arc::new(store), port).expect("Failed to start session viewer");
+    let server = SessionServer::start(Arc::new(store), port)
+        .await
+        .expect("Failed to start session viewer");
 
     tracing::info!(
         port = server.port(),
@@ -755,5 +756,5 @@ pub async fn run_session_viewer_worker(_config: &Config, shutdown: Arc<AtomicBoo
     );
 
     shutdown_signal(&shutdown).await;
-    server.stop();
+    server.stop().await;
 }

@@ -16,50 +16,62 @@ pub mod state_service;
 pub use dag_store::SqliteDagStore;
 
 // =============================================================================
-// SessionServer — server-only (tiny_http + DagStore)
+// SessionServer — server-only (axum + DagStore)
 // =============================================================================
 
 #[cfg(feature = "server")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "server")]
 use std::sync::Arc;
-#[cfg(feature = "server")]
-use std::thread::JoinHandle;
 
 #[cfg(feature = "server")]
 use std::fmt::Write as _;
 #[cfg(feature = "server")]
-use tokio::runtime::Runtime;
-#[cfg(feature = "server")]
 use vlinder_core::domain::{DagStore, MessageType, SessionId};
+
+#[cfg(feature = "server")]
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::Html,
+    routing::get,
+    Router,
+};
 
 /// A running session viewer server.
 ///
-/// Created by `start()`, runs in a background thread.
+/// Created by `start()`, runs as a tokio task.
 /// Shuts down when dropped or `stop()` is called.
 #[cfg(feature = "server")]
 pub struct SessionServer {
     port: u16,
     stop_flag: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
+    handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[cfg(feature = "server")]
 impl SessionServer {
-    /// Start the session viewer in a background thread.
+    /// Start the session viewer as a tokio task.
     ///
     /// Binds to `127.0.0.1:{port}` (localhost only — this is a local dev tool).
-    pub fn start(store: Arc<dyn DagStore>, port: u16) -> std::io::Result<Self> {
-        let server = tiny_http::Server::http(format!("127.0.0.1:{port}"))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::AddrInUse, e.to_string()))?;
-
-        let port = server.server_addr().to_ip().map_or(port, |a| a.port());
+    /// Pass `0` to let the OS choose a free port; read it back with `port()`.
+    pub async fn start(store: Arc<dyn DagStore>, port: u16) -> std::io::Result<Self> {
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;
+        let port = listener.local_addr()?.port();
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stop_flag);
 
-        let handle = std::thread::spawn(move || {
-            run_server(&server, &*store, &stop);
+        let router: Router = Router::new()
+            .route("/", get(index_handler))
+            .route("/session/:id", get(session_handler))
+            .with_state(store);
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal(stop))
+                .await
+                .ok();
         });
 
         Ok(Self {
@@ -74,11 +86,11 @@ impl SessionServer {
         self.port
     }
 
-    /// Signal the server to stop and wait for it to finish.
-    pub fn stop(mut self) {
+    /// Signal the server to stop and wait for the task to finish.
+    pub async fn stop(mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            let _ = handle.await;
         }
     }
 }
@@ -91,62 +103,63 @@ impl Drop for SessionServer {
 }
 
 // =============================================================================
-// Server loop
+// Shutdown signal
 // =============================================================================
 
 #[cfg(feature = "server")]
-fn run_server(server: &tiny_http::Server, store: &dyn DagStore, stop: &AtomicBool) {
-    let timeout = std::time::Duration::from_millis(100);
+async fn shutdown_signal(stop: Arc<AtomicBool>) {
     loop {
         if stop.load(Ordering::Relaxed) {
-            break;
+            return;
         }
-
-        match server.recv_timeout(timeout) {
-            Ok(Some(request)) => handle_request(request, store),
-            Ok(None) => {} // timeout — check stop flag
-            Err(_) => break,
-        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 
-#[cfg(feature = "server")]
-fn handle_request(request: tiny_http::Request, store: &dyn DagStore) {
-    let url = request.url().to_string();
-    let rt = Runtime::new().unwrap();
+// =============================================================================
+// Axum handlers
+// =============================================================================
 
-    if url == "/" {
-        let body = render_index(store, &rt);
-        let _ = request.respond(html_response(200, &body));
-    } else if let Some(raw_id) = url.strip_prefix("/session/") {
-        if raw_id.contains("..") || raw_id.contains('/') || raw_id.contains('\\') {
-            let body = html_page("Not Found", "<h1>Invalid session id</h1>");
-            let _ = request.respond(html_response(404, &body));
-            return;
-        }
-        let session = SessionId::try_from(raw_id.to_string())
-            .ok()
-            .and_then(|sid| rt.block_on(store.get_session(&sid)).ok().flatten());
-        if let Some(session) = session {
-            if let Ok(body) = rt.block_on(render_session(store, &session)) {
-                let _ = request.respond(html_response(200, &body));
-            } else {
-                let body = html_page(
+#[cfg(feature = "server")]
+async fn index_handler(State(store): State<Arc<dyn DagStore>>) -> Html<String> {
+    Html(render_index(&*store).await)
+}
+
+#[cfg(feature = "server")]
+async fn session_handler(
+    State(store): State<Arc<dyn DagStore>>,
+    Path(id): Path<String>,
+) -> (StatusCode, Html<String>) {
+    if id.contains("..") || id.contains('\\') {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(html_page("Not Found", "<h1>Invalid session id</h1>")),
+        );
+    }
+
+    let session = match SessionId::try_from(id) {
+        Ok(sid) => store.get_session(&sid).await.ok().flatten(),
+        Err(_) => None,
+    };
+
+    match session {
+        Some(s) => match render_session(&*store, &s).await {
+            Ok(body) => (StatusCode::OK, Html(body)),
+            Err(_) => (
+                StatusCode::NOT_FOUND,
+                Html(html_page(
                     "Not Found",
                     "<h1>Session not found</h1><p><a href=\"/\">&larr; Back</a></p>",
-                );
-                let _ = request.respond(html_response(404, &body));
-            }
-        } else {
-            let body = html_page(
+                )),
+            ),
+        },
+        None => (
+            StatusCode::NOT_FOUND,
+            Html(html_page(
                 "Not Found",
                 "<h1>Session not found</h1><p><a href=\"/\">&larr; Back</a></p>",
-            );
-            let _ = request.respond(html_response(404, &body));
-        }
-    } else {
-        let body = html_page("Not Found", "<h1>404</h1>");
-        let _ = request.respond(html_response(404, &body));
+            )),
+        ),
     }
 }
 
@@ -155,8 +168,8 @@ fn handle_request(request: tiny_http::Request, store: &dyn DagStore) {
 // =============================================================================
 
 #[cfg(feature = "server")]
-fn render_index(store: &dyn DagStore, rt: &Runtime) -> String {
-    let Ok(sessions) = rt.block_on(store.list_sessions()) else {
+async fn render_index(store: &dyn DagStore) -> String {
+    let Ok(sessions) = store.list_sessions().await else {
         return html_page(
             "Vlinder Sessions",
             "<h1>Sessions</h1><p>Error loading sessions.</p>",
@@ -384,18 +397,6 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-#[cfg(feature = "server")]
-fn html_response(status: u16, body: &str) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
-    let status_code = tiny_http::StatusCode(status);
-    let content_type = tiny_http::Header::from_bytes("Content-Type", "text/html; charset=utf-8")
-        .expect("valid header");
-    let connection = tiny_http::Header::from_bytes("Connection", "close").expect("valid header");
-    tiny_http::Response::from_data(body.as_bytes().to_vec())
-        .with_status_code(status_code)
-        .with_header(content_type)
-        .with_header(connection)
-}
-
 #[cfg(all(test, feature = "server"))]
 mod tests {
     use super::*;
@@ -495,31 +496,31 @@ mod tests {
         (status, body)
     }
 
-    #[test]
-    fn server_starts_and_stops() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn server_starts_and_stops() {
         let store = Arc::new(InMemoryDagStore::new());
-        let server = SessionServer::start(store, 0).unwrap();
+        let server = SessionServer::start(store, 0).await.unwrap();
         assert!(server.port() > 0);
-        server.stop();
+        server.stop().await;
     }
 
-    #[test]
-    fn index_returns_html() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn index_returns_html() {
         let store = Arc::new(InMemoryDagStore::new());
-        let server = SessionServer::start(store, 0).unwrap();
+        let server = SessionServer::start(store, 0).await.unwrap();
         let port = server.port();
 
         let (status, body) = get_body(port, "/");
         assert_eq!(status, 200);
         assert!(body.contains("Vlinder Sessions"));
 
-        server.stop();
+        server.stop().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn index_lists_sessions() {
         let store = test_store_with_session().await;
-        let server = SessionServer::start(store, 0).unwrap();
+        let server = SessionServer::start(store, 0).await.unwrap();
         let port = server.port();
 
         let (_, body) = get_body(port, "/");
@@ -532,13 +533,13 @@ mod tests {
         );
         assert!(body.contains("2 messages"), "body: {body}");
 
-        server.stop();
+        server.stop().await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn session_page_renders_history() {
         let store = test_store_with_session().await;
-        let server = SessionServer::start(store, 0).unwrap();
+        let server = SessionServer::start(store, 0).await.unwrap();
         let port = server.port();
 
         let (status, body) = get_body(port, "/session/d4761d76-dee4-4ebf-9df4-43b52efa4f78");
@@ -556,31 +557,31 @@ mod tests {
             "should have agent message div: {body}"
         );
 
-        server.stop();
+        server.stop().await;
     }
 
-    #[test]
-    fn nonexistent_session_returns_404() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nonexistent_session_returns_404() {
         let store = Arc::new(InMemoryDagStore::new());
-        let server = SessionServer::start(store, 0).unwrap();
+        let server = SessionServer::start(store, 0).await.unwrap();
         let port = server.port();
 
         let (status, _) = get_body(port, "/session/ses-nonexistent");
         assert_eq!(status, 404);
 
-        server.stop();
+        server.stop().await;
     }
 
-    #[test]
-    fn path_traversal_rejected() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn path_traversal_rejected() {
         let store = Arc::new(InMemoryDagStore::new());
-        let server = SessionServer::start(store, 0).unwrap();
+        let server = SessionServer::start(store, 0).await.unwrap();
         let port = server.port();
 
         let (status, _) = get_body(port, "/session/../../etc/passwd");
         assert_eq!(status, 404);
 
-        server.stop();
+        server.stop().await;
     }
 
     #[test]
@@ -593,8 +594,8 @@ mod tests {
     #[test]
     fn render_index_empty_store() {
         let store = InMemoryDagStore::new();
-        let rt = Runtime::new().unwrap();
-        let html = render_index(&store, &rt);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let html = rt.block_on(render_index(&store));
         assert!(html.contains("No conversations yet"));
     }
 }
