@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::config::CliConfig;
 use vlinder_core::domain::{DagStore, Harness, Registry};
-use vlinder_harness::harness_service::{ping_harness, GrpcHarnessClient};
+use vlinder_harness::harness_service::{ping_harness_async, GrpcHarnessClient};
 use vlinder_sql_registry::registry_service::{ping_registry_async, GrpcRegistryClient};
 use vlinder_sql_state::state_service::GrpcStateClient;
 
@@ -48,12 +48,7 @@ pub async fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
 /// Connect to the harness via gRPC, exiting on failure.
 pub async fn connect_harness(config: &CliConfig) -> Box<dyn Harness> {
     let harness_addr = normalize_addr(&config.daemon.harness_addr);
-    let addr_for_ping = harness_addr.clone();
-    if tokio::task::spawn_blocking(move || ping_harness(&addr_for_ping))
-        .await
-        .unwrap_or(None)
-        .is_none()
-    {
+    if ping_harness_async(&harness_addr).await.is_none() {
         eprintln!("Cannot reach harness at {harness_addr}. Is the daemon running?");
         std::process::exit(1);
     }
