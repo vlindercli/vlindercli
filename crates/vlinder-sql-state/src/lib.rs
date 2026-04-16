@@ -591,11 +591,10 @@ mod tests {
         assert!(escaped.contains("&lt;script&gt;"));
     }
 
-    #[test]
-    fn render_index_empty_store() {
+    #[tokio::test]
+    async fn render_index_empty_store() {
         let store = InMemoryDagStore::new();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let html = rt.block_on(render_index(&store));
+        let html = render_index(&store).await;
         assert!(html.contains("No conversations yet"));
     }
 }
