@@ -5324,6 +5324,8 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "tokio-util",
+ "tracing",
  "vlinder-core",
 ]
 

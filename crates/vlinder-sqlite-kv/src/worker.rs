@@ -2,8 +2,9 @@
 //! opens `SqliteObjectStorage` + `SqliteStateStore` per agent, and sends
 //! responses back.
 //!
-//! Follows the same pattern as `SqliteVecWorker`: 3-arg constructor,
-//! lazy `get_or_open()`, `tick()` polling.
+//! Spawns one tokio task per (service, operation) pair and drives each
+//! until shutdown. Each task owns its own queue slot so a long poll on
+//! one operation cannot starve another.
 //!
 //! Key differences from the old `ObjectServiceWorker`:
 //! - State comes from the message envelope (request.state), not JSON payload
@@ -13,10 +14,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use vlinder_core::domain::Registry;
 use vlinder_core::domain::{
-    DagNodeId, DataMessageKind, DataRoutingKey, MessageId, MessageQueue, Operation,
-    ResponseMessage, ServiceBackend, ServiceDiagnostics,
+    Acknowledgement, DagNodeId, DataMessageKind, DataRoutingKey, MessageId, MessageQueue,
+    Operation, QueueError, RequestMessage, ResponseMessage, ServiceBackend, ServiceDiagnostics,
 };
 
 use crate::state_store::{hash_snapshot, hash_state_commit, hash_value, SqliteStateStore};
@@ -85,6 +88,188 @@ impl KvWorker {
             state_stores: RwLock::new(HashMap::new()),
             service,
         }
+    }
+
+    /// Spawn one tokio task per operation this worker serves and drive
+    /// each until `shutdown` fires. Four tasks, all on `self.service`:
+    /// `Get`, `Put`, `List`, `Delete`.
+    ///
+    /// Each task loops: `select!` on shutdown vs. `receive_request`; once a
+    /// request resolves, processing runs outside the select so the
+    /// receive-then-ack path cannot be cancelled mid-flight.
+    pub async fn run(self: Arc<Self>, shutdown: CancellationToken) {
+        let mut set: JoinSet<()> = JoinSet::new();
+
+        for op in [
+            Operation::Get,
+            Operation::Put,
+            Operation::List,
+            Operation::Delete,
+        ] {
+            let me = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            set.spawn(async move {
+                let service = me.service;
+                loop {
+                    let (key, msg, ack) = tokio::select! {
+                        () = shutdown.cancelled() => break,
+                        result = me.queue.receive_request(service, op) => {
+                            match result {
+                                Ok(tuple) => tuple,
+                                Err(QueueError::Timeout) => continue,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, operation = ?op, "KV worker receive error");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    match op {
+                        Operation::Get => me.process_get_request(key, msg, ack).await,
+                        Operation::Put => me.process_put_request(key, msg, ack).await,
+                        Operation::List => me.process_list_request(key, msg, ack).await,
+                        Operation::Delete => me.process_delete_request(key, msg, ack).await,
+                        _ => unreachable!("KV worker only spawns Get/Put/List/Delete tasks"),
+                    }
+                }
+            });
+        }
+
+        while set.join_next().await.is_some() {}
+    }
+
+    pub async fn process_get_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let (agent, session) = extract_agent_session(&key);
+        let start = std::time::Instant::now();
+        let response_payload = self
+            .handle_get(agent, session, &msg.payload, msg.state.as_deref())
+            .await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::Get,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: msg.state,
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
+    pub async fn process_put_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let (agent, session) = extract_agent_session(&key);
+        let start = std::time::Instant::now();
+        let (response_payload, new_state) = self
+            .handle_put(agent, session, &msg.payload, msg.state.as_deref())
+            .await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::Put,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: new_state.or(msg.state),
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
+    pub async fn process_list_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let (agent, session) = extract_agent_session(&key);
+        let start = std::time::Instant::now();
+        let response_payload = self
+            .handle_list(agent, session, &msg.payload, msg.state.as_deref())
+            .await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::List,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: msg.state,
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
+    pub async fn process_delete_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let (agent, session) = extract_agent_session(&key);
+        let start = std::time::Instant::now();
+        let response_payload = self.handle_delete(agent, session, &msg.payload).await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::Delete,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: msg.state,
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
     }
 
     /// Get object storage for an agent+session, opening lazily if needed.
@@ -187,177 +372,6 @@ impl KvWorker {
             .expect("state_stores lock poisoned")
             .insert(cache_key, store.clone());
         Ok(store)
-    }
-
-    /// Process one message if available. Returns true if processed.
-    pub async fn tick(&self) -> bool {
-        if self.try_get_v2().await {
-            return true;
-        }
-        if self.try_put_v2().await {
-            return true;
-        }
-        if self.try_list_v2().await {
-            return true;
-        }
-        if self.try_delete_v2().await {
-            return true;
-        }
-        false
-    }
-
-    async fn try_get_v2(&self) -> bool {
-        match self
-            .queue
-            .receive_request(self.service, Operation::Get)
-            .await
-        {
-            Ok((key, msg, ack)) => {
-                let (agent, session) = extract_agent_session(&key);
-                let start = std::time::Instant::now();
-                let response_payload = self
-                    .handle_get(agent, session, &msg.payload, msg.state.as_deref())
-                    .await;
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::Get,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: msg.state,
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response).await;
-                let _ = ack().await;
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    async fn try_put_v2(&self) -> bool {
-        match self
-            .queue
-            .receive_request(self.service, Operation::Put)
-            .await
-        {
-            Ok((key, msg, ack)) => {
-                let (agent, session) = extract_agent_session(&key);
-                let start = std::time::Instant::now();
-                let (response_payload, new_state) = self
-                    .handle_put(agent, session, &msg.payload, msg.state.as_deref())
-                    .await;
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::Put,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: new_state.or(msg.state),
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response).await;
-                let _ = ack().await;
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    async fn try_list_v2(&self) -> bool {
-        match self
-            .queue
-            .receive_request(self.service, Operation::List)
-            .await
-        {
-            Ok((key, msg, ack)) => {
-                let (agent, session) = extract_agent_session(&key);
-                let start = std::time::Instant::now();
-                let response_payload = self
-                    .handle_list(agent, session, &msg.payload, msg.state.as_deref())
-                    .await;
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::List,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: msg.state,
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response).await;
-                let _ = ack().await;
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    async fn try_delete_v2(&self) -> bool {
-        match self
-            .queue
-            .receive_request(self.service, Operation::Delete)
-            .await
-        {
-            Ok((key, msg, ack)) => {
-                let (agent, session) = extract_agent_session(&key);
-                let start = std::time::Instant::now();
-                let response_payload = self.handle_delete(agent, session, &msg.payload).await;
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::Delete,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: msg.state,
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response).await;
-                let _ = ack().await;
-                true
-            }
-            Err(_) => false,
-        }
     }
 
     async fn handle_get(
@@ -690,6 +704,30 @@ mod tests {
         }
     }
 
+    async fn drain_get(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &KvWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(worker.service, Operation::Get)
+            .await
+            .expect("get request should be available");
+        worker.process_get_request(key, msg, ack).await;
+    }
+
+    async fn drain_put(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &KvWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(worker.service, Operation::Put)
+            .await
+            .expect("put request should be available");
+        worker.process_put_request(key, msg, ack).await;
+    }
+
+    async fn drain_list(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &KvWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(worker.service, Operation::List)
+            .await
+            .expect("list request should be available");
+        worker.process_list_request(key, msg, ack).await;
+    }
+
     #[tokio::test]
     async fn handles_put_and_get() {
         let dir = tempfile::tempdir().unwrap();
@@ -728,7 +766,7 @@ mod tests {
         let put_msg = make_request_msg(serde_json::to_vec(&put_payload).unwrap(), None);
 
         queue.send_request(put_key, put_msg).await.unwrap();
-        assert!(handler.tick().await);
+        drain_put(&queue, &handler).await;
         let (_key, response, ack) = queue
             .receive_response(
                 &submission,
@@ -755,7 +793,7 @@ mod tests {
         let get_msg = make_request_msg(serde_json::to_vec(&get_payload).unwrap(), None);
 
         queue.send_request(get_key, get_msg).await.unwrap();
-        assert!(handler.tick().await);
+        drain_get(&queue, &handler).await;
         let (_key, response, ack) = queue
             .receive_response(
                 &submission,
@@ -810,7 +848,7 @@ mod tests {
         );
 
         queue.send_request(put_key, put_msg).await.unwrap();
-        assert!(handler.tick().await);
+        drain_put(&queue, &handler).await;
 
         let (_key, response, ack) = queue
             .receive_response(
@@ -868,7 +906,7 @@ mod tests {
         );
         let msg1 = make_request_msg(serde_json::to_vec(&put1).unwrap(), Some(String::new()));
         queue.send_request(key1, msg1).await.unwrap();
-        handler.tick().await;
+        drain_put(&queue, &handler).await;
         let (_key, resp1, ack) = queue
             .receive_response(
                 &submission,
@@ -898,7 +936,7 @@ mod tests {
             Some(hash1.clone()), // chain from previous state via envelope
         );
         queue.send_request(key2, msg2).await.unwrap();
-        handler.tick().await;
+        drain_put(&queue, &handler).await;
         let (_key, resp2, ack) = queue
             .receive_response(
                 &submission,
@@ -931,7 +969,7 @@ mod tests {
             Some(hash2.clone()), // state via envelope
         );
         queue.send_request(get_key, get_msg).await.unwrap();
-        handler.tick().await;
+        drain_get(&queue, &handler).await;
         let (_key, resp, ack) = queue
             .receive_response(
                 &submission,
@@ -982,7 +1020,7 @@ mod tests {
             Some(String::new()),
         );
         queue.send_request(key1, msg1).await.unwrap();
-        handler.tick().await;
+        drain_put(&queue, &handler).await;
         let (_key, resp1, ack) = queue
             .receive_response(
                 &submission,
@@ -1011,7 +1049,7 @@ mod tests {
             Some(hash1.clone()),
         );
         queue.send_request(key2, msg2).await.unwrap();
-        handler.tick().await;
+        drain_put(&queue, &handler).await;
         let (_key, resp2, ack) = queue
             .receive_response(
                 &submission,
@@ -1040,7 +1078,7 @@ mod tests {
             Some(hash2),
         );
         queue.send_request(list_key2, list_msg2).await.unwrap();
-        handler.tick().await;
+        drain_list(&queue, &handler).await;
         let (_key, resp, ack) = queue
             .receive_response(
                 &submission,
@@ -1069,7 +1107,7 @@ mod tests {
             Some(hash1),
         );
         queue.send_request(list_key1, list_msg1).await.unwrap();
-        handler.tick().await;
+        drain_list(&queue, &handler).await;
         let (_key, resp, ack) = queue
             .receive_response(
                 &submission,
@@ -1118,7 +1156,7 @@ mod tests {
         );
         let put_msg = make_request_msg(serde_json::to_vec(&put_payload).unwrap(), None);
         queue.send_request(put_key, put_msg).await.unwrap();
-        handler.tick().await;
+        drain_put(&queue, &handler).await;
         let (_key, _resp, ack) = queue
             .receive_response(
                 &submission,
@@ -1146,7 +1184,7 @@ mod tests {
             Some("hash123".to_string()),
         );
         queue.send_request(get_key, get_msg).await.unwrap();
-        handler.tick().await;
+        drain_get(&queue, &handler).await;
         let (_key, response, ack) = queue
             .receive_response(
                 &submission,

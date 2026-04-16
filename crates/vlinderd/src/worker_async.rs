@@ -62,12 +62,7 @@ pub async fn run_storage_object_sqlite_worker(config: &Config, shutdown: Cancell
     let registry_addr = &config.distributed.registry_addr;
     tracing::info!(registry = %registry_addr, "SQLite object storage worker ready");
 
-    loop {
-        tokio::select! {
-            _ = worker.tick() => {}
-            () = shutdown.cancelled() => break,
-        }
-    }
+    Arc::new(worker).run(shutdown).await;
 }
 
 #[cfg(feature = "sqlite-vec")]
