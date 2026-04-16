@@ -5,10 +5,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_openai::types::chat::{CreateChatCompletionRequest, CreateChatCompletionResponse};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use vlinder_core::domain::{
-    DagNodeId, DataMessageKind, DataRoutingKey, InferenceBackendType, MessageId, MessageQueue,
-    Operation, RequestMessage, ResponseMessage, ServiceBackend, ServiceDiagnostics, ServiceMetrics,
-    ServiceType,
+    Acknowledgement, DagNodeId, DataMessageKind, DataRoutingKey, InferenceBackendType, MessageId,
+    MessageQueue, Operation, QueueError, RequestMessage, ResponseMessage, ServiceBackend,
+    ServiceDiagnostics, ServiceMetrics, ServiceType,
 };
 
 /// Handler result: the raw HTTP response + extracted metrics.
@@ -58,28 +60,49 @@ impl OpenRouterWorker {
         }
     }
 
-    /// Process one message if available. Returns true if a message was processed.
-    pub async fn tick(&self) -> bool {
-        if let Ok((key, msg, ack)) = self
-            .queue
-            .receive_request(
-                ServiceBackend::Infer(InferenceBackendType::OpenRouter),
-                Operation::Run,
-            )
-            .await
+    /// Spawn one tokio task per (service, operation) this worker serves and
+    /// drive each until `shutdown` fires. For `OpenRouter` that's a single
+    /// `(Infer(OpenRouter), Run)` task.
+    ///
+    /// Each task loops: `select!` on shutdown vs. `receive_request`; once a
+    /// request resolves, processing runs outside the select so the
+    /// receive-then-ack path cannot be cancelled mid-flight.
+    pub async fn run(self: Arc<Self>, shutdown: CancellationToken) {
+        let mut set: JoinSet<()> = JoinSet::new();
+
         {
-            self.process_v2(&key, msg, ack).await;
-            return true;
+            let me = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            set.spawn(async move {
+                let service = ServiceBackend::Infer(InferenceBackendType::OpenRouter);
+                let operation = Operation::Run;
+                loop {
+                    let (key, msg, ack) = tokio::select! {
+                        () = shutdown.cancelled() => break,
+                        result = me.queue.receive_request(service, operation) => {
+                            match result {
+                                Ok(tuple) => tuple,
+                                Err(QueueError::Timeout) => continue,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "OpenRouter worker receive error");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    me.process_request(key, msg, ack).await;
+                }
+            });
         }
 
-        false
+        while set.join_next().await.is_some() {}
     }
 
-    async fn process_v2(
+    pub async fn process_request(
         &self,
-        key: &DataRoutingKey,
+        key: DataRoutingKey,
         msg: RequestMessage,
-        ack: vlinder_core::domain::Acknowledgement,
+        ack: Acknowledgement,
     ) {
         let start = Instant::now();
         let (http_response, metrics) = self.handle(&msg.payload).await;
@@ -98,7 +121,7 @@ impl OpenRouterWorker {
             metrics,
         };
 
-        let response_key = response_key_from_request(key);
+        let response_key = response_key_from_request(&key);
         let response = ResponseMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
@@ -276,6 +299,17 @@ mod tests {
         }
     }
 
+    async fn drain_one(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &OpenRouterWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(
+                ServiceBackend::Infer(InferenceBackendType::OpenRouter),
+                Operation::Run,
+            )
+            .await
+            .expect("request should be available");
+        worker.process_request(key, msg, ack).await;
+    }
+
     #[tokio::test]
     async fn rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
@@ -286,7 +320,7 @@ mod tests {
         );
 
         let (sub, svc, op, seq) = send_request(&queue, b"not json".to_vec(), None).await;
-        assert!(worker.tick().await);
+        drain_one(&queue, &worker).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
@@ -319,7 +353,7 @@ mod tests {
             Some("xyz".to_string()),
         )
         .await;
-        assert!(worker.tick().await);
+        drain_one(&queue, &worker).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
@@ -348,7 +382,7 @@ mod tests {
         });
         let (sub, svc, op, seq) =
             send_request(&queue, serde_json::to_vec(&body).unwrap(), None).await;
-        assert!(worker.tick().await);
+        drain_one(&queue, &worker).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
@@ -360,20 +394,5 @@ mod tests {
         assert_eq!(body["error"]["type"], "server_error");
         assert!(!body["error"]["message"].as_str().unwrap().is_empty());
         ack().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn no_message_returns_false() {
-        let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
-        let worker = OpenRouterWorker::new(
-            Arc::clone(&queue),
-            "http://127.0.0.1:1".to_string(),
-            "test-key".to_string(),
-        );
-
-        assert!(
-            !worker.tick().await,
-            "tick() should return false when queue is empty"
-        );
     }
 }

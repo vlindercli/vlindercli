@@ -25,12 +25,7 @@ pub async fn run_inference_openrouter_worker(config: &Config, shutdown: Cancella
 
     tracing::info!(endpoint = %config.openrouter.endpoint, "OpenRouter inference worker ready");
 
-    loop {
-        tokio::select! {
-            _ = worker.tick() => {}
-            () = shutdown.cancelled() => break,
-        }
-    }
+    Arc::new(worker).run(shutdown).await;
 }
 
 #[cfg(feature = "ollama")]
