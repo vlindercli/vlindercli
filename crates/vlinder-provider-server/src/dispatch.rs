@@ -71,7 +71,7 @@ pub async fn dispatch_invoke(
         agent.clone(),
         Arc::clone(&state),
     );
-    let provider_server = ProviderServer::start(handler, hosts, state, 3544);
+    let provider_server = ProviderServer::start(handler, hosts, state, 3544).await;
 
     let http = ureq::Agent::new();
     let agent_url = format!("http://127.0.0.1:{agent_port}/invoke");
