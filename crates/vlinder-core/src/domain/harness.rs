@@ -311,9 +311,7 @@ impl Harness for CoreHarness {
                     let _ = ack().await;
                     break String::from_utf8_lossy(&v2.payload).to_string();
                 }
-                Err(crate::domain::QueueError::Timeout) => {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
+                Err(crate::domain::QueueError::Timeout) => {}
                 Err(e) => return Err(format!("queue error: {e}")),
             }
         };

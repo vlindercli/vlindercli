@@ -4,25 +4,15 @@
 //! `while { rt.block_on(tick()); sleep(10ms); }` polling pattern with a
 //! single `block_on` wrapping a `select!` event loop.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::config::Config;
 
-/// Resolves when the `AtomicBool` shutdown flag is set.
-/// Polls every 10ms — replaced by `watch::Receiver` in a later step.
-async fn shutdown_signal(shutdown: &Arc<AtomicBool>) {
-    loop {
-        if shutdown.load(Ordering::Relaxed) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 #[cfg(feature = "openrouter")]
-pub async fn run_inference_openrouter_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_inference_openrouter_worker(config: &Config, shutdown: CancellationToken) {
     use vlinder_infer_openrouter::OpenRouterWorker;
 
     let queue = crate::queue_factory::recording_from_config_async(config)
@@ -39,13 +29,13 @@ pub async fn run_inference_openrouter_worker(config: &Config, shutdown: Arc<Atom
     loop {
         tokio::select! {
             _ = worker.tick() => {}
-            () = shutdown_signal(&shutdown) => break,
+            () = shutdown.cancelled() => break,
         }
     }
 }
 
 #[cfg(feature = "ollama")]
-pub async fn run_inference_ollama_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_inference_ollama_worker(config: &Config, shutdown: CancellationToken) {
     use vlinder_ollama::OllamaWorker;
 
     let queue = crate::queue_factory::recording_from_config_async(config)
@@ -58,13 +48,13 @@ pub async fn run_inference_ollama_worker(config: &Config, shutdown: Arc<AtomicBo
     loop {
         tokio::select! {
             _ = worker.tick() => {}
-            () = shutdown_signal(&shutdown) => break,
+            () = shutdown.cancelled() => break,
         }
     }
 }
 
 #[cfg(feature = "sqlite-kv")]
-pub async fn run_storage_object_sqlite_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_storage_object_sqlite_worker(config: &Config, shutdown: CancellationToken) {
     use vlinder_core::domain::{ObjectStorageType, ServiceBackend};
     use vlinder_sqlite_kv::KvWorker;
 
@@ -86,13 +76,13 @@ pub async fn run_storage_object_sqlite_worker(config: &Config, shutdown: Arc<Ato
     loop {
         tokio::select! {
             _ = worker.tick() => {}
-            () = shutdown_signal(&shutdown) => break,
+            () = shutdown.cancelled() => break,
         }
     }
 }
 
 #[cfg(feature = "sqlite-vec")]
-pub async fn run_storage_vector_sqlite_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_storage_vector_sqlite_worker(config: &Config, shutdown: CancellationToken) {
     use vlinder_core::domain::{ServiceBackend, VectorStorageType};
     use vlinder_sqlite_vec::SqliteVecWorker;
 
@@ -114,13 +104,13 @@ pub async fn run_storage_vector_sqlite_worker(config: &Config, shutdown: Arc<Ato
     loop {
         tokio::select! {
             _ = worker.tick() => {}
-            () = shutdown_signal(&shutdown) => break,
+            () = shutdown.cancelled() => break,
         }
     }
 }
 
 #[cfg(feature = "container")]
-pub async fn run_agent_container_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_agent_container_worker(config: &Config, shutdown: CancellationToken) {
     use crate::config::dag_db_path;
     use vlinder_core::domain::Runtime;
     use vlinder_podman_runtime::{ContainerRuntime, PodmanRuntimeConfig};
@@ -181,13 +171,13 @@ pub async fn run_agent_container_worker(config: &Config, shutdown: Arc<AtomicBoo
     loop {
         tokio::select! {
             _ = runtime.tick() => {}
-            () = shutdown_signal(&shutdown) => break,
+            () = shutdown.cancelled() => break,
         }
     }
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn run_infra_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_infra_worker(config: &Config, shutdown: CancellationToken) {
     use crate::config::dag_db_path;
     use vlinder_core::domain::{AgentName, QueueError, ReadinessCheck, RegistryRepository};
     use vlinder_sql_state::SqliteDagStore;
@@ -273,13 +263,13 @@ pub async fn run_infra_worker(config: &Config, shutdown: Arc<AtomicBool>) {
                     }
                 }
             }
-            () = shutdown_signal(&shutdown) => break,
+            () = shutdown.cancelled() => break,
         }
     }
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn run_dag_git_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
     use crate::config::conversations_dir;
     use vlinder_core::domain::{DagWorker, QueueError};
     use vlinder_git_dag::GitDagWorker;
@@ -407,12 +397,12 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: Arc<AtomicBool>) {
                     }
                 }
             }
-            () = shutdown_signal(&shutdown) => break,
+            () = shutdown.cancelled() => break,
         }
     }
 }
 
-pub async fn run_state_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_state_worker(config: &Config, shutdown: CancellationToken) {
     use crate::config::dag_db_path;
     use tonic::transport::Server;
     use vlinder_core::domain::DagStore;
@@ -436,13 +426,13 @@ pub async fn run_state_worker(config: &Config, shutdown: Arc<AtomicBool>) {
     let service = StateServiceServer::new(store).into_service();
     let server = Server::builder()
         .add_service(service)
-        .serve_with_shutdown(addr, shutdown_signal(&shutdown));
+        .serve_with_shutdown(addr, shutdown.cancelled());
     if let Err(e) = server.await {
         tracing::error!(?e, "State server error");
     }
 }
 
-pub async fn run_secret_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_secret_worker(config: &Config, shutdown: CancellationToken) {
     use tonic::transport::Server;
     use vlinder_nats::secret_service::SecretServer;
 
@@ -462,14 +452,14 @@ pub async fn run_secret_worker(config: &Config, shutdown: Arc<AtomicBool>) {
     let service = SecretServer::new(secret_store).into_service();
     let server = Server::builder()
         .add_service(service)
-        .serve_with_shutdown(addr, shutdown_signal(&shutdown));
+        .serve_with_shutdown(addr, shutdown.cancelled());
     if let Err(e) = server.await {
         tracing::error!(?e, "Secret store server error");
     }
 }
 
 #[cfg(any(feature = "ollama", feature = "openrouter"))]
-pub async fn run_catalog_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_catalog_worker(config: &Config, shutdown: CancellationToken) {
     use tonic::transport::Server;
     use vlinder_catalog::catalog_service::CatalogServiceServer;
     use vlinder_core::domain::{CatalogService, CompositeCatalog};
@@ -508,13 +498,13 @@ pub async fn run_catalog_worker(config: &Config, shutdown: Arc<AtomicBool>) {
     let service = CatalogServiceServer::new(Arc::new(composite)).into_service();
     let server = Server::builder()
         .add_service(service)
-        .serve_with_shutdown(addr, shutdown_signal(&shutdown));
+        .serve_with_shutdown(addr, shutdown.cancelled());
     if let Err(e) = server.await {
         tracing::error!(?e, "Catalog server error");
     }
 }
 
-pub async fn run_harness_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_harness_worker(config: &Config, shutdown: CancellationToken) {
     use tonic::transport::Server;
     use vlinder_core::domain::{CoreHarness, HarnessType};
     use vlinder_harness::harness_service::HarnessServer;
@@ -543,14 +533,14 @@ pub async fn run_harness_worker(config: &Config, shutdown: Arc<AtomicBool>) {
     let service = HarnessServer::new(Box::new(harness)).into_service();
     let server = Server::builder()
         .add_service(service)
-        .serve_with_shutdown(addr, shutdown_signal(&shutdown));
+        .serve_with_shutdown(addr, shutdown.cancelled());
     if let Err(e) = server.await {
         tracing::error!(?e, "Harness server error");
     }
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn run_registry_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_registry_worker(config: &Config, shutdown: CancellationToken) {
     use crate::config::dag_db_path;
     use tonic::transport::Server;
     use vlinder_core::domain::{ObjectStorageType, Registry, RuntimeType, VectorStorageType};
@@ -621,14 +611,14 @@ pub async fn run_registry_worker(config: &Config, shutdown: Arc<AtomicBool>) {
     let service = RegistryServer::new(registry, queue, Arc::clone(&store) as _).into_service();
     let server = Server::builder()
         .add_service(service)
-        .serve_with_shutdown(addr, shutdown_signal(&shutdown));
+        .serve_with_shutdown(addr, shutdown.cancelled());
     if let Err(e) = server.await {
         tracing::error!(?e, "Registry server error");
     }
 }
 
 #[cfg(feature = "lambda")]
-pub async fn run_agent_lambda_worker(config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_agent_lambda_worker(config: &Config, shutdown: CancellationToken) {
     use crate::config::dag_db_path;
     use vlinder_core::domain::Runtime;
     use vlinder_lambda_runtime::{LambdaRuntime, LambdaRuntimeConfig};
@@ -685,12 +675,12 @@ pub async fn run_agent_lambda_worker(config: &Config, shutdown: Arc<AtomicBool>)
     loop {
         tokio::select! {
             _ = runtime.tick() => {}
-            () = shutdown_signal(&shutdown) => break,
+            () = shutdown.cancelled() => break,
         }
     }
 }
 
-pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: Arc<AtomicBool>) {
+pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: CancellationToken) {
     use crate::worker_role::WorkerRole;
 
     let config = Config::load();
@@ -734,7 +724,7 @@ pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: Arc
     tracing::info!(role = %role, "Worker shutdown complete");
 }
 
-pub async fn run_session_viewer_worker(_config: &Config, shutdown: Arc<AtomicBool>) {
+pub async fn run_session_viewer_worker(_config: &Config, shutdown: CancellationToken) {
     use crate::config::dag_db_path;
     use vlinder_sql_state::{SessionServer, SqliteDagStore};
 
@@ -755,6 +745,6 @@ pub async fn run_session_viewer_worker(_config: &Config, shutdown: Arc<AtomicBoo
         server.port()
     );
 
-    shutdown_signal(&shutdown).await;
+    shutdown.cancelled().await;
     server.stop().await;
 }

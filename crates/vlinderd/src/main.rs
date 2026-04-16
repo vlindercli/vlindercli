@@ -4,8 +4,7 @@
 //! - Worker: if `VLINDER_WORKER_ROLE` is set
 //! - Supervisor: spawns and manages worker processes
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use vlinderd::config::Config;
 use vlinderd::supervisor::Supervisor;
@@ -33,36 +32,34 @@ async fn main() {
 async fn run_as_worker(role: WorkerRole) {
     tracing::info!(role = %role, "Starting as worker process");
 
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_clone = Arc::clone(&shutdown);
+    let token = CancellationToken::new();
+    let token_clone = token.clone();
 
     ctrlc::set_handler(move || {
         tracing::info!("Received shutdown signal");
-        shutdown_clone.store(true, Ordering::Relaxed);
+        token_clone.cancel();
     })
     .expect("Failed to set signal handler");
 
-    worker_async::run_worker_loop(role, shutdown).await;
+    worker_async::run_worker_loop(role, token).await;
 }
 
 async fn run_as_supervisor(config: &Config) {
     tracing::info!("Starting vlinder supervisor (distributed mode)");
 
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_clone = Arc::clone(&shutdown);
+    let token = CancellationToken::new();
+    let token_clone = token.clone();
 
     ctrlc::set_handler(move || {
         tracing::info!("Received shutdown signal");
-        shutdown_clone.store(true, Ordering::Relaxed);
+        token_clone.cancel();
     })
     .expect("Failed to set signal handler");
 
-    let supervisor = Supervisor::new(config, Arc::clone(&shutdown)).await;
+    let supervisor = Supervisor::new(config, token.clone()).await;
 
     // Wait for shutdown signal
-    while !shutdown.load(Ordering::Relaxed) {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    token.cancelled().await;
 
     supervisor.shutdown();
     tracing::info!("Supervisor stopped");

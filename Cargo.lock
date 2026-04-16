@@ -5360,6 +5360,7 @@ dependencies = [
  "tempfile",
  "termimad",
  "tokio",
+ "tokio-util",
  "toml",
  "tonic",
  "tracing",

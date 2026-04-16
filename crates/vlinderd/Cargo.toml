@@ -64,6 +64,7 @@ git2 = "0.20"
 # NATS messaging (async engine with sync facade)
 async-nats = "0.46"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+tokio-util = "0.7"
 futures = "0.3"
 
 # gRPC for registry service

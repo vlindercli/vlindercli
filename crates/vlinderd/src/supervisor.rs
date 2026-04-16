@@ -7,11 +7,10 @@
 //! no harness, no queue). Workers are self-contained async loops that connect
 //! to NATS and gRPC independently.
 
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::worker_async;
@@ -84,7 +83,7 @@ where
 impl Supervisor {
     /// Spawn worker tasks based on config.
     #[allow(clippy::too_many_lines)]
-    pub async fn new(config: &Config, shutdown: Arc<AtomicBool>) -> Self {
+    pub async fn new(config: &Config, shutdown: CancellationToken) -> Self {
         let counts = &config.distributed.workers;
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
@@ -93,7 +92,7 @@ impl Supervisor {
                 for _ in 0..$count {
                     handles.push(tokio::spawn(worker_async::run_worker_loop(
                         $role,
-                        Arc::clone(&shutdown),
+                        shutdown.clone(),
                     )));
                 }
             };
