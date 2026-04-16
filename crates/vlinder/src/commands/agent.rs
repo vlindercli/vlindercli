@@ -204,7 +204,7 @@ async fn deploy(path: Option<PathBuf>) {
                 std::process::exit(1);
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 
@@ -544,7 +544,7 @@ async fn delete(name: &str) {
                 std::process::exit(1);
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 
