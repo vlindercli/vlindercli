@@ -39,12 +39,7 @@ pub async fn run_inference_ollama_worker(config: &Config, shutdown: Cancellation
 
     tracing::info!(endpoint = %config.ollama.endpoint, "Ollama inference worker ready");
 
-    loop {
-        tokio::select! {
-            _ = worker.tick() => {}
-            () = shutdown.cancelled() => break,
-        }
-    }
+    Arc::new(worker).run(shutdown).await;
 }
 
 #[cfg(feature = "sqlite-kv")]
