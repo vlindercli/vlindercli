@@ -207,9 +207,10 @@ pub struct Branch {
 ///
 /// Git is one implementation (`GitDagWorker`). Any backend that can
 /// preserve the chronological message stream would implement this.
+#[async_trait(?Send)]
 pub trait DagWorker: Send {
     /// Persist an invoke message (data-plane path, ADR 121).
-    fn on_invoke(
+    async fn on_invoke(
         &mut self,
         _key: &super::DataRoutingKey,
         _msg: &super::InvokeMessage,
@@ -219,7 +220,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a request message (data-plane path, ADR 121).
-    fn on_request(
+    async fn on_request(
         &mut self,
         _key: &super::DataRoutingKey,
         _msg: &super::RequestMessage,
@@ -228,7 +229,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a response message (data-plane path, ADR 121).
-    fn on_response(
+    async fn on_response(
         &mut self,
         _key: &super::DataRoutingKey,
         _msg: &super::ResponseMessage,
@@ -237,7 +238,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a complete message (data-plane path, ADR 121).
-    fn on_complete(
+    async fn on_complete(
         &mut self,
         _key: &super::DataRoutingKey,
         _msg: &super::CompleteMessage,
@@ -247,7 +248,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a fork message (session-plane path).
-    fn on_fork(
+    async fn on_fork(
         &mut self,
         _key: &super::SessionRoutingKey,
         _msg: &super::ForkMessage,
@@ -256,7 +257,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a promote message (session-plane path).
-    fn on_promote(
+    async fn on_promote(
         &mut self,
         _key: &super::SessionRoutingKey,
         _msg: &super::PromoteMessage,
@@ -265,7 +266,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a deploy-agent message (infra-plane path).
-    fn on_deploy_agent(
+    async fn on_deploy_agent(
         &mut self,
         _key: &super::InfraRoutingKey,
         _msg: &super::DeployAgentMessage,
@@ -274,7 +275,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a delete-agent message (infra-plane path).
-    fn on_delete_agent(
+    async fn on_delete_agent(
         &mut self,
         _key: &super::InfraRoutingKey,
         _msg: &super::DeleteAgentMessage,

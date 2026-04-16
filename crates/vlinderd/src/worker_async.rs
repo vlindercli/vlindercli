@@ -1,8 +1,7 @@
 //! Async worker entry points.
 //!
-//! Worker roles are migrated here one by one, replacing the old
-//! `while { rt.block_on(tick()); sleep(10ms); }` polling pattern with a
-//! single `block_on` wrapping a `select!` event loop.
+//! Each worker runs as a tokio task: a `select!` loop that drives
+//! `worker.tick()` until the `CancellationToken` fires.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -303,7 +302,7 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
                                     &payload,
                                 )
                             {
-                                git_worker.on_complete(&key, &complete_msg, created_at);
+                                git_worker.on_complete(&key, &complete_msg, created_at).await;
                             } else {
                                 tracing::warn!(
                                     subject = subject.as_str(),
@@ -316,7 +315,7 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
                                     &payload,
                                 )
                             {
-                                git_worker.on_request(&key, &request_msg, created_at);
+                                git_worker.on_request(&key, &request_msg, created_at).await;
                             } else {
                                 tracing::warn!(
                                     subject = subject.as_str(),
@@ -329,7 +328,7 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
                                     &payload,
                                 )
                             {
-                                git_worker.on_response(&key, &response_msg, created_at);
+                                git_worker.on_response(&key, &response_msg, created_at).await;
                             } else {
                                 tracing::warn!(
                                     subject = subject.as_str(),
@@ -342,7 +341,7 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
                                     &payload,
                                 )
                             {
-                                git_worker.on_invoke(&key, &invoke_msg, created_at);
+                                git_worker.on_invoke(&key, &invoke_msg, created_at).await;
                             } else {
                                 tracing::warn!(
                                     subject = subject.as_str(),
@@ -355,7 +354,7 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
                                     &payload,
                                 )
                             {
-                                git_worker.on_fork(&key, &fork_msg, created_at);
+                                git_worker.on_fork(&key, &fork_msg, created_at).await;
                             } else {
                                 tracing::warn!(
                                     subject = subject.as_str(),
@@ -368,7 +367,7 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
                                     &payload,
                                 )
                             {
-                                git_worker.on_promote(&key, &promote_msg, created_at);
+                                git_worker.on_promote(&key, &promote_msg, created_at).await;
                             } else {
                                 tracing::warn!(
                                     subject = subject.as_str(),
@@ -717,7 +716,13 @@ pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: Can
         #[cfg(any(feature = "ollama", feature = "openrouter"))]
         WorkerRole::Catalog => run_catalog_worker(&config, shutdown).await,
         WorkerRole::Infra => run_infra_worker(&config, shutdown).await,
-        WorkerRole::DagGit => run_dag_git_worker(&config, shutdown).await,
+        // DagGit is intentionally absent: GitDagWorker is !Sync (libgit2 raw
+        // pointers), so its futures are !Send.  The supervisor runs it via
+        // spawn_blocking + new_current_thread instead of tokio::spawn, and
+        // calls run_dag_git_worker directly rather than going through this fn.
+        WorkerRole::DagGit => {
+            unreachable!("DagGit must be run via spawn_blocking — do not pass to run_worker_loop")
+        }
         WorkerRole::SessionViewer => run_session_viewer_worker(&config, shutdown).await,
     }
 

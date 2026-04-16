@@ -44,6 +44,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use git2::{FileMode, Oid, Repository, RepositoryInitOptions, Signature, TreeBuilder};
 
@@ -249,7 +250,7 @@ impl GitDagWorker {
     /// timeline indexes, add registry metadata, create the commit, and handle
     /// fork/promote branch operations.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    fn nest_and_commit(
+    async fn nest_and_commit(
         &self,
         msg_tree_oid: Oid,
         agent_name: &str,
@@ -266,6 +267,24 @@ impl GitDagWorker {
         protocol_version: &str,
         fork_branch: Option<&str>,
     ) -> Result<(), String> {
+        // Phase 1: Async registry fetch — no git2 borrows alive yet.
+        let (agent_opt, fetched_models) = if let Some(ref registry) = self.registry {
+            let agent = registry.get_agent_by_name(agent_name).await;
+            let mut models = std::collections::HashMap::new();
+            if let Some(ref a) = agent {
+                for model_name in a.requirements.models.values() {
+                    if let Some(m) = registry.get_model(model_name).await {
+                        models.insert(model_name.clone(), m);
+                    }
+                }
+            }
+            (agent, models)
+        } else {
+            (None, std::collections::HashMap::new())
+        };
+
+        // Phase 2: All git2 tree/commit operations — no awaits below this line.
+
         // Get parent tree from HEAD
         let parent_tree = parent_commit_oid
             .and_then(|oid| self.repo.find_commit(oid).ok())
@@ -364,34 +383,12 @@ impl GitDagWorker {
             .insert(agent_name, agent_tree_oid, FileMode::Tree.into())
             .map_err(|e| format!("insert agent dir failed: {e}"))?;
 
-        // Add top-level metadata from registry
+        // Add top-level metadata from registry using pre-fetched data
         let _ = root_tb.remove("agent.toml");
         let _ = root_tb.remove("platform.toml");
         let _ = root_tb.remove("models");
 
-        if let Some(ref registry) = self.registry {
-            // Fetch agent and models asynchronously in one thread (get_model is async).
-            type AgentAndModels = (
-                Option<vlinder_core::domain::Agent>,
-                std::collections::HashMap<String, Model>,
-            );
-            let registry_clone = Arc::clone(registry);
-            let agent_name_str = agent_name.to_string();
-            let (tx, rx) = std::sync::mpsc::channel::<AgentAndModels>();
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                let agent = rt.block_on(registry_clone.get_agent_by_name(&agent_name_str));
-                let mut fetched_models = std::collections::HashMap::new();
-                if let Some(ref a) = agent {
-                    for model_name in a.requirements.models.values() {
-                        if let Some(model) = rt.block_on(registry_clone.get_model(model_name)) {
-                            fetched_models.insert(model_name.clone(), model);
-                        }
-                    }
-                }
-                let _ = tx.send((agent, fetched_models));
-            });
-            let (agent_opt, fetched_models) = rx.recv().unwrap();
+        if self.registry.is_some() {
             if let Some(agent) = agent_opt {
                 if let Ok(agent_toml) = toml::to_string_pretty(&agent) {
                     if let Ok(oid) = self.write_blob(agent_toml.as_bytes()) {
@@ -523,12 +520,18 @@ impl GitDagWorker {
     }
 }
 
+#[async_trait(?Send)]
 impl DagWorker for GitDagWorker {
-    fn on_fork(&mut self, key: &SessionRoutingKey, msg: &ForkMessage, created_at: DateTime<Utc>) {
+    async fn on_fork(
+        &mut self,
+        key: &SessionRoutingKey,
+        msg: &ForkMessage,
+        created_at: DateTime<Utc>,
+    ) {
         let SessionMessageKind::Fork { agent_name } = &key.kind else {
             return;
         };
-        let result = (|| -> Result<(), String> {
+        let result: Result<(), String> = async {
             let session_id = key.session.as_str().to_string();
             let agent_str = agent_name.to_string();
 
@@ -595,13 +598,15 @@ impl DagWorker for GitDagWorker {
                 "v1",
                 Some(&msg.branch_name),
             )
-        })();
+            .await
+        }
+        .await;
         if let Err(e) = result {
             tracing::error!(error = %e, "Failed to write fork git commit");
         }
     }
 
-    fn on_promote(
+    async fn on_promote(
         &mut self,
         key: &SessionRoutingKey,
         _msg: &PromoteMessage,
@@ -610,7 +615,7 @@ impl DagWorker for GitDagWorker {
         let SessionMessageKind::Promote { agent_name } = &key.kind else {
             return;
         };
-        let result = (|| -> Result<(), String> {
+        let result: Result<(), String> = async {
             let session_id = key.session.as_str().to_string();
             let agent_str = agent_name.to_string();
 
@@ -675,14 +680,16 @@ impl DagWorker for GitDagWorker {
                 "v1",
                 None,
             )
-        })();
+            .await
+        }
+        .await;
         if let Err(e) = result {
             tracing::error!(error = %e, "Failed to write promote git commit");
         }
     }
 
     #[allow(clippy::too_many_lines)]
-    fn on_invoke(
+    async fn on_invoke(
         &mut self,
         key: &DataRoutingKey,
         invoke: &InvokeMessage,
@@ -698,7 +705,7 @@ impl DagWorker for GitDagWorker {
             return;
         };
 
-        let result = (|| -> Result<(), String> {
+        let result: Result<(), String> = async {
             let session_id = key.session.as_str();
             let agent_name = agent.as_str();
             let from = harness.as_str();
@@ -781,14 +788,16 @@ impl DagWorker for GitDagWorker {
                 "v1",
                 None, // invoke is not a fork
             )
-        })();
+            .await
+        }
+        .await;
 
         if let Err(e) = result {
             tracing::error!(error = %e, "Failed to write git commit for invoke");
         }
     }
 
-    fn on_complete(
+    async fn on_complete(
         &mut self,
         key: &DataRoutingKey,
         complete: &vlinder_core::domain::CompleteMessage,
@@ -799,7 +808,7 @@ impl DagWorker for GitDagWorker {
             return;
         };
 
-        let result = (|| -> Result<(), String> {
+        let result: Result<(), String> = async {
             let session_id = key.session.as_str();
             let agent_name = agent.as_str();
             let from = agent_name;
@@ -877,7 +886,9 @@ impl DagWorker for GitDagWorker {
                 "v1",
                 None,
             )
-        })();
+            .await
+        }
+        .await;
 
         if let Err(e) = result {
             tracing::error!(error = %e, "Failed to write git commit for complete");
@@ -885,7 +896,7 @@ impl DagWorker for GitDagWorker {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn on_request(
+    async fn on_request(
         &mut self,
         key: &DataRoutingKey,
         request: &vlinder_core::domain::RequestMessage,
@@ -902,7 +913,7 @@ impl DagWorker for GitDagWorker {
             return;
         };
 
-        let result = (|| -> Result<(), String> {
+        let result: Result<(), String> = async {
             let session_id = key.session.as_str();
             let agent_name = agent.as_str();
             let from = agent_name;
@@ -986,7 +997,9 @@ impl DagWorker for GitDagWorker {
                 "v1",
                 None,
             )
-        })();
+            .await
+        }
+        .await;
 
         if let Err(e) = result {
             tracing::error!(error = %e, "Failed to write git commit for request");
@@ -994,7 +1007,7 @@ impl DagWorker for GitDagWorker {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn on_response(
+    async fn on_response(
         &mut self,
         key: &DataRoutingKey,
         response: &vlinder_core::domain::ResponseMessage,
@@ -1011,7 +1024,7 @@ impl DagWorker for GitDagWorker {
             return;
         };
 
-        let result = (|| -> Result<(), String> {
+        let result: Result<(), String> = async {
             let session_id = key.session.as_str();
             let agent_name = agent.as_str();
             let from = &format!("{}.{}", service.service_type(), service.backend_str());
@@ -1096,7 +1109,9 @@ impl DagWorker for GitDagWorker {
                 "v1",
                 None,
             )
-        })();
+            .await
+        }
+        .await;
 
         if let Err(e) = result {
             tracing::error!(error = %e, "Failed to write git commit for response");
@@ -1141,11 +1156,11 @@ mod tests {
         }
     }
 
-    fn send_complete(worker: &mut GitDagWorker, payload: &[u8], epoch_secs: i64) {
+    async fn send_complete(worker: &mut GitDagWorker, payload: &[u8], epoch_secs: i64) {
         let key = test_complete_key(SESSION);
         let msg = test_complete_msg(payload);
         let ts = DateTime::from_timestamp(epoch_secs, 0).unwrap();
-        worker.on_complete(&key, &msg, ts);
+        worker.on_complete(&key, &msg, ts).await;
     }
 
     fn test_worker() -> (GitDagWorker, tempfile::TempDir) {
@@ -1230,29 +1245,29 @@ mod tests {
         assert!(tmp.path().join(".git").exists());
     }
 
-    #[test]
-    fn commit_advances_main() {
+    #[tokio::test]
+    async fn commit_advances_main() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"hello", 1000);
+        send_complete(&mut worker, b"hello", 1000).await;
 
         // main should have 2 commits: initial + complete
         let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
         assert_eq!(count, "2");
     }
 
-    #[test]
-    fn commit_message_first_line() {
+    #[tokio::test]
+    async fn commit_message_first_line() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"payload", 1000);
+        send_complete(&mut worker, b"payload", 1000).await;
 
         let subject = git(tmp.path(), &["log", "-1", "--format=%s", "main"]).unwrap();
         assert_eq!(subject, "complete: support-agent \u{2192} cli");
     }
 
-    #[test]
-    fn commit_message_trailers() {
+    #[tokio::test]
+    async fn commit_message_trailers() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"payload", 1000);
+        send_complete(&mut worker, b"payload", 1000).await;
 
         let body = git(tmp.path(), &["log", "-1", "--format=%b", "main"]).unwrap();
         assert!(
@@ -1262,10 +1277,10 @@ mod tests {
         assert!(body.contains("Submission: sub-1"), "body: {body}");
     }
 
-    #[test]
-    fn complete_trailers_readable_by_timeline() {
+    #[tokio::test]
+    async fn complete_trailers_readable_by_timeline() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"question", 1000);
+        send_complete(&mut worker, b"question", 1000).await;
 
         let key = test_complete_key(SESSION);
         let complete = CompleteMessage {
@@ -1276,7 +1291,7 @@ mod tests {
             payload: b"answer".to_vec(),
         };
         let ts2 = DateTime::from_timestamp(1001, 0).unwrap();
-        worker.on_complete(&key, &complete, ts2);
+        worker.on_complete(&key, &complete, ts2).await;
 
         let session = git(
             tmp.path(),
@@ -1303,28 +1318,28 @@ mod tests {
         assert_eq!(state.trim(), "state-abc123");
     }
 
-    #[test]
-    fn author_is_message_sender() {
+    #[tokio::test]
+    async fn author_is_message_sender() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"data", 1000);
+        send_complete(&mut worker, b"data", 1000).await;
 
         let author = git(tmp.path(), &["log", "-1", "--format=%an <%ae>", "main"]).unwrap();
         assert_eq!(author, "support-agent <support-agent@registry.local:9000>");
     }
 
-    #[test]
-    fn committer_is_platform() {
+    #[tokio::test]
+    async fn committer_is_platform() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"data", 1000);
+        send_complete(&mut worker, b"data", 1000).await;
 
         let committer = git(tmp.path(), &["log", "-1", "--format=%cn <%ce>", "main"]).unwrap();
         assert_eq!(committer, "vlinder <vlinder@localhost>");
     }
 
-    #[test]
-    fn author_date_matches_node() {
+    #[tokio::test]
+    async fn author_date_matches_node() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"data", 1_700_000_000);
+        send_complete(&mut worker, b"data", 1_700_000_000).await;
 
         let date = git(tmp.path(), &["log", "-1", "--format=%at", "main"]).unwrap();
         assert_eq!(date, "1700000000");
@@ -1332,10 +1347,10 @@ mod tests {
 
     // --- Per-field storage tests (ADR 078) ---
 
-    #[test]
-    fn invoke_directory_has_per_field_files() {
+    #[tokio::test]
+    async fn invoke_directory_has_per_field_files() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"my-payload", 1000);
+        send_complete(&mut worker, b"my-payload", 1000).await;
 
         let dir = "001-support-agent-complete";
         let show = |field: &str| show_session_file(tmp.path(), dir, field);
@@ -1352,8 +1367,8 @@ mod tests {
         assert!(diag.contains("duration_ms"), "diag: {diag}");
     }
 
-    #[test]
-    fn complete_directory_has_harness_and_diagnostics() {
+    #[tokio::test]
+    async fn complete_directory_has_harness_and_diagnostics() {
         let (mut worker, tmp) = test_worker();
         let key = test_complete_key(SESSION);
         let complete = CompleteMessage {
@@ -1374,7 +1389,7 @@ mod tests {
             payload: b"done".to_vec(),
         };
         let ts = DateTime::from_timestamp(1003, 0).unwrap();
-        worker.on_complete(&key, &complete, ts);
+        worker.on_complete(&key, &complete, ts).await;
 
         let dir = "001-support-agent-complete";
         let show = |field: &str| show_session_file(tmp.path(), dir, field);
@@ -1391,8 +1406,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn state_file_present_when_state_set() {
+    #[tokio::test]
+    async fn state_file_present_when_state_set() {
         let (mut worker, tmp) = test_worker();
         let key = test_complete_key(SESSION);
         let complete = CompleteMessage {
@@ -1403,23 +1418,23 @@ mod tests {
             payload: b"hello".to_vec(),
         };
         let ts = DateTime::from_timestamp(1000, 0).unwrap();
-        worker.on_complete(&key, &complete, ts);
+        worker.on_complete(&key, &complete, ts).await;
 
         let state = show_session_file(tmp.path(), "001-support-agent-complete", "state").unwrap();
         assert_eq!(state, "abc123state");
     }
 
-    #[test]
-    fn state_file_absent_when_no_state() {
+    #[tokio::test]
+    async fn state_file_absent_when_no_state() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"hello", 1000);
+        send_complete(&mut worker, b"hello", 1000).await;
 
         let result = show_session_file(tmp.path(), "001-support-agent-complete", "state");
         assert!(result.is_err(), "should not have state file when None");
     }
 
-    #[test]
-    fn stderr_file_absent_when_empty() {
+    #[tokio::test]
+    async fn stderr_file_absent_when_empty() {
         let (mut worker, tmp) = test_worker();
         let key = test_complete_key(SESSION);
         let msg = CompleteMessage {
@@ -1430,7 +1445,7 @@ mod tests {
             payload: b"done".to_vec(),
         };
         let ts = DateTime::from_timestamp(1000, 0).unwrap();
-        worker.on_complete(&key, &msg, ts);
+        worker.on_complete(&key, &msg, ts).await;
 
         let result = show_session_file(tmp.path(), "001-support-agent-complete", "stderr");
         assert!(result.is_err(), "should not have stderr when empty");
@@ -1438,12 +1453,12 @@ mod tests {
 
     // --- Accumulation and chaining tests ---
 
-    #[test]
-    fn first_message_parents_initial_commit() {
+    #[tokio::test]
+    async fn first_message_parents_initial_commit() {
         let (mut worker, tmp) = test_worker();
         let initial = git(tmp.path(), &["rev-parse", "main"]).unwrap();
 
-        send_complete(&mut worker, b"first", 1000);
+        send_complete(&mut worker, b"first", 1000).await;
 
         let parent = git(tmp.path(), &["log", "-1", "--format=%P", "main"]).unwrap();
         assert_eq!(
@@ -1457,7 +1472,7 @@ mod tests {
     #[tokio::test]
     async fn commit_tree_contains_agent_toml_when_registry_available() {
         let (mut worker, tmp, _registry) = test_worker_with_registry().await;
-        send_complete(&mut worker, b"hello", 1000);
+        send_complete(&mut worker, b"hello", 1000).await;
 
         let content = git(tmp.path(), &["show", "main:agent.toml"]).unwrap();
         assert!(content.contains("support-agent"), "agent.toml: {content}");
@@ -1466,7 +1481,7 @@ mod tests {
     #[tokio::test]
     async fn commit_tree_contains_platform_toml() {
         let (mut worker, tmp, _registry) = test_worker_with_registry().await;
-        send_complete(&mut worker, b"hello", 1000);
+        send_complete(&mut worker, b"hello", 1000).await;
 
         let content = git(tmp.path(), &["show", "main:platform.toml"]).unwrap();
         assert!(content.contains("version"), "platform.toml: {content}");
@@ -1489,7 +1504,7 @@ mod tests {
 
     // --- Session folder isolation tests (ADR 114) ---
 
-    fn send_complete_for_session(
+    async fn send_complete_for_session(
         worker: &mut GitDagWorker,
         payload: &[u8],
         epoch_secs: i64,
@@ -1498,15 +1513,15 @@ mod tests {
         let key = test_complete_key(session);
         let msg = test_complete_msg(payload);
         let ts = DateTime::from_timestamp(epoch_secs, 0).unwrap();
-        worker.on_complete(&key, &msg, ts);
+        worker.on_complete(&key, &msg, ts).await;
     }
 
-    #[test]
-    fn sessions_share_main_branch() {
+    #[tokio::test]
+    async fn sessions_share_main_branch() {
         let (mut worker, tmp) = test_worker();
 
-        send_complete_for_session(&mut worker, b"sess1", 1000, SESSION);
-        send_complete_for_session(&mut worker, b"sess2", 1001, SESSION2);
+        send_complete_for_session(&mut worker, b"sess1", 1000, SESSION).await;
+        send_complete_for_session(&mut worker, b"sess2", 1001, SESSION2).await;
 
         // Both commits on main, 3 total (initial + 2 messages)
         let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
@@ -1520,12 +1535,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sessions_isolated_by_folder() {
+    #[tokio::test]
+    async fn sessions_isolated_by_folder() {
         let (mut worker, tmp) = test_worker();
 
-        send_complete_for_session(&mut worker, b"sess1-msg", 1000, SESSION);
-        send_complete_for_session(&mut worker, b"sess2-msg", 1001, SESSION2);
+        send_complete_for_session(&mut worker, b"sess1-msg", 1000, SESSION).await;
+        send_complete_for_session(&mut worker, b"sess2-msg", 1001, SESSION2).await;
 
         // Each session has its own folder under the agent
         let ls = git(
@@ -1558,10 +1573,10 @@ mod tests {
 
     // --- Timeline index tests (ADR 114) ---
 
-    #[test]
-    fn active_file_points_to_main() {
+    #[tokio::test]
+    async fn active_file_points_to_main() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"q", 1000);
+        send_complete(&mut worker, b"q", 1000).await;
 
         let active = git(
             tmp.path(),
@@ -1571,10 +1586,10 @@ mod tests {
         assert_eq!(active, "main");
     }
 
-    #[test]
-    fn working_tree_has_folder_structure() {
+    #[tokio::test]
+    async fn working_tree_has_folder_structure() {
         let (mut worker, tmp) = test_worker();
-        send_complete(&mut worker, b"browsable", 1000);
+        send_complete(&mut worker, b"browsable", 1000).await;
 
         // Working tree should have the agent/session/message folder structure
         let msg_dir = tmp
@@ -1600,8 +1615,8 @@ mod tests {
 
     // --- Canonical hash tests ---
 
-    #[test]
-    fn message_subtree_contains_canonical_hash() {
+    #[tokio::test]
+    async fn message_subtree_contains_canonical_hash() {
         let (mut worker, tmp) = test_worker();
         let key = test_complete_key(SESSION);
         let msg = test_complete_msg(b"my-payload");
@@ -1615,7 +1630,7 @@ mod tests {
         );
 
         let ts = DateTime::from_timestamp(1000, 0).unwrap();
-        worker.on_complete(&key, &msg, ts);
+        worker.on_complete(&key, &msg, ts).await;
 
         let hash = show_session_file(tmp.path(), "001-support-agent-complete", "hash").unwrap();
         assert_eq!(
@@ -1653,16 +1668,16 @@ mod tests {
         (key, msg, created_at)
     }
 
-    #[test]
-    fn fork_creates_git_branch() {
+    #[tokio::test]
+    async fn fork_creates_git_branch() {
         let (mut worker, tmp) = test_worker();
 
         // Send a complete so there's a commit on main
-        send_complete(&mut worker, b"hello", 1000);
+        send_complete(&mut worker, b"hello", 1000).await;
 
         // Send a fork message
         let (key, msg, ft) = test_fork("support-agent", "repair-branch", "fake-hash", 1001);
-        worker.on_fork(&key, &msg, ft);
+        worker.on_fork(&key, &msg, ft).await;
 
         // Verify the branch exists
         let branches = git(tmp.path(), &["branch", "--list"]).unwrap();
@@ -1672,14 +1687,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fork_branch_points_to_fork_commit() {
+    #[tokio::test]
+    async fn fork_branch_points_to_fork_commit() {
         let (mut worker, tmp) = test_worker();
 
-        send_complete(&mut worker, b"hello", 1000);
+        send_complete(&mut worker, b"hello", 1000).await;
 
         let (key, msg, ft) = test_fork("support-agent", "my-fork", "fake-hash", 1001);
-        worker.on_fork(&key, &msg, ft);
+        worker.on_fork(&key, &msg, ft).await;
 
         // The fork branch should point to the same commit as main HEAD
         // (the fork commit was the last commit on main)
@@ -1688,14 +1703,14 @@ mod tests {
         assert_eq!(main_head, fork_head);
     }
 
-    #[test]
-    fn fork_creates_timeline_index_file() {
+    #[tokio::test]
+    async fn fork_creates_timeline_index_file() {
         let (mut worker, tmp) = test_worker();
 
-        send_complete(&mut worker, b"hello", 1000);
+        send_complete(&mut worker, b"hello", 1000).await;
 
         let (key, msg, ft) = test_fork("support-agent", "repair-branch", "fake-hash", 1001);
-        worker.on_fork(&key, &msg, ft);
+        worker.on_fork(&key, &msg, ft).await;
 
         // The timelines/ dir should have both 'main' and 'repair-branch' index files
         let session_path = tmp
@@ -1745,23 +1760,23 @@ mod tests {
         (key, msg, created_at)
     }
 
-    #[test]
-    fn data_invoke_creates_commit() {
+    #[tokio::test]
+    async fn data_invoke_creates_commit() {
         let (mut worker, tmp) = test_worker();
         let (key, msg, ts) = test_data_invoke(b"hello", 1000);
 
-        worker.on_invoke(&key, &msg, ts);
+        worker.on_invoke(&key, &msg, ts).await;
 
         let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
         assert_eq!(count, "2"); // initial + invoke
     }
 
-    #[test]
-    fn data_invoke_commit_message_has_trailers() {
+    #[tokio::test]
+    async fn data_invoke_commit_message_has_trailers() {
         let (mut worker, tmp) = test_worker();
         let (key, msg, ts) = test_data_invoke(b"question", 1000);
 
-        worker.on_invoke(&key, &msg, ts);
+        worker.on_invoke(&key, &msg, ts).await;
 
         let log = git(tmp.path(), &["log", "-1", "--format=%B", "main"]).unwrap();
         assert!(log.contains("invoke: cli"), "should have invoke type line");
@@ -1776,12 +1791,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn data_invoke_directory_has_per_field_files() {
+    #[tokio::test]
+    async fn data_invoke_directory_has_per_field_files() {
         let (mut worker, tmp) = test_worker();
         let (key, msg, ts) = test_data_invoke(b"payload data", 1000);
 
-        worker.on_invoke(&key, &msg, ts);
+        worker.on_invoke(&key, &msg, ts).await;
 
         let show = |field: &str| -> String {
             let path = format!("main:{AGENT}/{SESSION}/001-cli-invoke/{field}");
@@ -1797,19 +1812,19 @@ mod tests {
         assert!(!show("hash").is_empty());
     }
 
-    #[test]
-    fn data_invoke_chains_with_complete() {
+    #[tokio::test]
+    async fn data_invoke_chains_with_complete() {
         let (mut worker, tmp) = test_worker();
 
         // Invoke
         let (key, invoke, t1) = test_data_invoke(b"question", 1000);
-        worker.on_invoke(&key, &invoke, t1);
+        worker.on_invoke(&key, &invoke, t1).await;
 
         // Complete
         let complete_key = test_complete_key(SESSION);
         let complete_msg = test_complete_msg(b"answer");
         let t2 = DateTime::from_timestamp(1001, 0).unwrap();
-        worker.on_complete(&complete_key, &complete_msg, t2);
+        worker.on_complete(&complete_key, &complete_msg, t2).await;
 
         let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
         assert_eq!(count, "3"); // initial + invoke + complete

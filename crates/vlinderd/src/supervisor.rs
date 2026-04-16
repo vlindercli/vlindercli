@@ -183,8 +183,24 @@ impl Supervisor {
         // Infra plane worker
         spawn_n!(WorkerRole::Infra, counts.infra);
 
-        // DAG git worker
-        spawn_n!(WorkerRole::DagGit, counts.dag_git);
+        // DAG git worker — GitDagWorker is !Sync (libgit2 raw pointers), so its
+        // async futures are !Send.  Run it in a blocking thread with a local
+        // single-threaded runtime.  Call run_dag_git_worker directly rather
+        // than routing through run_worker_loop, which would poison that
+        // function's future with !Send and break every other tokio::spawn.
+        for _ in 0..counts.dag_git {
+            let shutdown_clone = shutdown.clone();
+            handles.push(tokio::task::spawn_blocking(move || {
+                let config = Config::load();
+                tracing::info!(role = "dag-git", "Starting worker");
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("dag-git worker runtime")
+                    .block_on(worker_async::run_dag_git_worker(&config, shutdown_clone));
+                tracing::info!(role = "dag-git", "Worker shutdown complete");
+            }));
+        }
 
         // Session viewer
         spawn_n!(WorkerRole::SessionViewer, counts.session_viewer);

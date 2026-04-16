@@ -18,9 +18,9 @@ use vlinder_git_dag::GitDagWorker;
 // Test: checkout shows trailers and state
 // ============================================================================
 
-#[test]
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "requires vlinder daemon and NATS"]
-fn checkout_shows_trailers_and_state() {
+async fn checkout_shows_trailers_and_state() {
     let vlinder_dir = test_vlinder_dir("checkout_shows_trailers_and_state");
     let conv_dir = conversations_path(&vlinder_dir);
     let mut worker = test_conversations_worker(&vlinder_dir);
@@ -33,7 +33,7 @@ fn checkout_shows_trailers_and_state() {
         None,
         1000,
     );
-    worker.on_invoke(&key, &invoke, t1);
+    worker.on_invoke(&key, &invoke, t1).await;
 
     let (ckey, complete, t2) = make_complete(
         "d4761d76-dee4-4ebf-9df4-43b52efa4f78",
@@ -42,7 +42,7 @@ fn checkout_shows_trailers_and_state() {
         Some("state-abc123".to_string()),
         1001,
     );
-    worker.on_complete(&ckey, &complete, t2);
+    worker.on_complete(&ckey, &complete, t2).await;
 
     // HEAD is the complete commit — should have all three trailers
     let head = read_head_sha(&conv_dir).expect("HEAD should exist");
@@ -84,9 +84,9 @@ fn checkout_shows_trailers_and_state() {
 // Test: promote moves main and labels old
 // ============================================================================
 
-#[test]
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "requires vlinder daemon and NATS"]
-fn promote_moves_main_and_labels_old() {
+async fn promote_moves_main_and_labels_old() {
     let vlinder_dir = test_vlinder_dir("promote_moves_main_and_labels_old");
     let conv_dir = conversations_path(&vlinder_dir);
     let mut worker = test_conversations_worker(&vlinder_dir);
@@ -99,7 +99,7 @@ fn promote_moves_main_and_labels_old() {
         None,
         1000,
     );
-    worker.on_invoke(&key, &invoke, t1);
+    worker.on_invoke(&key, &invoke, t1).await;
     let (ckey, complete, t2) = make_complete(
         "d4761d76-dee4-4ebf-9df4-43b52efa4f78",
         "sub-1",
@@ -107,7 +107,7 @@ fn promote_moves_main_and_labels_old() {
         Some("state-1".to_string()),
         1001,
     );
-    worker.on_complete(&ckey, &complete, t2);
+    worker.on_complete(&ckey, &complete, t2).await;
 
     // Record original main SHA
     let original_main = git(&conv_dir, &["rev-parse", "main"]).expect("main should exist");
@@ -150,9 +150,9 @@ fn promote_moves_main_and_labels_old() {
 // Test: fork creates independent branch
 // ============================================================================
 
-#[test]
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "requires vlinder daemon and NATS"]
-fn fork_creates_independent_branch() {
+async fn fork_creates_independent_branch() {
     let vlinder_dir = test_vlinder_dir("fork_creates_independent_branch");
     let conv_dir = conversations_path(&vlinder_dir);
     let mut worker = test_conversations_worker(&vlinder_dir);
@@ -165,7 +165,7 @@ fn fork_creates_independent_branch() {
         None,
         1000,
     );
-    worker.on_invoke(&key, &invoke, t1);
+    worker.on_invoke(&key, &invoke, t1).await;
     let (ckey, complete, t2) = make_complete(
         "d4761d76-dee4-4ebf-9df4-43b52efa4f78",
         "sub-1",
@@ -173,7 +173,7 @@ fn fork_creates_independent_branch() {
         Some("state-1".to_string()),
         1001,
     );
-    worker.on_complete(&ckey, &complete, t2);
+    worker.on_complete(&ckey, &complete, t2).await;
 
     // Main should have 2 commits
     let main_count = git(&conv_dir, &["rev-list", "--count", "main"]).unwrap();
@@ -199,7 +199,9 @@ fn fork_creates_independent_branch() {
         Some("state-2".to_string()),
         1002,
     );
-    repair_worker.on_complete(&alt_ckey, &alt_complete, t3);
+    repair_worker
+        .on_complete(&alt_ckey, &alt_complete, t3)
+        .await;
 
     // Verify: repair-test has 2 commits (invoke + alt_complete)
     let repair_count = git(&conv_dir, &["rev-list", "--count", "repair-test"]).unwrap();
@@ -228,10 +230,10 @@ fn fork_creates_independent_branch() {
 // Test: checkout then promote full workflow
 // ============================================================================
 
-#[test]
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "requires vlinder daemon and NATS"]
 #[allow(clippy::too_many_lines)]
-fn checkout_then_promote_full_workflow() {
+async fn checkout_then_promote_full_workflow() {
     let vlinder_dir = test_vlinder_dir("checkout_then_promote_full_workflow");
     let conv_dir = conversations_path(&vlinder_dir);
     let mut worker = test_conversations_worker(&vlinder_dir);
@@ -244,7 +246,7 @@ fn checkout_then_promote_full_workflow() {
         None,
         1000,
     );
-    worker.on_invoke(&key1, &invoke1, t1);
+    worker.on_invoke(&key1, &invoke1, t1).await;
 
     let (ckey1, complete1, t2) = make_complete(
         "d4761d76-dee4-4ebf-9df4-43b52efa4f78",
@@ -253,7 +255,7 @@ fn checkout_then_promote_full_workflow() {
         Some("state-after-turn-1".to_string()),
         1001,
     );
-    worker.on_complete(&ckey1, &complete1, t2);
+    worker.on_complete(&ckey1, &complete1, t2).await;
 
     let (key2, invoke2, t3) = make_invoke(
         "d4761d76-dee4-4ebf-9df4-43b52efa4f78",
@@ -262,7 +264,7 @@ fn checkout_then_promote_full_workflow() {
         Some("state-after-turn-1".to_string()),
         1002,
     );
-    worker.on_invoke(&key2, &invoke2, t3);
+    worker.on_invoke(&key2, &invoke2, t3).await;
 
     let (ckey2, complete2, t4) = make_complete(
         "d4761d76-dee4-4ebf-9df4-43b52efa4f78",
@@ -271,7 +273,7 @@ fn checkout_then_promote_full_workflow() {
         Some("state-after-turn-2".to_string()),
         1003,
     );
-    worker.on_complete(&ckey2, &complete2, t4);
+    worker.on_complete(&ckey2, &complete2, t4).await;
 
     // Verify: main has 4 commits
     let main_count = git(&conv_dir, &["rev-list", "--count", "main"]).unwrap();
@@ -307,7 +309,9 @@ fn checkout_then_promote_full_workflow() {
         Some("state-repaired".to_string()),
         1004,
     );
-    repair_worker.on_complete(&alt_ckey, &alt_complete, t5);
+    repair_worker
+        .on_complete(&alt_ckey, &alt_complete, t5)
+        .await;
 
     // Verify: repair-branch has 3 commits (invoke1 + complete1 + alt_complete)
     let repair_count = git(&conv_dir, &["rev-list", "--count", "repair-branch"]).unwrap();
