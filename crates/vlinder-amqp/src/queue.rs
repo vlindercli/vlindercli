@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -144,10 +143,10 @@ impl AmqpQueue {
     ) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
         let mut consumer = self.get_or_create_consumer(binding).await?;
 
-        let delivery = tokio::time::timeout(Duration::from_millis(100), consumer.next())
+        let delivery = consumer
+            .next()
             .await
-            .map_err(|_| QueueError::Timeout)?
-            .ok_or(QueueError::Timeout)?
+            .ok_or_else(|| QueueError::ReceiveFailed("consumer closed".into()))?
             .map_err(|e| QueueError::ReceiveFailed(format!("consumer error: {e}")))?;
 
         let routing_key = delivery.routing_key.to_string();

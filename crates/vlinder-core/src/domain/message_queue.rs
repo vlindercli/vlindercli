@@ -18,7 +18,6 @@ use super::{
 use async_trait::async_trait;
 use std::fmt;
 use std::future::Future;
-use tokio::time::sleep;
 
 /// One-shot closure that acknowledges a received message was processed.
 pub type Acknowledgement = Box<
@@ -307,9 +306,7 @@ where
                 let _ = ack().await;
                 return Ok(reply);
             }
-            Err(QueueError::Timeout) => {
-                sleep(std::time::Duration::from_millis(1)).await;
-            }
+            Err(QueueError::Timeout) => {}
             Err(e) => return Err(e),
         }
     }
