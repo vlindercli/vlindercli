@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use async_trait::async_trait;
 use vlinder_core::domain::{ContainerId, ImageDigest, ImageRef, PodId};
 
 // ── Error type ──────────────────────────────────────────────────────
@@ -55,25 +56,26 @@ impl RunTarget<'_> {
 ///
 /// Pod-oriented: create pods, add containers to them, start/stop pods.
 /// The trait is object-safe so `ContainerRuntime` can hold a `Box<dyn PodmanClient>`.
-pub trait PodmanClient: Send {
+#[async_trait]
+pub trait PodmanClient: Send + Sync {
     /// Engine version (e.g. 4.9.3).  None if Podman is unavailable.
-    fn engine_version(&self) -> Option<semver::Version>;
+    async fn engine_version(&self) -> Option<semver::Version>;
 
     /// Return the content-addressed digest for an image.
-    fn image_digest(&self, image_ref: &ImageRef) -> Option<ImageDigest>;
+    async fn image_digest(&self, image_ref: &ImageRef) -> Option<ImageDigest>;
 
     /// Create a pod with the given name. Returns the pod ID.
     ///
     /// `host_aliases` are `hostname:ip` pairs injected into `/etc/hosts`
     /// (e.g., `["openrouter.vlinder.local:127.0.0.1"]`).
-    fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError>;
+    async fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError>;
 
     /// Create a container inside a pod. No port mapping — containers in
     /// a pod share a network namespace (like k8s).
     ///
     /// `volumes` are `(volume_name, container_path)` pairs for read-only
     /// volume mounts (ADR 107).
-    fn container_in_pod(
+    async fn container_in_pod(
         &self,
         image: RunTarget<'_>,
         pod_id: &PodId,
@@ -85,7 +87,7 @@ pub trait PodmanClient: Send {
     ///
     /// Used for S3-backed FUSE mounts (ADR 107). Options are key-value
     /// pairs passed to the volume driver (e.g., `type=fuse.s3fs`).
-    fn volume_create(
+    async fn volume_create(
         &self,
         name: &str,
         driver: &str,
@@ -93,16 +95,16 @@ pub trait PodmanClient: Send {
     ) -> Result<(), PodmanError>;
 
     /// Remove a named volume (fire-and-forget, like pod cleanup).
-    fn volume_rm(&self, name: &str);
+    async fn volume_rm(&self, name: &str);
 
     /// Check if a pod is actually running.
-    fn is_pod_live(&self, pod_id: &PodId) -> bool;
+    async fn is_pod_live(&self, pod_id: &PodId) -> bool;
 
     /// Start all containers in a pod.
-    fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError>;
+    async fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError>;
 
     /// Stop and remove a pod (all containers within it).
-    fn pod_stop_and_remove(&self, pod_id: &PodId, timeout_secs: u32);
+    async fn pod_stop_and_remove(&self, pod_id: &PodId, timeout_secs: u32);
 }
 
 // ── S3 credential helpers (ADR 107) ─────────────────────────────────
@@ -134,31 +136,30 @@ pub trait PodmanClient: Send {
 ///
 /// The file is chmod 600 — s3fs refuses to read passwd files with
 /// group/other permissions.
-pub(crate) fn write_s3_credentials(name: &str, credentials: &str) -> Result<String, String> {
+pub(crate) async fn write_s3_credentials(name: &str, credentials: &str) -> Result<String, String> {
     let path = format!("/tmp/vlinder-s3-{name}.passwd");
 
     // Try podman machine ssh (macOS with Podman Machine VM)
     let write_cmd = format!("cat > {path} && chmod 600 {path}");
-    let result = std::process::Command::new("podman")
+    let ssh_ok = if let Ok(mut child) = tokio::process::Command::new("podman")
         .args(["machine", "ssh", "--", "sh", "-c", &write_cmd])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .and_then(|mut child| {
-            if let Some(ref mut stdin) = child.stdin {
-                use std::io::Write;
-                stdin.write_all(credentials.as_bytes())?;
-            }
-            child.wait()
-        });
-
-    match result {
-        Ok(status) if status.success() => {
-            tracing::debug!(path = %path, "Wrote s3fs credentials via podman machine ssh");
-            return Ok(path);
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(credentials.as_bytes()).await;
         }
-        _ => {}
+        child.wait().await.map(|s| s.success()).unwrap_or(false)
+    } else {
+        false
+    };
+
+    if ssh_ok {
+        tracing::debug!(path = %path, "Wrote s3fs credentials via podman machine ssh");
+        return Ok(path);
     }
 
     // Fallback: direct write (Linux, no VM)
@@ -175,13 +176,14 @@ pub(crate) fn write_s3_credentials(name: &str, credentials: &str) -> Result<Stri
 }
 
 /// Remove an s3fs credentials file (fire-and-forget).
-pub(crate) fn remove_s3_credentials(name: &str) {
+pub(crate) async fn remove_s3_credentials(name: &str) {
     let path = format!("/tmp/vlinder-s3-{name}.passwd");
 
     // Try podman machine ssh (macOS)
-    let _ = std::process::Command::new("podman")
+    let _ = tokio::process::Command::new("podman")
         .args(["machine", "ssh", "--", "rm", "-f", &path])
-        .output();
+        .output()
+        .await;
 
     // Also try local (Linux) — no-op if file doesn't exist
     let _ = std::fs::remove_file(&path);

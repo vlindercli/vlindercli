@@ -153,7 +153,7 @@ pub async fn run_agent_container_worker(config: &Config, shutdown: CancellationT
         Box::new(vlinder_podman_runtime::PodmanCliClient)
     };
 
-    let engine_version = podman.engine_version();
+    let engine_version = podman.engine_version().await;
     if let Some(ref v) = engine_version {
         tracing::info!(event = "podman.detected", version = %v, "Podman engine detected");
     } else {
@@ -173,6 +173,8 @@ pub async fn run_agent_container_worker(config: &Config, shutdown: CancellationT
             () = shutdown.cancelled() => break,
         }
     }
+
+    runtime.shutdown().await;
 }
 
 #[allow(clippy::too_many_lines)]

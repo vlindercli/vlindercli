@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request};
@@ -36,119 +37,101 @@ impl PodmanApiClient {
 
 // ── Podman trait implementation ──────────────────────────────────────
 
+#[async_trait]
 impl PodmanClient for PodmanApiClient {
-    fn engine_version(&self) -> Option<semver::Version> {
-        // block_in_place bridge — removed when PodmanClient trait goes async (step 06)
-        let client = self.client.clone();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let req = Request::builder()
-                    .method(Method::GET)
-                    .uri("http://localhost/version")
-                    .body(Full::new(Bytes::new()))
-                    .ok()?;
-                let resp = client.request(req).await.ok()?;
-                if resp.status().as_u16() != 200 {
-                    return None;
-                }
-                let bytes = resp.into_body().collect().await.ok()?.to_bytes();
-                let body: VersionResponse = serde_json::from_slice(&bytes).ok()?;
-                semver::Version::parse(&body.version).ok()
-            })
-        })
+    async fn engine_version(&self) -> Option<semver::Version> {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("http://localhost/version")
+            .body(Full::new(Bytes::new()))
+            .ok()?;
+        let resp = self.client.request(req).await.ok()?;
+        if resp.status().as_u16() != 200 {
+            return None;
+        }
+        let bytes = resp.into_body().collect().await.ok()?.to_bytes();
+        let body: VersionResponse = serde_json::from_slice(&bytes).ok()?;
+        semver::Version::parse(&body.version).ok()
     }
 
-    fn image_digest(&self, image_ref: &ImageRef) -> Option<ImageDigest> {
-        // block_in_place bridge — removed when PodmanClient trait goes async (step 06)
-        let client = self.client.clone();
+    async fn image_digest(&self, image_ref: &ImageRef) -> Option<ImageDigest> {
         let encoded = url_encode(image_ref.as_str());
         let url = format!("{API_BASE}/images/{encoded}/json");
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let req = Request::builder()
-                    .method(Method::GET)
-                    .uri(url)
-                    .body(Full::new(Bytes::new()))
-                    .ok()?;
-                let resp = client.request(req).await.ok()?;
-                if resp.status().as_u16() != 200 {
-                    return None;
-                }
-                let bytes = resp.into_body().collect().await.ok()?.to_bytes();
-                let body: ImageInspect = serde_json::from_slice(&bytes).ok()?;
-                ImageDigest::parse(body.digest).ok()
-            })
-        })
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(url)
+            .body(Full::new(Bytes::new()))
+            .ok()?;
+        let resp = self.client.request(req).await.ok()?;
+        if resp.status().as_u16() != 200 {
+            return None;
+        }
+        let bytes = resp.into_body().collect().await.ok()?.to_bytes();
+        let body: ImageInspect = serde_json::from_slice(&bytes).ok()?;
+        ImageDigest::parse(body.digest).ok()
     }
 
     // ── Pod operations ────────────────────────────────────────────────
 
-    fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError> {
-        // block_in_place bridge — removed when PodmanClient trait goes async (step 06)
-        let client = self.client.clone();
-        let name = name.to_string();
-        let host_aliases = host_aliases.to_vec();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let url = format!("{API_BASE}/pods/create");
-                let hostadd = if host_aliases.is_empty() {
-                    None
-                } else {
-                    Some(host_aliases)
-                };
-                let spec = PodCreateSpec { name, hostadd };
-                let json_bytes = serde_json::to_vec(&spec)
-                    .map_err(|e| PodmanError::Run(format!("pod create failed: {e}")))?;
+    async fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError> {
+        let url = format!("{API_BASE}/pods/create");
+        let hostadd = if host_aliases.is_empty() {
+            None
+        } else {
+            Some(host_aliases.to_vec())
+        };
+        let spec = PodCreateSpec {
+            name: name.to_string(),
+            hostadd,
+        };
+        let json_bytes = serde_json::to_vec(&spec)
+            .map_err(|e| PodmanError::Run(format!("pod create failed: {e}")))?;
 
-                let req = Request::builder()
-                    .method(Method::POST)
-                    .uri(url)
-                    .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json_bytes)))
-                    .map_err(|e| PodmanError::Run(e.to_string()))?;
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(json_bytes)))
+            .map_err(|e| PodmanError::Run(e.to_string()))?;
 
-                let resp = client
-                    .request(req)
-                    .await
-                    .map_err(|e| PodmanError::Run(format!("pod create failed: {e}")))?;
+        let resp = self
+            .client
+            .request(req)
+            .await
+            .map_err(|e| PodmanError::Run(format!("pod create failed: {e}")))?;
 
-                let status = resp.status().as_u16();
-                if status != 200 && status != 201 {
-                    let bytes = resp
-                        .into_body()
-                        .collect()
-                        .await
-                        .map(http_body_util::Collected::to_bytes)
-                        .unwrap_or_default();
-                    let body = String::from_utf8_lossy(&bytes).into_owned();
-                    return Err(PodmanError::Run(format!(
-                        "pod create HTTP {status}: {body}"
-                    )));
-                }
+        let status = resp.status().as_u16();
+        if status != 200 && status != 201 {
+            let bytes = resp
+                .into_body()
+                .collect()
+                .await
+                .map(http_body_util::Collected::to_bytes)
+                .unwrap_or_default();
+            let body = String::from_utf8_lossy(&bytes).into_owned();
+            return Err(PodmanError::Run(format!(
+                "pod create HTTP {status}: {body}"
+            )));
+        }
 
-                let bytes = resp
-                    .into_body()
-                    .collect()
-                    .await
-                    .map_err(|e| PodmanError::Run(e.to_string()))?
-                    .to_bytes();
-                let created: PodCreateResponse = serde_json::from_slice(&bytes).map_err(|e| {
-                    PodmanError::Run(format!("failed to parse pod create response: {e}"))
-                })?;
-                Ok(PodId::new(created.id))
-            })
-        })
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| PodmanError::Run(e.to_string()))?
+            .to_bytes();
+        let created: PodCreateResponse = serde_json::from_slice(&bytes)
+            .map_err(|e| PodmanError::Run(format!("failed to parse pod create response: {e}")))?;
+        Ok(PodId::new(created.id))
     }
 
-    fn container_in_pod(
+    async fn container_in_pod(
         &self,
         image: RunTarget<'_>,
         pod_id: &PodId,
         env_vars: &[(&str, &str)],
         volumes: &[(&str, &str)],
     ) -> Result<ContainerId, PodmanError> {
-        // block_in_place bridge — removed when PodmanClient trait goes async (step 06)
-        let client = self.client.clone();
         let env: HashMap<String, String> = env_vars
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -174,61 +157,55 @@ impl PodmanClient for PodmanApiClient {
             },
         };
 
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let url = format!("{API_BASE}/containers/create");
-                let json_bytes = serde_json::to_vec(&spec).map_err(|e| {
-                    PodmanError::Run(format!("container create in pod failed: {e}"))
-                })?;
+        let url = format!("{API_BASE}/containers/create");
+        let json_bytes = serde_json::to_vec(&spec)
+            .map_err(|e| PodmanError::Run(format!("container create in pod failed: {e}")))?;
 
-                let req = Request::builder()
-                    .method(Method::POST)
-                    .uri(url)
-                    .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json_bytes)))
-                    .map_err(|e| PodmanError::Run(e.to_string()))?;
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(json_bytes)))
+            .map_err(|e| PodmanError::Run(e.to_string()))?;
 
-                let resp = client.request(req).await.map_err(|e| {
-                    PodmanError::Run(format!("container create in pod failed: {e}"))
-                })?;
+        let resp = self
+            .client
+            .request(req)
+            .await
+            .map_err(|e| PodmanError::Run(format!("container create in pod failed: {e}")))?;
 
-                let status = resp.status().as_u16();
-                if status != 201 {
-                    let bytes = resp
-                        .into_body()
-                        .collect()
-                        .await
-                        .map(http_body_util::Collected::to_bytes)
-                        .unwrap_or_default();
-                    let body = String::from_utf8_lossy(&bytes).into_owned();
-                    return Err(PodmanError::Run(format!(
-                        "container create in pod HTTP {status}: {body}"
-                    )));
-                }
+        let status = resp.status().as_u16();
+        if status != 201 {
+            let bytes = resp
+                .into_body()
+                .collect()
+                .await
+                .map(http_body_util::Collected::to_bytes)
+                .unwrap_or_default();
+            let body = String::from_utf8_lossy(&bytes).into_owned();
+            return Err(PodmanError::Run(format!(
+                "container create in pod HTTP {status}: {body}"
+            )));
+        }
 
-                let bytes = resp
-                    .into_body()
-                    .collect()
-                    .await
-                    .map_err(|e| PodmanError::Run(e.to_string()))?
-                    .to_bytes();
-                let created: ContainerCreateResponse =
-                    serde_json::from_slice(&bytes).map_err(|e| {
-                        PodmanError::Run(format!("failed to parse container create response: {e}"))
-                    })?;
-                Ok(ContainerId::new(created.id))
-            })
-        })
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| PodmanError::Run(e.to_string()))?
+            .to_bytes();
+        let created: ContainerCreateResponse = serde_json::from_slice(&bytes).map_err(|e| {
+            PodmanError::Run(format!("failed to parse container create response: {e}"))
+        })?;
+        Ok(ContainerId::new(created.id))
     }
 
-    fn volume_create(
+    async fn volume_create(
         &self,
         name: &str,
         driver: &str,
         options: &[(&str, &str)],
     ) -> Result<(), PodmanError> {
-        // block_in_place bridge — removed when PodmanClient trait goes async (step 06)
-        let client = self.client.clone();
         let driver_opts: HashMap<String, String> = options
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -243,131 +220,108 @@ impl PodmanClient for PodmanApiClient {
             },
         };
 
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let url = format!("{API_BASE}/volumes/create");
-                let json_bytes = serde_json::to_vec(&spec)
-                    .map_err(|e| PodmanError::Run(format!("volume create failed: {e}")))?;
+        let url = format!("{API_BASE}/volumes/create");
+        let json_bytes = serde_json::to_vec(&spec)
+            .map_err(|e| PodmanError::Run(format!("volume create failed: {e}")))?;
 
-                let req = Request::builder()
-                    .method(Method::POST)
-                    .uri(url)
-                    .header("content-type", "application/json")
-                    .body(Full::new(Bytes::from(json_bytes)))
-                    .map_err(|e| PodmanError::Run(e.to_string()))?;
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(json_bytes)))
+            .map_err(|e| PodmanError::Run(e.to_string()))?;
 
-                let resp = client
-                    .request(req)
-                    .await
-                    .map_err(|e| PodmanError::Run(format!("volume create failed: {e}")))?;
+        let resp = self
+            .client
+            .request(req)
+            .await
+            .map_err(|e| PodmanError::Run(format!("volume create failed: {e}")))?;
 
-                let status = resp.status().as_u16();
-                if status != 201 {
-                    let bytes = resp
-                        .into_body()
-                        .collect()
-                        .await
-                        .map(http_body_util::Collected::to_bytes)
-                        .unwrap_or_default();
-                    let body = String::from_utf8_lossy(&bytes).into_owned();
-                    return Err(PodmanError::Run(format!(
-                        "volume create HTTP {status}: {body}"
-                    )));
-                }
+        let status = resp.status().as_u16();
+        if status != 201 {
+            let bytes = resp
+                .into_body()
+                .collect()
+                .await
+                .map(http_body_util::Collected::to_bytes)
+                .unwrap_or_default();
+            let body = String::from_utf8_lossy(&bytes).into_owned();
+            return Err(PodmanError::Run(format!(
+                "volume create HTTP {status}: {body}"
+            )));
+        }
 
-                Ok(())
-            })
-        })
+        Ok(())
     }
 
-    fn volume_rm(&self, name: &str) {
-        // block_in_place bridge — removed when PodmanClient trait goes async (step 06)
-        let client = self.client.clone();
+    async fn volume_rm(&self, name: &str) {
         let url = format!("{API_BASE}/volumes/{name}?force=true");
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let req = Request::builder()
-                    .method(Method::DELETE)
-                    .uri(url)
-                    .body(Full::new(Bytes::new()))
-                    .expect("valid delete request");
-                client.request(req).await.ok();
-            });
-        });
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri(url)
+            .body(Full::new(Bytes::new()))
+            .expect("valid delete request");
+        self.client.request(req).await.ok();
     }
 
-    fn is_pod_live(&self, pod_id: &PodId) -> bool {
-        // block_in_place bridge — removed when PodmanClient trait goes async (step 06)
-        let client = self.client.clone();
+    async fn is_pod_live(&self, pod_id: &PodId) -> bool {
         let url = format!("{API_BASE}/pods/{}/json", pod_id.as_str());
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let req = Request::builder()
-                    .method(Method::GET)
-                    .uri(url)
-                    .body(Full::new(Bytes::new()))
-                    .ok()?;
-                let resp = client.request(req).await.ok()?;
-                let bytes = resp.into_body().collect().await.ok()?.to_bytes();
-                let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-                v.get("State")?.as_str().map(|s| s == "Running")
-            })
-        })
-        .unwrap_or(false)
+        let inner = async {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(url)
+                .body(Full::new(Bytes::new()))
+                .ok()?;
+            let resp = self.client.request(req).await.ok()?;
+            let bytes = resp.into_body().collect().await.ok()?.to_bytes();
+            let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            v.get("State")?.as_str().map(|s| s == "Running")
+        };
+        inner.await.unwrap_or(false)
     }
 
-    fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {
-        // block_in_place bridge — removed when PodmanClient trait goes async (step 06)
-        let client = self.client.clone();
+    async fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {
         let url = format!("{API_BASE}/pods/{}/start", pod_id.as_str());
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let req = Request::builder()
-                    .method(Method::POST)
-                    .uri(url)
-                    .header("content-type", "application/json")
-                    .body(Full::new(Bytes::new()))
-                    .map_err(|e| PodmanError::Run(e.to_string()))?;
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| PodmanError::Run(e.to_string()))?;
 
-                let resp = client
-                    .request(req)
-                    .await
-                    .map_err(|e| PodmanError::Run(format!("pod start failed: {e}")))?;
+        let resp = self
+            .client
+            .request(req)
+            .await
+            .map_err(|e| PodmanError::Run(format!("pod start failed: {e}")))?;
 
-                let status = resp.status().as_u16();
-                if status != 200 && status != 204 && status != 304 {
-                    return Err(PodmanError::Run(format!("pod start HTTP {status}")));
-                }
-                Ok(())
-            })
-        })
+        let status = resp.status().as_u16();
+        if status != 200 && status != 204 && status != 304 {
+            return Err(PodmanError::Run(format!("pod start HTTP {status}")));
+        }
+        Ok(())
     }
 
-    fn pod_stop_and_remove(&self, pod_id: &PodId, timeout_secs: u32) {
-        // block_in_place bridge — removed when PodmanClient trait goes async (step 06)
-        let client = self.client.clone();
-        let id = pod_id.as_str().to_string();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                // Stop — fire and forget
-                let stop_url = format!("{API_BASE}/pods/{id}/stop?t={timeout_secs}");
-                let req = Request::builder()
-                    .method(Method::POST)
-                    .uri(stop_url)
-                    .body(Full::new(Bytes::new()))
-                    .expect("valid stop request");
-                client.request(req).await.ok();
+    async fn pod_stop_and_remove(&self, pod_id: &PodId, timeout_secs: u32) {
+        let id = pod_id.as_str();
 
-                // Remove with force — fire and forget
-                let rm_url = format!("{API_BASE}/pods/{id}?force=true");
-                let req = Request::builder()
-                    .method(Method::DELETE)
-                    .uri(rm_url)
-                    .body(Full::new(Bytes::new()))
-                    .expect("valid delete request");
-                client.request(req).await.ok();
-            });
-        });
+        // Stop — fire and forget
+        let stop_url = format!("{API_BASE}/pods/{id}/stop?t={timeout_secs}");
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(stop_url)
+            .body(Full::new(Bytes::new()))
+            .expect("valid stop request");
+        self.client.request(req).await.ok();
+
+        // Remove with force — fire and forget
+        let rm_url = format!("{API_BASE}/pods/{id}?force=true");
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri(rm_url)
+            .body(Full::new(Bytes::new()))
+            .expect("valid delete request");
+        self.client.request(req).await.ok();
     }
 }
 
