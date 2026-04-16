@@ -5220,14 +5220,18 @@ name = "vlinder-podman-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bytes",
  "dirs",
+ "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
  "semver",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tower-service",
  "tracing",
- "ureq 3.2.0",
  "vlinder-core",
 ]
 
