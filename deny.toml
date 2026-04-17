@@ -15,6 +15,13 @@ unmaintained = "workspace"
 id = "RUSTSEC-2026-0049"
 reason = "Transitive dep from AWS SDK's rustls 0.21 — can't upgrade until aws-smithy-http-client drops rustls 0.21"
 
+# rand 0.10.0 unsound with custom logger using rand::rng().
+# Flagged 2026-04-09. Transitive dep via lapin → amq-protocol → tcp-stream → p12-keystore.
+# Blocked until lapin publishes a release with an updated amq-protocol.
+[[advisories.ignore]]
+id = "RUSTSEC-2026-0097"
+reason = "Transitive dep via lapin; waiting on lapin to bump amq-protocol's rand dependency"
+
 [licenses]
 # Allow only permissive licenses
 allow = [
