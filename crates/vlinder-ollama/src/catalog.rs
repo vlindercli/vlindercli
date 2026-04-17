@@ -79,14 +79,11 @@ impl ModelCatalog for OllamaCatalog {
     }
 
     async fn available(&self, name: &str) -> bool {
-        self.list()
-            .await
-            .map(|models| {
-                models
-                    .iter()
-                    .any(|m| m.name == name || m.name.starts_with(&format!("{name}:")))
-            })
-            .unwrap_or(false)
+        self.list().await.is_ok_and(|models| {
+            models
+                .iter()
+                .any(|m| m.name == name || m.name.starts_with(&format!("{name}:")))
+        })
     }
 }
 

@@ -81,7 +81,7 @@ pub async fn wait_for_ready(
     agent_name: &str,
 ) -> Result<(), String> {
     let url = format!("http://127.0.0.1:{port}/health");
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
 
     tracing::info!(
         event = "sidecar.waiting",

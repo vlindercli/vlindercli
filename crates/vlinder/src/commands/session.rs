@@ -95,8 +95,7 @@ async fn list(agent_name: &str) {
         let branch_count = store
             .get_branches_for_session(&s.session_id)
             .await
-            .map(|b| b.len())
-            .unwrap_or(0);
+            .map_or(0, |b| b.len());
         println!(
             "{:<28} {:<40} {:<24} {:>8}",
             name,

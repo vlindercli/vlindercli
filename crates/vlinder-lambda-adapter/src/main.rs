@@ -213,7 +213,7 @@ fn register_extension(runtime_api: &str) {
 /// Block until the agent's health endpoint responds (up to 60s).
 async fn wait_for_agent(http: &ureq::Agent, port: u16) -> Result<(), String> {
     let url = format!("http://127.0.0.1:{port}/health");
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
 
     tracing::info!(
         event = "adapter.waiting",

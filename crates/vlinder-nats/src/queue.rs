@@ -58,8 +58,8 @@ impl NatsQueue {
             name: "VLINDER".to_string(),
             subjects: vec!["vlinder.>".to_string()],
             retention: stream::RetentionPolicy::Limits,
-            max_age: Duration::from_secs(7 * 24 * 60 * 60), // 7 days
-            max_bytes: 100 * 1024 * 1024,                   // 100 MiB — required by NGS
+            max_age: Duration::from_hours(7 * 24),
+            max_bytes: 100 * 1024 * 1024, // 100 MiB — required by NGS
             ..Default::default()
         };
 
@@ -110,8 +110,8 @@ impl NatsQueue {
             .create_consumer(consumer::pull::Config {
                 name: Some(name),
                 filter_subject: filter.to_string(),
-                ack_wait: Duration::from_secs(300),
-                inactive_threshold: Duration::from_secs(300),
+                ack_wait: Duration::from_mins(5),
+                inactive_threshold: Duration::from_mins(5),
                 ..Default::default()
             })
             .await
@@ -656,7 +656,7 @@ fn complete_subject(
     agent: &AgentName,
     harness: HarnessType,
 ) -> String {
-    format!("{COMPLETE_PREFIX}.{session}.{branch}.{submission}.{COMPLETE_KIND}.{agent}.{harness}",)
+    format!("{COMPLETE_PREFIX}.{session}.{branch}.{submission}.{COMPLETE_KIND}.{agent}.{harness}")
 }
 
 /// Parse a NATS subject back into a `DataRoutingKey` for complete.

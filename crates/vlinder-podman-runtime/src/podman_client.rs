@@ -152,7 +152,7 @@ pub(crate) async fn write_s3_credentials(name: &str, credentials: &str) -> Resul
             use tokio::io::AsyncWriteExt;
             let _ = stdin.write_all(credentials.as_bytes()).await;
         }
-        child.wait().await.map(|s| s.success()).unwrap_or(false)
+        child.wait().await.is_ok_and(|s| s.success())
     } else {
         false
     };

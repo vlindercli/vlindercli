@@ -208,7 +208,7 @@ async fn render_index(store: &dyn DagStore) -> String {
 
     html_page(
         "Vlinder Sessions",
-        &format!("<h1>Sessions</h1>\n<ul class=\"session-list\">\n{items}</ul>",),
+        &format!("<h1>Sessions</h1>\n<ul class=\"session-list\">\n{items}</ul>"),
     )
 }
 

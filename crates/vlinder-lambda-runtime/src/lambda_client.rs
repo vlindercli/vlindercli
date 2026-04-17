@@ -87,7 +87,7 @@ pub(crate) trait LambdaClient: Send + Sync {
 
     /// Wait until the function state is `Active`. Polls every 5s, up to 15 min.
     async fn wait_for_active(&self, function_name: &str) -> Result<(), LambdaError> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(900);
+        let deadline = std::time::Instant::now() + Duration::from_mins(15);
         loop {
             if std::time::Instant::now() > deadline {
                 return Err(LambdaError::Aws(format!(

@@ -83,8 +83,7 @@ impl ModelCatalog for OpenRouterCatalog {
     async fn available(&self, name: &str) -> bool {
         self.list()
             .await
-            .map(|models| models.iter().any(|m| m.name == name))
-            .unwrap_or(false)
+            .is_ok_and(|models| models.iter().any(|m| m.name == name))
     }
 }
 
