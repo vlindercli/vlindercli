@@ -155,7 +155,10 @@ impl NatsQueue {
         let mut messages = consumer
             .fetch()
             .max_messages(1)
-            .expires(Duration::from_millis(100))
+            // 30s long-poll: safe because every caller is a dedicated task racing
+            // receive against a cancel token (no multi-filter serialization).
+            // See steps 07-11 of the async-cascade refactor.
+            .expires(Duration::from_secs(30))
             .messages()
             .await
             .map_err(|e| QueueError::ReceiveFailed(e.to_string()))?;
