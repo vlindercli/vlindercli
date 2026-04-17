@@ -1,5 +1,6 @@
 //! gRPC client implementing the `DagStore` trait.
 
+use async_trait::async_trait;
 use tonic::transport::Channel;
 
 use super::proto::{self, state_service_client::StateServiceClient};
@@ -8,51 +9,35 @@ use vlinder_core::domain::{Branch, BranchId, DagNode, DagNodeId, DagStore};
 /// `DagStore` implementation that makes gRPC calls to a remote State Service.
 pub struct GrpcStateClient {
     client: StateServiceClient<Channel>,
-    runtime: tokio::runtime::Runtime,
 }
 
 impl GrpcStateClient {
-    /// Connect to a state service server.
-    pub fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let runtime = tokio::runtime::Runtime::new()?;
-        let client =
-            runtime.block_on(async { StateServiceClient::connect(addr.to_string()).await })?;
-
-        Ok(Self { client, runtime })
+    /// Connect from within an existing async runtime.
+    pub async fn connect_async(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let client = StateServiceClient::connect(addr.to_string()).await?;
+        Ok(Self { client })
     }
 }
 
-/// Ping a state service at the given address, returning its protocol version.
-///
-/// Creates a temporary connection and sends a Ping. Returns the server's
-/// version on success, None on any connection or transport error.
-pub fn ping_state_service(addr: &str) -> Option<(u32, u32, u32)> {
-    let Ok(runtime) = tokio::runtime::Runtime::new() else {
+pub async fn ping_state_service_async(addr: &str) -> Option<(u32, u32, u32)> {
+    let Ok(mut client) = StateServiceClient::connect(addr.to_string()).await else {
         return None;
     };
-
-    runtime.block_on(async {
-        let Ok(mut client) = StateServiceClient::connect(addr.to_string()).await else {
-            return None;
-        };
-        client.ping(proto::PingRequest {}).await.ok().map(|r| {
-            let v = r.into_inner();
-            (v.major, v.minor, v.patch)
-        })
+    client.ping(proto::PingRequest {}).await.ok().map(|r| {
+        let v = r.into_inner();
+        (v.major, v.minor, v.patch)
     })
 }
 
+#[async_trait]
 impl DagStore for GrpcStateClient {
-    fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
+    async fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
         let request = proto::GetNodeRequest {
             hash: hash.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_node(request).await })
-            .map_err(|e| e.to_string())?;
+        let response = client.get_node(request).await.map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
             Some(proto_node) => {
@@ -63,7 +48,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_session_nodes(
+    async fn get_session_nodes(
         &self,
         session_id: &vlinder_core::domain::SessionId,
     ) -> Result<Vec<DagNode>, String> {
@@ -72,9 +57,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_session_nodes(request).await })
+        let response = client
+            .get_session_nodes(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         response
@@ -85,15 +70,15 @@ impl DagStore for GrpcStateClient {
             .collect()
     }
 
-    fn get_children(&self, parent_hash: &DagNodeId) -> Result<Vec<DagNode>, String> {
+    async fn get_children(&self, parent_hash: &DagNodeId) -> Result<Vec<DagNode>, String> {
         let request = proto::GetChildrenRequest {
             parent_hash: parent_hash.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_children(request).await })
+        let response = client
+            .get_children(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         response
@@ -108,7 +93,7 @@ impl DagStore for GrpcStateClient {
     // Branch methods
     // -------------------------------------------------------------------------
 
-    fn create_branch(
+    async fn create_branch(
         &self,
         name: &str,
         session_id: &vlinder_core::domain::SessionId,
@@ -120,21 +105,21 @@ impl DagStore for GrpcStateClient {
             fork_point: fork_point.map(std::string::ToString::to_string),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.create_branch(request).await })
+        let response = client
+            .create_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
         Ok(BranchId::from(response.into_inner().id))
     }
 
-    fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String> {
+    async fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String> {
         let request = proto::GetBranchByNameRequest {
             name: name.to_string(),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_branch_by_name(request).await })
+        let response = client
+            .get_branch_by_name(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().branch {
@@ -143,12 +128,12 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_branch(&self, id: BranchId) -> Result<Option<Branch>, String> {
+    async fn get_branch(&self, id: BranchId) -> Result<Option<Branch>, String> {
         let request = proto::GetBranchByIdRequest { id: id.as_i64() };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_branch(request).await })
+        let response = client
+            .get_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().branch {
@@ -157,11 +142,11 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn list_sessions(&self) -> Result<Vec<vlinder_core::domain::SessionSummary>, String> {
+    async fn list_sessions(&self) -> Result<Vec<vlinder_core::domain::SessionSummary>, String> {
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_sessions(proto::ListSessionsRequest {}).await })
+        let response = client
+            .list_sessions(proto::ListSessionsRequest {})
+            .await
             .map_err(|e| e.to_string())?;
 
         response
@@ -172,15 +157,15 @@ impl DagStore for GrpcStateClient {
             .collect()
     }
 
-    fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
+    async fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
         let request = proto::GetNodesBySubmissionRequest {
             submission_id: submission_id.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_nodes_by_submission(request).await })
+        let response = client
+            .get_nodes_by_submission(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         response
@@ -191,7 +176,7 @@ impl DagStore for GrpcStateClient {
             .collect()
     }
 
-    fn insert_invoke_node(
+    async fn insert_invoke_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -235,9 +220,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_invoke_node(request).await })
+        let response = client
+            .insert_invoke_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -248,7 +233,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn insert_complete_node(
+    async fn insert_complete_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -281,9 +266,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_complete_node(request).await })
+        let response = client
+            .insert_complete_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -294,7 +279,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_complete_node(
+    async fn get_complete_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::CompleteMessage>, String> {
@@ -303,9 +288,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_complete_node(request).await })
+        let response = client
+            .get_complete_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
@@ -326,7 +311,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_request_node(
+    async fn get_request_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::RequestMessage>, String> {
@@ -335,9 +320,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_request_node(request).await })
+        let response = client
+            .get_request_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
@@ -364,7 +349,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_response_node(
+    async fn get_response_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::ResponseMessage>, String> {
@@ -373,9 +358,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_response_node(request).await })
+        let response = client
+            .get_response_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
@@ -406,7 +391,7 @@ impl DagStore for GrpcStateClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_request_node(
+    async fn insert_request_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -444,9 +429,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_request_node(request).await })
+        let response = client
+            .insert_request_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -458,7 +443,7 @@ impl DagStore for GrpcStateClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_response_node(
+    async fn insert_response_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -498,9 +483,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_response_node(request).await })
+        let response = client
+            .insert_response_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -511,7 +496,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn insert_fork_node(
+    async fn insert_fork_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -542,9 +527,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_fork_node(request).await })
+        let response = client
+            .insert_fork_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -555,7 +540,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn insert_promote_node(
+    async fn insert_promote_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -587,9 +572,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_promote_node(request).await })
+        let response = client
+            .insert_promote_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -600,7 +585,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn insert_deploy_agent_node(
+    async fn insert_deploy_agent_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -626,9 +611,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_deploy_agent_node(request).await })
+        let response = client
+            .insert_deploy_agent_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -639,7 +624,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn insert_delete_agent_node(
+    async fn insert_delete_agent_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -662,9 +647,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.insert_delete_agent_node(request).await })
+        let response = client
+            .insert_delete_agent_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         let resp = response.into_inner();
@@ -675,7 +660,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_invoke_node(
+    async fn get_invoke_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<
@@ -690,9 +675,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_invoke_node(request).await })
+        let response = client
+            .get_invoke_node(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
@@ -731,15 +716,15 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
+    async fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
         let request = proto::GetNodeByPrefixRequest {
             prefix: prefix.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_node_by_prefix(request).await })
+        let response = client
+            .get_node_by_prefix(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
@@ -748,7 +733,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_branches_for_session(
+    async fn get_branches_for_session(
         &self,
         session_id: &vlinder_core::domain::SessionId,
     ) -> Result<Vec<Branch>, String> {
@@ -757,9 +742,9 @@ impl DagStore for GrpcStateClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_branches_for_session(request).await })
+        let response = client
+            .get_branches_for_session(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         response
@@ -770,7 +755,7 @@ impl DagStore for GrpcStateClient {
             .collect()
     }
 
-    fn latest_node_on_branch(
+    async fn latest_node_on_branch(
         &self,
         branch_id: BranchId,
         message_type: Option<vlinder_core::domain::MessageType>,
@@ -780,9 +765,9 @@ impl DagStore for GrpcStateClient {
             message_type: message_type.map(|mt| mt.as_str().to_string()),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.latest_node_on_branch(request).await })
+        let response = client
+            .latest_node_on_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
 
         match response.into_inner().node {
@@ -791,7 +776,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn rename_branch(
+    async fn rename_branch(
         &self,
         id: vlinder_core::domain::BranchId,
         new_name: &str,
@@ -801,9 +786,9 @@ impl DagStore for GrpcStateClient {
             new_name: new_name.to_string(),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.rename_branch(request).await })
+        let response = client
+            .rename_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         if resp.success {
@@ -813,7 +798,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn seal_branch(
+    async fn seal_branch(
         &self,
         id: vlinder_core::domain::BranchId,
         broken_at: chrono::DateTime<chrono::Utc>,
@@ -823,9 +808,9 @@ impl DagStore for GrpcStateClient {
             broken_at: broken_at.to_rfc3339(),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.seal_branch(request).await })
+        let response = client
+            .seal_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         if resp.success {
@@ -835,7 +820,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn update_session_default_branch(
+    async fn update_session_default_branch(
         &self,
         session_id: &vlinder_core::domain::SessionId,
         branch_id: vlinder_core::domain::BranchId,
@@ -845,9 +830,9 @@ impl DagStore for GrpcStateClient {
             branch_id: branch_id.as_i64(),
         };
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.update_session_default_branch(request).await })
+        let response = client
+            .update_session_default_branch(request)
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         if resp.success {
@@ -857,7 +842,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn create_session(&self, session: &vlinder_core::domain::Session) -> Result<(), String> {
+    async fn create_session(&self, session: &vlinder_core::domain::Session) -> Result<(), String> {
         let mut client = self.client.clone();
         let req = proto::CreateSessionRequest {
             session: Some(proto::SessionProto {
@@ -868,9 +853,9 @@ impl DagStore for GrpcStateClient {
                 created_at: session.created_at.to_rfc3339(),
             }),
         };
-        let resp = self
-            .runtime
-            .block_on(async { client.create_session(req).await })
+        let resp = client
+            .create_session(req)
+            .await
             .map_err(|e| e.to_string())?
             .into_inner();
         if resp.success {
@@ -880,7 +865,7 @@ impl DagStore for GrpcStateClient {
         }
     }
 
-    fn get_session(
+    async fn get_session(
         &self,
         session_id: &vlinder_core::domain::SessionId,
     ) -> Result<Option<vlinder_core::domain::Session>, String> {
@@ -888,15 +873,15 @@ impl DagStore for GrpcStateClient {
         let req = proto::GetSessionRequest {
             session_id: session_id.as_str().to_string(),
         };
-        let resp = self
-            .runtime
-            .block_on(async { client.get_session(req).await })
+        let resp = client
+            .get_session(req)
+            .await
             .map_err(|e| e.to_string())?
             .into_inner();
         resp.session.map(proto_to_session).transpose()
     }
 
-    fn get_session_by_name(
+    async fn get_session_by_name(
         &self,
         name: &str,
     ) -> Result<Option<vlinder_core::domain::Session>, String> {
@@ -904,9 +889,9 @@ impl DagStore for GrpcStateClient {
         let req = proto::GetSessionByNameRequest {
             name: name.to_string(),
         };
-        let resp = self
-            .runtime
-            .block_on(async { client.get_session_by_name(req).await })
+        let resp = client
+            .get_session_by_name(req)
+            .await
             .map_err(|e| e.to_string())?
             .into_inner();
         resp.session.map(proto_to_session).transpose()

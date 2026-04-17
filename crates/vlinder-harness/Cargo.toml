@@ -11,6 +11,7 @@ server = ["tonic/server", "tonic/router"]
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
+async-trait = "0.1"
 tonic = { version = "0.12", default-features = false, features = ["channel", "codegen", "prost", "transport", "tls", "tls-roots"] }
 prost = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }

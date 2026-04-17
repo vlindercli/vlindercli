@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
@@ -206,9 +207,10 @@ pub struct Branch {
 ///
 /// Git is one implementation (`GitDagWorker`). Any backend that can
 /// preserve the chronological message stream would implement this.
+#[async_trait(?Send)]
 pub trait DagWorker: Send {
     /// Persist an invoke message (data-plane path, ADR 121).
-    fn on_invoke(
+    async fn on_invoke(
         &mut self,
         _key: &super::DataRoutingKey,
         _msg: &super::InvokeMessage,
@@ -218,7 +220,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a request message (data-plane path, ADR 121).
-    fn on_request(
+    async fn on_request(
         &mut self,
         _key: &super::DataRoutingKey,
         _msg: &super::RequestMessage,
@@ -227,7 +229,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a response message (data-plane path, ADR 121).
-    fn on_response(
+    async fn on_response(
         &mut self,
         _key: &super::DataRoutingKey,
         _msg: &super::ResponseMessage,
@@ -236,7 +238,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a complete message (data-plane path, ADR 121).
-    fn on_complete(
+    async fn on_complete(
         &mut self,
         _key: &super::DataRoutingKey,
         _msg: &super::CompleteMessage,
@@ -246,7 +248,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a fork message (session-plane path).
-    fn on_fork(
+    async fn on_fork(
         &mut self,
         _key: &super::SessionRoutingKey,
         _msg: &super::ForkMessage,
@@ -255,7 +257,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a promote message (session-plane path).
-    fn on_promote(
+    async fn on_promote(
         &mut self,
         _key: &super::SessionRoutingKey,
         _msg: &super::PromoteMessage,
@@ -264,7 +266,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a deploy-agent message (infra-plane path).
-    fn on_deploy_agent(
+    async fn on_deploy_agent(
         &mut self,
         _key: &super::InfraRoutingKey,
         _msg: &super::DeployAgentMessage,
@@ -273,7 +275,7 @@ pub trait DagWorker: Send {
     }
 
     /// Persist a delete-agent message (infra-plane path).
-    fn on_delete_agent(
+    async fn on_delete_agent(
         &mut self,
         _key: &super::InfraRoutingKey,
         _msg: &super::DeleteAgentMessage,
@@ -283,9 +285,10 @@ pub trait DagWorker: Send {
 }
 
 /// Persistence layer for DAG nodes.
+#[async_trait]
 pub trait DagStore: Send + Sync {
     /// Insert a typed invoke node. Writes to `dag_nodes` + `invoke_nodes`.
-    fn insert_invoke_node(
+    async fn insert_invoke_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -300,7 +303,7 @@ pub trait DagStore: Send + Sync {
 
     /// Insert a typed complete node. Writes to `dag_nodes` + `complete_nodes`.
     #[allow(clippy::too_many_arguments)]
-    fn insert_complete_node(
+    async fn insert_complete_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -321,7 +324,7 @@ pub trait DagStore: Send + Sync {
 
     /// Insert a typed request node. Writes to `dag_nodes` + `request_nodes`.
     #[allow(clippy::too_many_arguments)]
-    fn insert_request_node(
+    async fn insert_request_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -345,7 +348,7 @@ pub trait DagStore: Send + Sync {
 
     /// Insert a typed response node. Writes to `dag_nodes` + `response_nodes`.
     #[allow(clippy::too_many_arguments)]
-    fn insert_response_node(
+    async fn insert_response_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -368,7 +371,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Insert a typed fork node. Writes to `dag_nodes` + `fork_nodes`.
-    fn insert_fork_node(
+    async fn insert_fork_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -382,7 +385,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Insert a typed promote node. Writes to `dag_nodes` + `promote_nodes`.
-    fn insert_promote_node(
+    async fn insert_promote_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -396,7 +399,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Insert a typed deploy-agent node. Writes to `dag_nodes` + `deploy_agent_nodes`.
-    fn insert_deploy_agent_node(
+    async fn insert_deploy_agent_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -410,7 +413,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Insert a typed delete-agent node. Writes to `dag_nodes` + `delete_agent_nodes`.
-    fn insert_delete_agent_node(
+    async fn insert_delete_agent_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -424,26 +427,30 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Retrieve a node by its content-addressed ID.
-    fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String>;
+    async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String>;
 
     /// Retrieve a node by ID prefix. Returns an error if ambiguous.
-    fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
+    async fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
         // Default: try exact match first, then scan is left to implementors.
         self.get_node(&super::DagNodeId::from(prefix.to_string()))
+            .await
     }
 
     /// Get all nodes in a session, ordered by `created_at`.
-    fn get_session_nodes(&self, session_id: &super::SessionId) -> Result<Vec<DagNode>, String>;
+    async fn get_session_nodes(
+        &self,
+        session_id: &super::SessionId,
+    ) -> Result<Vec<DagNode>, String>;
 
     /// Get all children of a given parent ID.
-    fn get_children(&self, parent_id: &super::DagNodeId) -> Result<Vec<DagNode>, String>;
+    async fn get_children(&self, parent_id: &super::DagNodeId) -> Result<Vec<DagNode>, String>;
 
     // -------------------------------------------------------------------------
     // Branch methods
     // -------------------------------------------------------------------------
 
     /// Create a new branch. Returns the auto-generated ID.
-    fn create_branch(
+    async fn create_branch(
         &self,
         name: &str,
         session_id: &super::SessionId,
@@ -451,22 +458,22 @@ pub trait DagStore: Send + Sync {
     ) -> Result<super::BranchId, String>;
 
     /// Look up a branch by its name.
-    fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String>;
+    async fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String>;
 
     /// Look up a branch by its integer ID.
-    fn get_branch(&self, id: super::BranchId) -> Result<Option<Branch>, String>;
+    async fn get_branch(&self, id: super::BranchId) -> Result<Option<Branch>, String>;
 
     /// List all sessions with summary information.
-    fn list_sessions(&self) -> Result<Vec<SessionSummary>, String>;
+    async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String>;
 
     /// Get all nodes for a submission (a single turn), ordered by `created_at`.
-    fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String>;
+    async fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String>;
 
     /// Retrieve typed invoke data by DAG node hash.
     ///
     /// Returns the routing key and invoke message from the `invoke_nodes` table.
     /// Returns `None` if the hash doesn't exist or isn't an invoke node.
-    fn get_invoke_node(
+    async fn get_invoke_node(
         &self,
         dag_hash: &super::DagNodeId,
     ) -> Result<Option<(super::DataRoutingKey, super::InvokeMessage)>, String> {
@@ -475,7 +482,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Retrieve typed complete data by DAG node hash.
-    fn get_complete_node(
+    async fn get_complete_node(
         &self,
         dag_hash: &super::DagNodeId,
     ) -> Result<Option<super::CompleteMessage>, String> {
@@ -484,7 +491,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Retrieve typed request data by DAG node hash.
-    fn get_request_node(
+    async fn get_request_node(
         &self,
         dag_hash: &super::DagNodeId,
     ) -> Result<Option<super::RequestMessage>, String> {
@@ -493,7 +500,7 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Retrieve typed response data by DAG node hash.
-    fn get_response_node(
+    async fn get_response_node(
         &self,
         dag_hash: &super::DagNodeId,
     ) -> Result<Option<super::ResponseMessage>, String> {
@@ -502,26 +509,30 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Get all branches for a session.
-    fn get_branches_for_session(
+    async fn get_branches_for_session(
         &self,
         session_id: &super::SessionId,
     ) -> Result<Vec<Branch>, String>;
 
     /// Get the most recent `DagNode` on a branch, optionally filtered by message type.
-    fn latest_node_on_branch(
+    async fn latest_node_on_branch(
         &self,
         branch_id: super::BranchId,
         message_type: Option<MessageType>,
     ) -> Result<Option<DagNode>, String>;
 
     /// Rename a branch.
-    fn rename_branch(&self, id: super::BranchId, new_name: &str) -> Result<(), String>;
+    async fn rename_branch(&self, id: super::BranchId, new_name: &str) -> Result<(), String>;
 
     /// Mark a branch as broken (sealed). Sets `broken_at` to the given timestamp.
-    fn seal_branch(&self, id: super::BranchId, broken_at: DateTime<Utc>) -> Result<(), String>;
+    async fn seal_branch(
+        &self,
+        id: super::BranchId,
+        broken_at: DateTime<Utc>,
+    ) -> Result<(), String>;
 
     /// Update a session's default branch.
-    fn update_session_default_branch(
+    async fn update_session_default_branch(
         &self,
         session_id: &super::SessionId,
         branch_id: super::BranchId,
@@ -532,13 +543,13 @@ pub trait DagStore: Send + Sync {
     // -------------------------------------------------------------------------
 
     /// Persist a new session. Idempotent (ignores if ID already exists).
-    fn create_session(&self, session: &Session) -> Result<(), String>;
+    async fn create_session(&self, session: &Session) -> Result<(), String>;
 
     /// Look up a session by its ID.
-    fn get_session(&self, session_id: &super::SessionId) -> Result<Option<Session>, String>;
+    async fn get_session(&self, session_id: &super::SessionId) -> Result<Option<Session>, String>;
 
     /// Look up a session by its friendly name.
-    fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String>;
+    async fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String>;
 
     // -------------------------------------------------------------------------
     // Idempotency guard (ADR 125)
@@ -557,7 +568,7 @@ pub trait DagStore: Send + Sync {
     /// If this returns `true`, the consumer should ack and skip processing.
     ///
     /// Default returns `false` (no check). SQL-backed stores query `dag_nodes`.
-    fn exists_in_submission(
+    async fn exists_in_submission(
         &self,
         _submission: &super::SubmissionId,
         _branch: super::BranchId,
@@ -605,8 +616,9 @@ impl InMemoryDagStore {
     }
 }
 
+#[async_trait]
 impl DagStore for InMemoryDagStore {
-    fn insert_invoke_node(
+    async fn insert_invoke_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -630,7 +642,7 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn insert_complete_node(
+    async fn insert_complete_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -659,7 +671,7 @@ impl DagStore for InMemoryDagStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_request_node(
+    async fn insert_request_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -690,7 +702,7 @@ impl DagStore for InMemoryDagStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_response_node(
+    async fn insert_response_node(
         &self,
         dag_id: &super::DagNodeId,
         parent_id: &super::DagNodeId,
@@ -720,19 +732,19 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn get_complete_node(
+    async fn get_complete_node(
         &self,
         _dag_hash: &super::DagNodeId,
     ) -> Result<Option<super::CompleteMessage>, String> {
         Ok(None)
     }
 
-    fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String> {
+    async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         Ok(nodes.iter().find(|n| n.id == *id).cloned())
     }
 
-    fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
+    async fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         let matches: Vec<_> = nodes
             .iter()
@@ -745,18 +757,21 @@ impl DagStore for InMemoryDagStore {
         }
     }
 
-    fn get_session_nodes(&self, session_id: &super::SessionId) -> Result<Vec<DagNode>, String> {
+    async fn get_session_nodes(
+        &self,
+        session_id: &super::SessionId,
+    ) -> Result<Vec<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         let mut result: Vec<DagNode> = nodes
             .iter()
             .filter(|n| *n.session_id() == *session_id)
             .cloned()
             .collect();
-        result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        result.sort_by_key(|a| a.created_at);
         Ok(result)
     }
 
-    fn get_children(&self, parent_id: &super::DagNodeId) -> Result<Vec<DagNode>, String> {
+    async fn get_children(&self, parent_id: &super::DagNodeId) -> Result<Vec<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         Ok(nodes
             .iter()
@@ -765,7 +780,7 @@ impl DagStore for InMemoryDagStore {
             .collect())
     }
 
-    fn create_branch(
+    async fn create_branch(
         &self,
         name: &str,
         session_id: &super::SessionId,
@@ -785,17 +800,17 @@ impl DagStore for InMemoryDagStore {
         Ok(id)
     }
 
-    fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String> {
+    async fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String> {
         let branches = self.branches.lock().unwrap();
         Ok(branches.iter().find(|b| b.name == name).cloned())
     }
 
-    fn get_branch(&self, id: super::BranchId) -> Result<Option<Branch>, String> {
+    async fn get_branch(&self, id: super::BranchId) -> Result<Option<Branch>, String> {
         let branches = self.branches.lock().unwrap();
         Ok(branches.iter().find(|b| b.id == id).cloned())
     }
 
-    fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+    async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
         let nodes = self.nodes.lock().unwrap();
         let mut sessions: std::collections::HashMap<super::SessionId, Vec<&DagNode>> =
             std::collections::HashMap::new();
@@ -809,7 +824,7 @@ impl DagStore for InMemoryDagStore {
         let mut summaries: Vec<SessionSummary> = sessions
             .into_iter()
             .map(|(session_id, mut nodes)| {
-                nodes.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                nodes.sort_by_key(|a| a.created_at);
                 // Agent name is not available from DagNode alone; typed tables
                 // or external lookup would be needed.  In-memory store returns
                 // an empty string for now (typed node queries fill this).
@@ -835,22 +850,22 @@ impl DagStore for InMemoryDagStore {
             })
             .collect();
 
-        summaries.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        summaries.sort_by_key(|s| std::cmp::Reverse(s.started_at));
         Ok(summaries)
     }
 
-    fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
+    async fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         let mut result: Vec<DagNode> = nodes
             .iter()
             .filter(|n| n.submission_id().as_str() == submission_id)
             .cloned()
             .collect();
-        result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        result.sort_by_key(|a| a.created_at);
         Ok(result)
     }
 
-    fn get_branches_for_session(
+    async fn get_branches_for_session(
         &self,
         session_id: &super::SessionId,
     ) -> Result<Vec<Branch>, String> {
@@ -862,7 +877,7 @@ impl DagStore for InMemoryDagStore {
             .collect())
     }
 
-    fn latest_node_on_branch(
+    async fn latest_node_on_branch(
         &self,
         branch_id: super::BranchId,
         message_type: Option<MessageType>,
@@ -876,7 +891,7 @@ impl DagStore for InMemoryDagStore {
             .cloned())
     }
 
-    fn rename_branch(&self, id: super::BranchId, new_name: &str) -> Result<(), String> {
+    async fn rename_branch(&self, id: super::BranchId, new_name: &str) -> Result<(), String> {
         let mut branches = self.branches.lock().unwrap();
         let branch = branches
             .iter_mut()
@@ -886,7 +901,11 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn seal_branch(&self, id: super::BranchId, broken_at: DateTime<Utc>) -> Result<(), String> {
+    async fn seal_branch(
+        &self,
+        id: super::BranchId,
+        broken_at: DateTime<Utc>,
+    ) -> Result<(), String> {
         let mut branches = self.branches.lock().unwrap();
         let branch = branches
             .iter_mut()
@@ -896,7 +915,7 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn update_session_default_branch(
+    async fn update_session_default_branch(
         &self,
         session_id: &super::SessionId,
         branch_id: super::BranchId,
@@ -910,7 +929,7 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn create_session(&self, session: &Session) -> Result<(), String> {
+    async fn create_session(&self, session: &Session) -> Result<(), String> {
         let mut sessions = self.sessions.lock().unwrap();
         if sessions
             .iter()
@@ -922,12 +941,12 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
-    fn get_session(&self, session_id: &super::SessionId) -> Result<Option<Session>, String> {
+    async fn get_session(&self, session_id: &super::SessionId) -> Result<Option<Session>, String> {
         let sessions = self.sessions.lock().unwrap();
         Ok(sessions.iter().find(|s| s.id == *session_id).cloned())
     }
 
-    fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {
+    async fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {
         let sessions = self.sessions.lock().unwrap();
         Ok(sessions.iter().find(|s| s.name == name).cloned())
     }

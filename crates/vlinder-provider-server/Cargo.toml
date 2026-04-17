@@ -22,9 +22,11 @@ vlinder-ollama = { path = "../vlinder-ollama", optional = true, default-features
 vlinder-infer-openrouter = { path = "../vlinder-infer-openrouter", optional = true, default-features = false, features = ["routing"] }
 vlinder-sqlite-vec = { path = "../vlinder-sqlite-vec", optional = true, default-features = false, features = ["routing"] }
 vlinder-sqlite-kv = { path = "../vlinder-sqlite-kv", optional = true, default-features = false, features = ["routing"] }
+axum = "0.7"
+http = "1"
 serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = "0.1"
-tiny_http = "0.12"
 ureq = "2"
 
 [lints]

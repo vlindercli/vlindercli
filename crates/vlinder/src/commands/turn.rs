@@ -13,22 +13,23 @@ pub enum TurnCommand {
     },
 }
 
-pub fn execute(cmd: TurnCommand) {
+pub async fn execute(cmd: TurnCommand) {
     match cmd {
-        TurnCommand::Get { submission_id } => get(&submission_id),
+        TurnCommand::Get { submission_id } => get(&submission_id).await,
     }
 }
 
 #[allow(clippy::too_many_lines)]
-fn get(submission_id: &str) {
+async fn get(submission_id: &str) {
     let config = CliConfig::load();
-    let store = open_dag_store(&config).unwrap_or_else(|| {
+    let store = open_dag_store(&config).await.unwrap_or_else(|| {
         eprintln!("Cannot connect to state service. Is the daemon running?");
         std::process::exit(1);
     });
 
     let nodes = store
         .get_nodes_by_submission(submission_id)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to query turn: {e}");
             std::process::exit(1);
@@ -42,7 +43,7 @@ fn get(submission_id: &str) {
     for node in &nodes {
         let (from, to, operation, checkpoint, state, payload) =
             if node.message_type() == vlinder_core::domain::MessageType::Invoke {
-                if let Ok(Some((key, msg))) = store.get_invoke_node(&node.id) {
+                if let Ok(Some((key, msg))) = store.get_invoke_node(&node.id).await {
                     let vlinder_core::domain::DataMessageKind::Invoke { harness, agent, .. } =
                         &key.kind
                     else {
@@ -60,7 +61,7 @@ fn get(submission_id: &str) {
                     continue;
                 }
             } else if node.message_type() == vlinder_core::domain::MessageType::Complete {
-                if let Ok(Some(msg)) = store.get_complete_node(&node.id) {
+                if let Ok(Some(msg)) = store.get_complete_node(&node.id).await {
                     (
                         "agent".to_string(),
                         "harness".to_string(),

@@ -28,8 +28,7 @@ fn git_sha() -> String {
     let dirty = std::process::Command::new("git")
         .args(["diff", "--quiet"])
         .status()
-        .map(|s| !s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| !s.success());
 
     if dirty {
         sha.push_str("-dirty");

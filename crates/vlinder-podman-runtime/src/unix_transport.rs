@@ -1,205 +1,155 @@
-//! Unix socket transport for ureq v3.
+//! Unix socket transport for hyper 1.x.
 //!
-//! Implements the ureq `Connector` + `Transport` traits over
-//! `std::os::unix::net::UnixStream`, allowing ureq to speak HTTP/1.1
-//! to the Podman REST API socket.
+//! Provides a `tower_service::Service<Uri>` connector that opens a
+//! `tokio::net::UnixStream` to a fixed socket path and returns a local
+//! `UnixIo` newtype wrapper to satisfy the orphan rule.
 
-use std::fmt;
-use std::io::{self, Read, Write};
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task;
 
-use ureq::unversioned::transport::{
-    Buffers, ConnectionDetails, Connector, LazyBuffers, NextTimeout, Transport,
-};
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper_util::client::legacy::connect::{Connected, Connection};
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use tokio::net::UnixStream;
+
+// ── UnixIo newtype ────────────────────────────────────────────────────
+//
+// `TokioIo<UnixStream>` is a foreign type (from hyper-util), so we cannot
+// implement `Connection` (another hyper-util type) for it directly — that
+// would violate the orphan rule.  Wrapping it in a local newtype lets us
+// hold the `Connection` impl in this crate.
+
+pub(crate) struct UnixIo(TokioIo<UnixStream>);
+
+impl hyper::rt::Read for UnixIo {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> task::Poll<Result<(), std::io::Error>> {
+        // `TokioIo<UnixStream>: Unpin`, so `Pin::new` is safe.
+        Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
+    }
+}
+
+impl hyper::rt::Write for UnixIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &[u8],
+    ) -> task::Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> task::Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> task::Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().0).poll_shutdown(cx)
+    }
+}
+
+impl Connection for UnixIo {
+    fn connected(&self) -> Connected {
+        Connected::new()
+    }
+}
 
 // ── Connector ────────────────────────────────────────────────────────
 
-/// Connector that opens a `UnixStream` to a fixed socket path.
+/// Connector that opens a `tokio::net::UnixStream` to a fixed socket path.
 ///
-/// Ignores DNS-resolved addresses — the path is known at construction time.
-pub(crate) struct UnixConnector {
-    path: PathBuf,
-}
+/// Cloneable and `Send + Sync + 'static` — satisfies the bounds required
+/// by `hyper_util::client::legacy::Client::builder`.
+#[derive(Clone)]
+pub(crate) struct UnixConnector(Arc<Path>);
 
-impl UnixConnector {
-    pub(crate) fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+impl tower_service::Service<hyper::http::Uri> for UnixConnector {
+    type Response = UnixIo;
+    type Error = std::io::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<UnixIo, std::io::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut task::Context<'_>) -> task::Poll<Result<(), Self::Error>> {
+        task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _uri: hyper::http::Uri) -> Self::Future {
+        let path = Arc::clone(&self.0);
+        Box::pin(async move {
+            let stream = UnixStream::connect(&*path).await?;
+            Ok(UnixIo(TokioIo::new(stream)))
+        })
     }
 }
 
-impl fmt::Debug for UnixConnector {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UnixConnector")
-            .field("path", &self.path)
-            .finish()
-    }
-}
+// ── Client factory ───────────────────────────────────────────────────
 
-impl Connector for UnixConnector {
-    type Out = UnixTransport;
-
-    fn connect(
-        &self,
-        details: &ConnectionDetails,
-        _chained: Option<()>,
-    ) -> Result<Option<Self::Out>, ureq::Error> {
-        let stream = UnixStream::connect(&self.path).map_err(ureq::Error::Io)?;
-
-        let buffers = LazyBuffers::new(
-            details.config.input_buffer_size(),
-            details.config.output_buffer_size(),
-        );
-
-        Ok(Some(UnixTransport {
-            stream,
-            buffers,
-            timeout_write: None,
-            timeout_read: None,
-        }))
-    }
-}
-
-// ── Transport ────────────────────────────────────────────────────────
-
-/// HTTP/1.1 transport over a Unix domain socket.
-pub(crate) struct UnixTransport {
-    stream: UnixStream,
-    buffers: LazyBuffers,
-    timeout_write: Option<std::time::Duration>,
-    timeout_read: Option<std::time::Duration>,
-}
-
-impl fmt::Debug for UnixTransport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UnixTransport").finish()
-    }
-}
-
-impl Transport for UnixTransport {
-    fn buffers(&mut self) -> &mut dyn Buffers {
-        &mut self.buffers
-    }
-
-    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
-        let new_timeout = timeout.not_zero().map(|d| *d);
-        if new_timeout != self.timeout_write {
-            self.stream.set_write_timeout(new_timeout)?;
-            self.timeout_write = new_timeout;
-        }
-
-        let output = &self.buffers.output()[..amount];
-        match self.stream.write_all(output) {
-            Ok(()) => Ok(()),
-            Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
-            {
-                Err(ureq::Error::Timeout(timeout.reason))
-            }
-            Err(e) => Err(ureq::Error::Io(e)),
-        }
-    }
-
-    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
-        let new_timeout = timeout.not_zero().map(|d| *d);
-        if new_timeout != self.timeout_read {
-            self.stream.set_read_timeout(new_timeout)?;
-            self.timeout_read = new_timeout;
-        }
-
-        let input = self.buffers.input_append_buf();
-        let amount = match self.stream.read(input) {
-            Ok(n) => n,
-            Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
-            {
-                return Err(ureq::Error::Timeout(timeout.reason));
-            }
-            Err(e) => return Err(ureq::Error::Io(e)),
-        };
-        self.buffers.input_appended(amount);
-
-        Ok(amount > 0)
-    }
-
-    fn is_open(&mut self) -> bool {
-        // Probe with a non-blocking read — if the socket has closed,
-        // we'll get an error or 0 bytes.
-        self.stream.set_nonblocking(true).ok();
-        let mut buf = [0u8; 1];
-        let open =
-            matches!(self.stream.read(&mut buf), Err(e) if e.kind() == io::ErrorKind::WouldBlock);
-        self.stream.set_nonblocking(false).ok();
-        open
-    }
-}
-
-// ── Agent factory ────────────────────────────────────────────────────
-
-/// Build a ureq `Agent` that routes all requests through the given Unix socket.
-///
-/// The agent uses `http://localhost` as the base URL (host doesn't matter —
-/// all connections go to the socket path).
-pub(crate) fn unix_agent(socket_path: &Path) -> ureq::Agent {
-    let connector = UnixConnector::new(socket_path);
-    let resolver = ureq::unversioned::resolver::DefaultResolver::default();
-    let config = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .build();
-    ureq::Agent::with_parts(config, connector, resolver)
+/// Build a hyper legacy `Client` that routes all requests through the given
+/// Unix socket path.  The URI's authority is ignored — all connections go
+/// to the socket.
+pub(crate) fn unix_client(socket_path: &Path) -> Client<UnixConnector, Full<Bytes>> {
+    let connector = UnixConnector(Arc::from(socket_path));
+    Client::builder(TokioExecutor::new()).build(connector)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::io::{BufRead, BufReader};
-    use std::os::unix::net::UnixListener;
+    use bytes::Bytes;
+    use http_body_util::{BodyExt, Full};
+    use hyper::Request;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    #[test]
-    fn round_trip_through_unix_socket() {
+    use super::*;
+
+    #[tokio::test]
+    async fn round_trip_through_unix_socket() {
         let tmp = tempfile::TempDir::new().unwrap();
         let sock_path = tmp.path().join("test.sock");
+        let listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
 
-        let listener = UnixListener::bind(&sock_path).unwrap();
+        // Minimal async HTTP/1.1 server — reads the request and writes one response.
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).into_owned();
 
-        // Spawn a minimal HTTP server on the socket
-        let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(&stream);
-
-            // Read the HTTP request (headers end with blank line)
-            let mut request = String::new();
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line == "\r\n" {
-                    break;
-                }
-                request.push_str(&line);
-            }
-
-            // Send a minimal HTTP response
             let body = r#"{"version":"5.0.0"}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
                 body.len(),
                 body,
             );
-            (&stream).write_all(response.as_bytes()).unwrap();
-
+            stream.write_all(response.as_bytes()).await.unwrap();
             request
         });
 
-        // Use the agent to make a request
-        let agent = unix_agent(&sock_path);
-        let mut resp = agent.get("http://localhost/version").call().unwrap();
-        assert_eq!(resp.status().as_u16(), 200);
+        let client = unix_client(&sock_path);
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://localhost/version")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
 
-        let body = resp.body_mut().read_to_string().unwrap();
+        let resp = client.request(req).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body = std::str::from_utf8(&body_bytes).unwrap();
         assert!(body.contains("5.0.0"));
 
-        // Verify the server saw a valid HTTP request
-        let request = handle.join().unwrap();
+        let request = server.await.unwrap();
         assert!(request.contains("GET /version"));
     }
 }

@@ -1,5 +1,6 @@
 //! gRPC client implementing the `CatalogService` trait.
 
+use async_trait::async_trait;
 use tonic::transport::Channel;
 
 use super::proto::{self, catalog_service_client::CatalogServiceClient};
@@ -11,60 +12,46 @@ use vlinder_core::domain::{CatalogError, CatalogService, Model, ModelInfo};
 /// per-call, not baked into the constructor.
 pub struct GrpcCatalogClient {
     client: CatalogServiceClient<Channel>,
-    runtime: tokio::runtime::Runtime,
 }
 
 impl GrpcCatalogClient {
     /// Connect to a catalog service server.
-    pub fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let runtime = tokio::runtime::Runtime::new()?;
-        let client =
-            runtime.block_on(async { CatalogServiceClient::connect(addr.to_string()).await })?;
-
-        Ok(Self { client, runtime })
+    pub async fn connect_async(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let client = CatalogServiceClient::connect(addr.to_string()).await?;
+        Ok(Self { client })
     }
 }
 
-/// Ping a catalog service at the given address, returning its protocol version.
-pub fn ping_catalog_service(addr: &str) -> Option<(u32, u32, u32)> {
-    let Ok(runtime) = tokio::runtime::Runtime::new() else {
+pub async fn ping_catalog_service_async(addr: &str) -> Option<(u32, u32, u32)> {
+    let Ok(mut client) = CatalogServiceClient::connect(addr.to_string()).await else {
         return None;
     };
-
-    runtime.block_on(async {
-        let Ok(mut client) = CatalogServiceClient::connect(addr.to_string()).await else {
-            return None;
-        };
-        client.ping(proto::PingRequest {}).await.ok().map(|r| {
-            let v = r.into_inner();
-            (v.major, v.minor, v.patch)
-        })
+    client.ping(proto::PingRequest {}).await.ok().map(|r| {
+        let v = r.into_inner();
+        (v.major, v.minor, v.patch)
     })
 }
 
+#[async_trait]
 impl CatalogService for GrpcCatalogClient {
-    fn catalogs(&self) -> Vec<String> {
+    async fn catalogs(&self) -> Vec<String> {
         let mut client = self.client.clone();
-        let result = self
-            .runtime
-            .block_on(async { client.list_catalogs(proto::ListCatalogsRequest {}).await });
-
-        match result {
+        match client.list_catalogs(proto::ListCatalogsRequest {}).await {
             Ok(resp) => resp.into_inner().catalogs,
             Err(_) => Vec::new(),
         }
     }
 
-    fn resolve(&self, catalog: &str, name: &str) -> Result<Model, CatalogError> {
+    async fn resolve(&self, catalog: &str, name: &str) -> Result<Model, CatalogError> {
         let request = proto::ResolveRequest {
             catalog: catalog.to_string(),
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.resolve(request).await })
+        let response = client
+            .resolve(request)
+            .await
             .map_err(|e| CatalogError::Network(e.to_string()))?;
 
         let resp = response.into_inner();
@@ -77,15 +64,15 @@ impl CatalogService for GrpcCatalogClient {
         }
     }
 
-    fn list(&self, catalog: &str) -> Result<Vec<ModelInfo>, CatalogError> {
+    async fn list(&self, catalog: &str) -> Result<Vec<ModelInfo>, CatalogError> {
         let request = proto::ListRequest {
             catalog: catalog.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list(request).await })
+        let response = client
+            .list(request)
+            .await
             .map_err(|e| CatalogError::Network(e.to_string()))?;
 
         let resp = response.into_inner();
@@ -95,18 +82,14 @@ impl CatalogService for GrpcCatalogClient {
         Ok(resp.models.into_iter().map(Into::into).collect())
     }
 
-    fn available(&self, catalog: &str, name: &str) -> bool {
+    async fn available(&self, catalog: &str, name: &str) -> bool {
         let request = proto::AvailableRequest {
             catalog: catalog.to_string(),
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let result = self
-            .runtime
-            .block_on(async { client.available(request).await });
-
-        match result {
+        match client.available(request).await {
             Ok(resp) => resp.into_inner().available,
             Err(_) => false,
         }

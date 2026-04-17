@@ -2,7 +2,12 @@
 
 This file is for Claude Code (Opus) used as a high-level collaborator — drafting ADRs, making design decisions, investigating failures, steering the project. Mechanical code execution is often delegated to a cheaper executor agent (Pi with Qwen3-Coder or similar), which reads `AGENTS.md`, not this file.
 
-When you write specs or step-by-step instructions for the executor, assume `AGENTS.md` is already loaded into its context. Don't re-state the executor's general rules — do include scope fences, file paths, line numbers, explicit "do not" lists, and anything that goes beyond the general guidance.
+When you write specs or step-by-step instructions for the executor, assume `AGENTS.md` is already loaded into its context. Don't re-state the executor's general rules — do include scope fences and anything that goes beyond the general guidance.
+
+### Writing executor specs
+- Describe WHAT to do, not HOW step-by-step. Capable executors can trace code, follow compilers, and make mechanical decisions. Over-specification wastes spec tokens and anchors the executor to the architect's assumptions.
+- Follow the runtime errors, don't speculate. When debugging async cascade issues, fix what the runtime tells you is broken. Don't preemptively change 13 methods because you think they'll all need it — change one, run, see what breaks next.
+- Review the executor's work by reading the CODE first. Form your own opinion about correctness before reading the executor's session logs or reasoning. Logs bias the reviewer toward the executor's perspective.
 
 ## TL;DR
 
@@ -119,3 +124,15 @@ Write throwaway code to learn, not to keep. Once you understand, delete and take
 ## When Changes Are Rejected
 
 Explain your inner reasoning — what led to that specific action, step by step. Don't just apologize and retry; expose the thinking so the failure mode becomes visible.
+
+# vlinder dev environment
+
+When the dev stack is running, there's a tmux session called `vlinder` with these panes:
+
+- `vlinder:main.0` — nats-server (-js)
+- `vlinder:main.1` — `nats sub "vlinder.>"` (live message bus tap)
+- `vlinder:main.2` — `vlinderd` with RUST_BACKTRACE=1
+- `vlinder:main.3` — todoapp agent deploy (in `sample-agents-fleets/agents/todoapp`)
+- `vlinder:main.4` — Claude Code (you, if you're running inside the session)
+
+Use the `tmux-inspect` skill to read or drive these panes.

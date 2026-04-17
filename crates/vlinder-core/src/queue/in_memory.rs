@@ -3,12 +3,13 @@
 #[cfg(test)]
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
-    Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
-    DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey,
-    InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError, RequestMessage,
-    ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessage,
-    SubmissionId,
+    noop_ack, Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind,
+    DataRoutingKey, DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType,
+    InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
+    RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey,
+    SessionStartMessage, SubmissionId,
 };
+use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -43,8 +44,9 @@ impl Default for InMemoryQueue {
     }
 }
 
+#[async_trait]
 impl MessageQueue for InMemoryQueue {
-    fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
         let mut q = self
             .invokes
             .lock()
@@ -53,7 +55,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn receive_invoke(
+    async fn receive_invoke(
         &self,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
@@ -69,7 +71,7 @@ impl MessageQueue for InMemoryQueue {
             if a == agent {
                 if let Some(msg) = queue.pop_front() {
                     let key = key.clone();
-                    return Ok((key, msg, Box::new(|| Ok(()))));
+                    return Ok((key, msg, noop_ack()));
                 }
             }
         }
@@ -77,7 +79,11 @@ impl MessageQueue for InMemoryQueue {
         Err(QueueError::Timeout)
     }
 
-    fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
+    async fn send_complete(
+        &self,
+        key: DataRoutingKey,
+        msg: CompleteMessage,
+    ) -> Result<(), QueueError> {
         let mut q = self
             .completes
             .lock()
@@ -86,7 +92,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn receive_complete(
+    async fn receive_complete(
         &self,
         submission: &SubmissionId,
         _harness: HarnessType,
@@ -106,14 +112,18 @@ impl MessageQueue for InMemoryQueue {
             };
             if let Some(msg) = queue.pop_front() {
                 let key = key.clone();
-                return Ok((key, msg, Box::new(|| Ok(()))));
+                return Ok((key, msg, noop_ack()));
             }
         }
 
         Err(QueueError::Timeout)
     }
 
-    fn send_request(&self, key: DataRoutingKey, msg: RequestMessage) -> Result<(), QueueError> {
+    async fn send_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+    ) -> Result<(), QueueError> {
         let mut q = self
             .requests
             .lock()
@@ -122,7 +132,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn receive_request(
+    async fn receive_request(
         &self,
         service: ServiceBackend,
         operation: Operation,
@@ -144,7 +154,7 @@ impl MessageQueue for InMemoryQueue {
             if *s == service && *o == operation {
                 if let Some(msg) = queue.pop_front() {
                     let key = key.clone();
-                    return Ok((key, msg, Box::new(|| Ok(()))));
+                    return Ok((key, msg, noop_ack()));
                 }
             }
         }
@@ -152,7 +162,11 @@ impl MessageQueue for InMemoryQueue {
         Err(QueueError::Timeout)
     }
 
-    fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {
+    async fn send_response(
+        &self,
+        key: DataRoutingKey,
+        msg: ResponseMessage,
+    ) -> Result<(), QueueError> {
         let mut q = self
             .responses
             .lock()
@@ -161,7 +175,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn receive_response(
+    async fn receive_response(
         &self,
         submission: &SubmissionId,
         _agent: &AgentName,
@@ -190,7 +204,7 @@ impl MessageQueue for InMemoryQueue {
             if *s == service && *o == operation && *sq == sequence {
                 if let Some(msg) = queue.pop_front() {
                     let key = key.clone();
-                    return Ok((key, msg, Box::new(|| Ok(()))));
+                    return Ok((key, msg, noop_ack()));
                 }
             }
         }
@@ -198,12 +212,16 @@ impl MessageQueue for InMemoryQueue {
         Err(QueueError::Timeout)
     }
 
-    fn send_fork(&self, _key: SessionRoutingKey, _msg: ForkMessage) -> Result<(), QueueError> {
+    async fn send_fork(
+        &self,
+        _key: SessionRoutingKey,
+        _msg: ForkMessage,
+    ) -> Result<(), QueueError> {
         // Fire-and-forget — no consumer subscribes.
         Ok(())
     }
 
-    fn send_promote(
+    async fn send_promote(
         &self,
         _key: SessionRoutingKey,
         _msg: PromoteMessage,
@@ -212,7 +230,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn send_session_start(
+    async fn send_session_start(
         &self,
         _key: SessionRoutingKey,
         _msg: SessionStartMessage,
@@ -222,7 +240,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(BranchId::from(1))
     }
 
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         _key: InfraRoutingKey,
         _msg: DeployAgentMessage,
@@ -230,7 +248,7 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         _key: InfraRoutingKey,
         _msg: DeleteAgentMessage,
@@ -261,8 +279,8 @@ mod tests {
     // Typed receive tests
     // ========================================================================
 
-    #[test]
-    fn receive_invoke_returns_typed_message() {
+    #[tokio::test]
+    async fn receive_invoke_returns_typed_message() {
         let queue = InMemoryQueue::new();
 
         let key = DataRoutingKey {
@@ -287,10 +305,10 @@ mod tests {
         };
         let original_id = msg.id.clone();
 
-        queue.send_invoke(key, msg).unwrap();
+        queue.send_invoke(key, msg).await.unwrap();
 
         // Receive typed message
-        let (recv_key, received, ack) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (recv_key, received, ack) = queue.receive_invoke(&test_agent_id()).await.unwrap();
 
         assert_eq!(received.id, original_id);
         assert!(matches!(
@@ -303,11 +321,11 @@ mod tests {
         ));
         assert_eq!(received.payload, b"hello");
 
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn receive_invoke_preserves_all_dimensions() {
+    #[tokio::test]
+    async fn receive_invoke_preserves_all_dimensions() {
         let queue = InMemoryQueue::new();
 
         let submission = test_submission();
@@ -334,9 +352,9 @@ mod tests {
             payload: b"input".to_vec(),
         };
 
-        queue.send_invoke(key, msg).unwrap();
+        queue.send_invoke(key, msg).await.unwrap();
 
-        let (recv_key, _, _) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (recv_key, _, _) = queue.receive_invoke(&test_agent_id()).await.unwrap();
 
         // All dimensions preserved for reply construction
         assert_eq!(recv_key.submission, submission);
@@ -376,35 +394,35 @@ mod tests {
         }
     }
 
-    #[test]
-    fn send_and_receive_invoke() {
+    #[tokio::test]
+    async fn send_and_receive_invoke() {
         let queue = InMemoryQueue::new();
         let key = test_data_routing_key();
         let msg = test_invoke();
 
-        queue.send_invoke(key, msg.clone()).unwrap();
+        queue.send_invoke(key, msg.clone()).await.unwrap();
 
-        let (recv_key, recv_msg, ack) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (recv_key, recv_msg, ack) = queue.receive_invoke(&test_agent_id()).await.unwrap();
 
         assert_eq!(recv_msg, msg);
         assert_eq!(recv_key.submission, test_submission());
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn receive_invoke_times_out_for_wrong_agent() {
+    #[tokio::test]
+    async fn receive_invoke_times_out_for_wrong_agent() {
         let queue = InMemoryQueue::new();
         let key = test_data_routing_key();
         let msg = test_invoke();
 
-        queue.send_invoke(key, msg).unwrap();
+        queue.send_invoke(key, msg).await.unwrap();
 
-        let result = queue.receive_invoke(&AgentName::new("other-agent"));
+        let result = queue.receive_invoke(&AgentName::new("other-agent")).await;
         assert!(matches!(result, Err(QueueError::Timeout)));
     }
 
-    #[test]
-    fn multiple_invoke_messages_delivered_in_order() {
+    #[tokio::test]
+    async fn multiple_invoke_messages_delivered_in_order() {
         let queue = InMemoryQueue::new();
 
         let key = test_data_routing_key();
@@ -429,13 +447,13 @@ mod tests {
             payload: b"second".to_vec(),
         };
 
-        queue.send_invoke(key.clone(), msg1.clone()).unwrap();
-        queue.send_invoke(key, msg2.clone()).unwrap();
+        queue.send_invoke(key.clone(), msg1.clone()).await.unwrap();
+        queue.send_invoke(key, msg2.clone()).await.unwrap();
 
-        let (_, recv1, _) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (_, recv1, _) = queue.receive_invoke(&test_agent_id()).await.unwrap();
         assert_eq!(recv1, msg1);
 
-        let (_, recv2, _) = queue.receive_invoke(&test_agent_id()).unwrap();
+        let (_, recv2, _) = queue.receive_invoke(&test_agent_id()).await.unwrap();
         assert_eq!(recv2, msg2);
     }
 }

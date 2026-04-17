@@ -84,23 +84,26 @@ pub enum AgentCommand {
     },
 }
 
-pub fn execute(cmd: AgentCommand) {
+pub async fn execute(cmd: AgentCommand) {
     match cmd {
-        AgentCommand::Deploy { path } => deploy(path),
+        AgentCommand::Deploy { path } => deploy(path).await,
         AgentCommand::Run {
             name,
             session,
             branch,
             prompt,
-        } => run(
-            &name,
-            session.as_deref(),
-            branch.as_deref(),
-            prompt.as_deref(),
-        ),
-        AgentCommand::List => list(),
-        AgentCommand::Get { name } => get(&name),
-        AgentCommand::Delete { name } => delete(&name),
+        } => {
+            run(
+                &name,
+                session.as_deref(),
+                branch.as_deref(),
+                prompt.as_deref(),
+            )
+            .await;
+        }
+        AgentCommand::List => list().await,
+        AgentCommand::Get { name } => get(&name).await,
+        AgentCommand::Delete { name } => delete(&name).await,
         AgentCommand::New { language, name } => scaffold(&language, &name),
     }
 }
@@ -127,7 +130,7 @@ fn resolve_agent_dir(path: &Path) -> PathBuf {
     }
 }
 
-fn deploy(path: Option<PathBuf>) {
+async fn deploy(path: Option<PathBuf>) {
     let config = CliConfig::load();
     let agent_path =
         path.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
@@ -137,10 +140,12 @@ fn deploy(path: Option<PathBuf>) {
         .expect("Failed to resolve agent path");
 
     let registry_addr = super::connect::normalize_addr(&config.daemon.registry_addr);
-    let client = GrpcRegistryClient::connect(&registry_addr).unwrap_or_else(|e| {
-        eprintln!("Cannot reach registry at {registry_addr}: {e}");
-        std::process::exit(1);
-    });
+    let client = GrpcRegistryClient::connect_async(&registry_addr)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Cannot reach registry at {registry_addr}: {e}");
+            std::process::exit(1);
+        });
 
     let manifest_path = resolve_manifest_path(&absolute_path);
     let manifest = AgentManifest::load(&manifest_path).unwrap_or_else(|e| {
@@ -150,9 +155,9 @@ fn deploy(path: Option<PathBuf>) {
 
     let agent_name = manifest.name.clone();
 
-    // Auto-deploy models (still synchronous via Registry trait)
+    // Auto-deploy models before submitting the deploy request
     let agent_dir = resolve_agent_dir(&absolute_path);
-    match auto_deploy_models(&agent_dir, &manifest, &client) {
+    match auto_deploy_models(&agent_dir, &manifest, &client).await {
         Ok(deployed) => {
             for name in &deployed {
                 println!("  Model: {name} (auto-deployed)");
@@ -165,7 +170,7 @@ fn deploy(path: Option<PathBuf>) {
     }
 
     // Enqueue deploy via infra plane (CQRS write path)
-    let _submission = client.deploy_agent(&manifest).unwrap_or_else(|e| {
+    let _submission = client.deploy_agent(&manifest).await.unwrap_or_else(|e| {
         eprintln!("Failed to submit deploy: {e}");
         std::process::exit(1);
     });
@@ -173,7 +178,7 @@ fn deploy(path: Option<PathBuf>) {
     // Poll for state transition, printing status changes
     let mut last_status: Option<AgentStatus> = None;
     loop {
-        match client.get_agent_state(&agent_name) {
+        match client.get_agent_state(&agent_name).await {
             Ok(Some(status)) => {
                 if last_status.as_ref() != Some(&status) {
                     match &status {
@@ -199,14 +204,14 @@ fn deploy(path: Option<PathBuf>) {
                 std::process::exit(1);
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 
 /// Load an agent manifest from a directory, auto-deploy its models, and register it.
 ///
 /// Shared by `agent deploy` and `fleet deploy`.
-pub(super) fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Registry) -> Agent {
+pub(super) async fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Registry) -> Agent {
     let manifest_path = agent_dir.join("agent.toml");
     let manifest = AgentManifest::load(&manifest_path).unwrap_or_else(|e| {
         eprintln!("Failed to load agent manifest: {e:?}");
@@ -214,7 +219,7 @@ pub(super) fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Registry) 
     });
 
     // Auto-deploy models from <agent_dir>/models/<name>.toml
-    match auto_deploy_models(agent_dir, &manifest, registry) {
+    match auto_deploy_models(agent_dir, &manifest, registry).await {
         Ok(deployed) => {
             for name in &deployed {
                 println!("  Model: {name} (auto-deployed)");
@@ -226,18 +231,21 @@ pub(super) fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Registry) 
         }
     }
 
-    registry.register_manifest(manifest).unwrap_or_else(|e| {
-        eprintln!("Failed to deploy agent: {e}");
-        std::process::exit(1);
-    })
+    registry
+        .register_manifest(manifest)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to deploy agent: {e}");
+            std::process::exit(1);
+        })
 }
 
-fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&str>) {
+async fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&str>) {
     let config = CliConfig::load();
-    let registry = connect_registry(&config);
+    let registry = connect_registry(&config).await;
 
     // Look up already-deployed agent by name (ADR 103)
-    let Some(agent) = registry.get_agent_by_name(name) else {
+    let Some(agent) = registry.get_agent_by_name(name).await else {
         eprintln!("Agent '{name}' not found — deploy it first with: vlinder agent deploy");
         std::process::exit(1);
     };
@@ -246,39 +254,39 @@ fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&
 
     // Connect to harness via gRPC — the daemon's harness worker owns the
     // queue and registry connection. The CLI is now a pure gRPC client.
-    let harness = connect_harness(&config);
+    let harness = connect_harness(&config).await;
 
     // Resolve (session, branch) — the CLI flags are sugar for this tuple.
     // All paths end at resolve_branch_tip for state resolution.
     let (session_id, branch_id, sealed, initial_state, dag_parent) = match (session, branch) {
         (None, None) => {
             // New session → create session + default branch, resolve tip
-            let (session_id, branch_id) = harness.start_session(name);
+            let (session_id, branch_id) = harness.start_session(name).await;
             (session_id, branch_id, false, None, DagNodeId::root())
         }
         (Some(session_name), None) => {
             // Existing session → resolve its default branch
-            resolve_session_default(&config, session_name)
+            resolve_session_default(&config, session_name).await
         }
         (Some(_) | None, Some(branch_name)) => {
             // Specific branch → resolve it directly
-            resolve_branch(&config, branch_name)
+            resolve_branch(&config, branch_name).await
         }
     };
 
     let invoke = |input: &str| -> String {
-        match harness.run_agent(
-            &agent_id,
-            input,
-            session_id.clone(),
-            branch_id,
-            sealed,
-            initial_state.clone(),
-            dag_parent.clone(),
-        ) {
-            Ok(result) => result,
-            Err(e) => format!("[error] {e}"),
-        }
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(harness.run_agent(
+                &agent_id,
+                input,
+                session_id.clone(),
+                branch_id,
+                sealed,
+                initial_state.clone(),
+                dag_parent.clone(),
+            ))
+        })
+        .unwrap_or_else(|e| format!("[error] {e}"))
     };
 
     if let Some(message) = prompt {
@@ -291,7 +299,7 @@ fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&
 }
 
 /// Resolve session default branch: look up session by name, continue on its default branch.
-fn resolve_session_default(
+async fn resolve_session_default(
     config: &CliConfig,
     session_name: &str,
 ) -> (
@@ -301,13 +309,14 @@ fn resolve_session_default(
     Option<String>,
     DagNodeId,
 ) {
-    let store = require_dag_store(config);
+    let store = require_dag_store(config).await;
 
-    let session = resolve_session(&*store, session_name);
+    let session = resolve_session(&*store, session_name).await;
     let branch_id = session.default_branch;
 
     let branch = store
         .get_branch(branch_id)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to look up default branch: {e}");
             std::process::exit(1);
@@ -317,7 +326,8 @@ fn resolve_session_default(
             std::process::exit(1);
         });
 
-    let (_, sealed, initial_state, dag_parent) = resolve_branch_tip(&*store, &branch, &branch.name);
+    let (_, sealed, initial_state, dag_parent) =
+        resolve_branch_tip(&*store, &branch, &branch.name).await;
 
     println!(
         "Continuing session '{}' on branch '{}'",
@@ -327,7 +337,7 @@ fn resolve_session_default(
 }
 
 /// Resolve branch session context: look up branch by name, continue on it.
-fn resolve_branch(
+async fn resolve_branch(
     config: &CliConfig,
     branch_name: &str,
 ) -> (
@@ -337,10 +347,11 @@ fn resolve_branch(
     Option<String>,
     DagNodeId,
 ) {
-    let store = require_dag_store(config);
+    let store = require_dag_store(config).await;
 
     let branch = store
         .get_branch_by_name(branch_name)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to look up branch: {e}");
             std::process::exit(1);
@@ -351,14 +362,15 @@ fn resolve_branch(
         });
 
     let session_id = branch.session_id.clone();
-    let (_, sealed, initial_state, dag_parent) = resolve_branch_tip(&*store, &branch, branch_name);
+    let (_, sealed, initial_state, dag_parent) =
+        resolve_branch_tip(&*store, &branch, branch_name).await;
 
     println!("On branch '{branch_name}'");
     (session_id, branch.id, sealed, initial_state, dag_parent)
 }
 
 /// Read tip state and `dag_parent` from a branch.
-fn resolve_branch_tip(
+async fn resolve_branch_tip(
     store: &dyn DagStore,
     branch: &vlinder_core::domain::Branch,
     branch_name: &str,
@@ -371,6 +383,7 @@ fn resolve_branch_tip(
     // Find the tip — latest node on branch, falling back to fork_point
     let tip_hash = store
         .latest_node_on_branch(branch.id, None)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to query latest node on branch: {e}");
             std::process::exit(1);
@@ -380,10 +393,11 @@ fn resolve_branch_tip(
         .unwrap_or_else(DagNodeId::root);
 
     // Read state from the tip node
-    let initial_state = if let Ok(Some(node)) = store.get_node(&tip_hash) {
+    let initial_state = if let Ok(Some(node)) = store.get_node(&tip_hash).await {
         let state = if node.message_type() == vlinder_core::domain::MessageType::Invoke {
             store
                 .get_invoke_node(&node.id)
+                .await
                 .ok()
                 .flatten()
                 .and_then(|(_, msg)| msg.state)
@@ -391,6 +405,7 @@ fn resolve_branch_tip(
         } else if node.message_type() == vlinder_core::domain::MessageType::Complete {
             store
                 .get_complete_node(&node.id)
+                .await
                 .ok()
                 .flatten()
                 .and_then(|m| m.state)
@@ -416,34 +431,34 @@ fn resolve_branch_tip(
 }
 
 /// Resolve a session by name or UUID.
-fn resolve_session(store: &dyn DagStore, name_or_id: &str) -> vlinder_core::domain::Session {
+async fn resolve_session(store: &dyn DagStore, name_or_id: &str) -> vlinder_core::domain::Session {
     // Try UUID first
     if let Ok(sid) = vlinder_core::domain::SessionId::try_from(name_or_id.to_string()) {
-        if let Some(session) = store.get_session(&sid).ok().flatten() {
+        if let Some(session) = store.get_session(&sid).await.ok().flatten() {
             return session;
         }
     }
     // Try by petname
-    if let Some(session) = store.get_session_by_name(name_or_id).ok().flatten() {
+    if let Some(session) = store.get_session_by_name(name_or_id).await.ok().flatten() {
         return session;
     }
     eprintln!("Session '{name_or_id}' not found");
     std::process::exit(1);
 }
 
-fn require_dag_store(config: &CliConfig) -> Box<dyn DagStore> {
-    open_dag_store(config).unwrap_or_else(|| {
+async fn require_dag_store(config: &CliConfig) -> Box<dyn DagStore> {
+    open_dag_store(config).await.unwrap_or_else(|| {
         eprintln!("Cannot connect to state service. Is the daemon running?");
         std::process::exit(1);
     })
 }
 
-fn list() {
+async fn list() {
     let config = CliConfig::load();
-    let registry = open_registry(&config);
+    let registry = open_registry(&config).await;
     let Some(registry) = registry else { return };
 
-    let agents = registry.get_agents();
+    let agents = registry.get_agents().await;
     if agents.is_empty() {
         println!("No agents deployed.");
         return;
@@ -459,12 +474,12 @@ fn list() {
     }
 }
 
-fn get(name: &str) {
+async fn get(name: &str) {
     let config = CliConfig::load();
-    let registry = open_registry(&config);
+    let registry = open_registry(&config).await;
     let Some(registry) = registry else { return };
 
-    let Some(agent) = registry.get_agent_by_name(name) else {
+    let Some(agent) = registry.get_agent_by_name(name).await else {
         eprintln!("Agent '{name}' not found");
         return;
     };
@@ -487,15 +502,17 @@ fn get(name: &str) {
     }
 }
 
-fn delete(name: &str) {
+async fn delete(name: &str) {
     let config = CliConfig::load();
     let registry_addr = super::connect::normalize_addr(&config.daemon.registry_addr);
-    let client = GrpcRegistryClient::connect(&registry_addr).unwrap_or_else(|e| {
-        eprintln!("Cannot reach registry at {registry_addr}: {e}");
-        std::process::exit(1);
-    });
+    let client = GrpcRegistryClient::connect_async(&registry_addr)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Cannot reach registry at {registry_addr}: {e}");
+            std::process::exit(1);
+        });
 
-    let _submission = client.submit_delete_agent(name).unwrap_or_else(|e| {
+    let _submission = client.submit_delete_agent(name).await.unwrap_or_else(|e| {
         eprintln!("Failed to submit delete: {e}");
         std::process::exit(1);
     });
@@ -503,7 +520,7 @@ fn delete(name: &str) {
     // Poll for deletion completion, printing status changes
     let mut last_status: Option<AgentStatus> = None;
     loop {
-        match client.get_agent_state(name) {
+        match client.get_agent_state(name).await {
             Ok(Some(status)) => {
                 if last_status.as_ref() != Some(&status) {
                     match &status {
@@ -527,12 +544,12 @@ fn delete(name: &str) {
                 std::process::exit(1);
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 
-fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
-    super::connect::open_registry(config)
+async fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
+    super::connect::open_registry(config).await
 }
 
 /// Scaffold a new agent project from a GitHub template.
@@ -662,7 +679,7 @@ fn patch_file(path: &PathBuf, from: &str, to: &str) {
 /// Models without a `.toml` file are skipped (they must already be registered).
 ///
 /// Returns the names of models that were auto-deployed.
-pub(super) fn auto_deploy_models(
+pub(super) async fn auto_deploy_models(
     agent_dir: &Path,
     manifest: &AgentManifest,
     registry: &dyn Registry,
@@ -679,7 +696,7 @@ pub(super) fn auto_deploy_models(
     for model_name in &model_names {
         let model_toml = models_dir.join(format!("{model_name}.toml"));
         if model_toml.exists() {
-            let model = super::model::load_and_register_model(&model_toml, registry)?;
+            let model = super::model::load_and_register_model(&model_toml, registry).await?;
             deployed.push(model.name);
         }
     }
@@ -729,8 +746,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn auto_deploy_registers_discovered_models() {
+    #[tokio::test]
+    async fn auto_deploy_registers_discovered_models() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -743,26 +760,30 @@ mod tests {
         registry.register_inference_engine(Provider::OpenRouter);
 
         let manifest = manifest_with_models(vec![("inference_model", "claude-sonnet")]);
-        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
 
         assert_eq!(deployed, vec!["claude-sonnet"]);
-        assert!(registry.get_model("claude-sonnet").is_some());
+        assert!(registry.get_model("claude-sonnet").await.is_some());
     }
 
-    #[test]
-    fn auto_deploy_skips_models_without_toml() {
+    #[tokio::test]
+    async fn auto_deploy_skips_models_without_toml() {
         let dir = tempfile::tempdir().unwrap();
         // No models/ directory at all
 
         let registry = test_registry();
         let manifest = manifest_with_models(vec![("inference_model", "already-registered")]);
-        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
 
         assert!(deployed.is_empty());
     }
 
-    #[test]
-    fn auto_deploy_deduplicates_model_names() {
+    #[tokio::test]
+    async fn auto_deploy_deduplicates_model_names() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -779,15 +800,17 @@ mod tests {
             ("inference_model", "claude-sonnet"),
             ("summary_model", "claude-sonnet"),
         ]);
-        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
 
         // Registered only once
         assert_eq!(deployed.len(), 1);
-        assert_eq!(registry.get_models().len(), 1);
+        assert_eq!(registry.get_models().await.len(), 1);
     }
 
-    #[test]
-    fn auto_deploy_handles_multiple_models() {
+    #[tokio::test]
+    async fn auto_deploy_handles_multiple_models() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -811,26 +834,30 @@ mod tests {
             ("inference_model", "claude-sonnet"),
             ("embedding_model", "nomic-embed"),
         ]);
-        let mut deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let mut deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
         deployed.sort();
 
         assert_eq!(deployed, vec!["claude-sonnet", "nomic-embed"]);
-        assert_eq!(registry.get_models().len(), 2);
+        assert_eq!(registry.get_models().await.len(), 2);
     }
 
-    #[test]
-    fn auto_deploy_with_no_required_models() {
+    #[tokio::test]
+    async fn auto_deploy_with_no_required_models() {
         let dir = tempfile::tempdir().unwrap();
         let registry = test_registry();
 
         let manifest = manifest_with_models(vec![]);
-        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry).unwrap();
+        let deployed = auto_deploy_models(dir.path(), &manifest, &*registry)
+            .await
+            .unwrap();
 
         assert!(deployed.is_empty());
     }
 
-    #[test]
-    fn auto_deploy_propagates_registration_error() {
+    #[tokio::test]
+    async fn auto_deploy_propagates_registration_error() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -843,7 +870,7 @@ mod tests {
         // Don't register OpenRouter engine — registration should fail
 
         let manifest = manifest_with_models(vec![("inference_model", "claude-sonnet")]);
-        let result = auto_deploy_models(dir.path(), &manifest, &*registry);
+        let result = auto_deploy_models(dir.path(), &manifest, &*registry).await;
 
         assert!(result.is_err());
     }

@@ -5,10 +5,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_openai::types::chat::{CreateChatCompletionRequest, CreateChatCompletionResponse};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use vlinder_core::domain::{
-    DagNodeId, DataMessageKind, DataRoutingKey, InferenceBackendType, MessageId, MessageQueue,
-    Operation, RequestMessage, ResponseMessage, ServiceBackend, ServiceDiagnostics, ServiceMetrics,
-    ServiceType,
+    Acknowledgement, DagNodeId, DataMessageKind, DataRoutingKey, InferenceBackendType, MessageId,
+    MessageQueue, Operation, QueueError, RequestMessage, ResponseMessage, ServiceBackend,
+    ServiceDiagnostics, ServiceMetrics, ServiceType,
 };
 
 /// Handler result: the raw HTTP response + extracted metrics.
@@ -41,6 +43,7 @@ pub struct OpenRouterWorker {
     queue: Arc<dyn MessageQueue + Send + Sync>,
     endpoint: String,
     api_key: String,
+    client: reqwest::Client,
 }
 
 impl OpenRouterWorker {
@@ -53,30 +56,56 @@ impl OpenRouterWorker {
             queue,
             endpoint,
             api_key,
+            client: reqwest::Client::new(),
         }
     }
 
-    /// Process one message if available. Returns true if a message was processed.
-    pub fn tick(&self) -> bool {
-        if let Ok((key, msg, ack)) = self.queue.receive_request(
-            ServiceBackend::Infer(InferenceBackendType::OpenRouter),
-            Operation::Run,
-        ) {
-            self.process_v2(&key, msg, ack);
-            return true;
+    /// Spawn one tokio task per (service, operation) this worker serves and
+    /// drive each until `shutdown` fires. For `OpenRouter` that's a single
+    /// `(Infer(OpenRouter), Run)` task.
+    ///
+    /// Each task loops: `select!` on shutdown vs. `receive_request`; once a
+    /// request resolves, processing runs outside the select so the
+    /// receive-then-ack path cannot be cancelled mid-flight.
+    pub async fn run(self: Arc<Self>, shutdown: CancellationToken) {
+        let mut set: JoinSet<()> = JoinSet::new();
+
+        {
+            let me = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            set.spawn(async move {
+                let service = ServiceBackend::Infer(InferenceBackendType::OpenRouter);
+                let operation = Operation::Run;
+                loop {
+                    let (key, msg, ack) = tokio::select! {
+                        () = shutdown.cancelled() => break,
+                        result = me.queue.receive_request(service, operation) => {
+                            match result {
+                                Ok(tuple) => tuple,
+                                Err(QueueError::Timeout) => continue,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "OpenRouter worker receive error");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    me.process_request(key, msg, ack).await;
+                }
+            });
         }
 
-        false
+        while set.join_next().await.is_some() {}
     }
 
-    fn process_v2(
+    pub async fn process_request(
         &self,
-        key: &DataRoutingKey,
+        key: DataRoutingKey,
         msg: RequestMessage,
-        ack: Box<dyn FnOnce() -> Result<(), vlinder_core::domain::QueueError> + Send>,
+        ack: Acknowledgement,
     ) {
         let start = Instant::now();
-        let (http_response, metrics) = self.handle(&msg.payload);
+        let (http_response, metrics) = self.handle(&msg.payload).await;
 
         let status_code = http_response.status().as_u16();
         let wire = vlinder_core::domain::wire::WireResponse {
@@ -92,7 +121,7 @@ impl OpenRouterWorker {
             metrics,
         };
 
-        let response_key = response_key_from_request(key);
+        let response_key = response_key_from_request(&key);
         let response = ResponseMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
@@ -103,11 +132,11 @@ impl OpenRouterWorker {
             status_code,
             checkpoint: msg.checkpoint,
         };
-        let _ = self.queue.send_response(response_key, response);
-        let _ = ack();
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
     }
 
-    fn handle(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle(&self, payload: &[u8]) -> HandlerResult {
         let req: CreateChatCompletionRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string(), "invalid_request_error"),
@@ -115,7 +144,7 @@ impl OpenRouterWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw(&req) {
+        let http_response = match self.call_upstream_raw(&req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e, "server_error"),
         };
@@ -139,15 +168,19 @@ impl OpenRouterWorker {
         )
     }
 
-    fn call_upstream_raw(
+    async fn call_upstream_raw(
         &self,
         req: &CreateChatCompletionRequest,
     ) -> Result<http::Response<Vec<u8>>, String> {
         let url = format!("{}/chat/completions", self.endpoint);
 
-        let mut response = ureq::post(&url)
-            .header("Authorization", &format!("Bearer {}", self.api_key))
-            .send_json(req)
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(req)
+            .send()
+            .await
             .map_err(|e| e.to_string())?;
 
         let status = response.status();
@@ -161,9 +194,10 @@ impl OpenRouterWorker {
         }
 
         let body = response
-            .body_mut()
-            .read_to_vec()
-            .map_err(|e| format!("failed to read response body: {e}"))?;
+            .bytes()
+            .await
+            .map_err(|e| format!("failed to read response body: {e}"))?
+            .to_vec();
 
         builder
             .body(body)
@@ -221,7 +255,7 @@ mod tests {
         SubmissionId::from("sub-test".to_string())
     }
 
-    fn send_request(
+    async fn send_request(
         queue: &Arc<dyn MessageQueue + Send + Sync>,
         payload: Vec<u8>,
         state: Option<String>,
@@ -249,7 +283,7 @@ mod tests {
             payload,
             checkpoint: None,
         };
-        queue.send_request(key, msg).unwrap();
+        queue.send_request(key, msg).await.unwrap();
         (submission, service, operation, sequence)
     }
 
@@ -265,8 +299,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_invalid_payload() {
+    async fn drain_one(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &OpenRouterWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(
+                ServiceBackend::Infer(InferenceBackendType::OpenRouter),
+                Operation::Run,
+            )
+            .await
+            .expect("request should be available");
+        worker.process_request(key, msg, ack).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = OpenRouterWorker::new(
             Arc::clone(&queue),
@@ -274,22 +319,23 @@ mod tests {
             "test-key".to_string(),
         );
 
-        let (sub, svc, op, seq) = send_request(&queue, b"not json".to_vec(), None);
-        assert!(worker.tick());
+        let (sub, svc, op, seq) = send_request(&queue, b"not json".to_vec(), None).await;
+        drain_one(&queue, &worker).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         let (status, body) = unwrap_wire(&response);
         assert_eq!(status, 400);
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["type"], "invalid_request_error");
         assert!(!body["error"]["message"].as_str().unwrap().is_empty());
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn echoes_state() {
+    #[tokio::test]
+    async fn echoes_state() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = OpenRouterWorker::new(
             Arc::clone(&queue),
@@ -305,22 +351,24 @@ mod tests {
             &queue,
             serde_json::to_vec(&body).unwrap(),
             Some("xyz".to_string()),
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        drain_one(&queue, &worker).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(
             response.state,
             Some("xyz".to_string()),
             "response should echo request state"
         );
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn valid_request_to_unreachable_endpoint_returns_error() {
+    #[tokio::test]
+    async fn valid_request_to_unreachable_endpoint_returns_error() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = OpenRouterWorker::new(
             Arc::clone(&queue),
@@ -332,32 +380,19 @@ mod tests {
             "model": "anthropic/claude-sonnet-4",
             "messages": [{"role": "user", "content": "hello"}]
         });
-        let (sub, svc, op, seq) = send_request(&queue, serde_json::to_vec(&body).unwrap(), None);
-        assert!(worker.tick());
+        let (sub, svc, op, seq) =
+            send_request(&queue, serde_json::to_vec(&body).unwrap(), None).await;
+        drain_one(&queue, &worker).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         let (status, body) = unwrap_wire(&response);
         assert_eq!(status, 500);
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["type"], "server_error");
         assert!(!body["error"]["message"].as_str().unwrap().is_empty());
-        ack().unwrap();
-    }
-
-    #[test]
-    fn no_message_returns_false() {
-        let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
-        let worker = OpenRouterWorker::new(
-            Arc::clone(&queue),
-            "http://127.0.0.1:1".to_string(),
-            "test-key".to_string(),
-        );
-
-        assert!(
-            !worker.tick(),
-            "tick() should return false when queue is empty"
-        );
+        ack().await.unwrap();
     }
 }

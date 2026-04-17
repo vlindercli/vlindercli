@@ -16,6 +16,8 @@ use vlinder_core::domain::{
     ResourceId, Runtime, RuntimeType,
 };
 
+use async_trait::async_trait;
+
 use crate::config::PodmanRuntimeConfig;
 use crate::podman_client::{remove_s3_credentials, write_s3_credentials, PodmanClient, RunTarget};
 
@@ -100,15 +102,17 @@ impl ContainerRuntime {
     /// 3. Add the agent container (user image, with mount volumes)
     /// 4. Add the sidecar container (vlinder-podman-sidecar image, env vars for config)
     /// 5. Start the pod (all containers start together)
-    fn start(&mut self, name: &str, agent: &Agent) -> Result<(), String> {
+    async fn start(&mut self, name: &str, agent: &Agent) -> Result<(), String> {
         if let Some(pod) = self.pods.get(name) {
-            if self.podman.is_pod_live(&pod.pod_id) {
+            // Clone pod_id to release the borrow on self.pods before awaiting.
+            let pod_id = pod.pod_id.clone();
+            if self.podman.is_pod_live(&pod_id).await {
                 return Ok(());
             }
             // Pod in hashmap but not running — remove stale entry
             tracing::warn!(agent = name, "Pod not running, recreating");
             let pod = self.pods.remove(name).unwrap();
-            self.cleanup_mount_volumes(&pod.mount_volumes);
+            self.cleanup_mount_volumes(&pod.mount_volumes).await;
         }
 
         let image_ref = ImageRef::parse(&agent.executable)
@@ -125,7 +129,7 @@ impl ContainerRuntime {
         };
 
         // 1. Provision S3 mount volumes (ADR 107)
-        let mount_volumes = self.provision_mount_volumes(name, agent)?;
+        let mount_volumes = self.provision_mount_volumes(name, agent).await?;
         let volume_pairs: Vec<(String, String)> = mount_volumes
             .iter()
             .zip(agent.requirements.mounts.values())
@@ -149,20 +153,24 @@ impl ContainerRuntime {
         let pod_id = self
             .podman
             .pod_create(&pod_name, &host_aliases)
+            .await
             .map_err(|e| e.to_string())?;
 
         // From here on, if anything fails we must remove the orphaned pod
         // and clean up any volumes we created.
         // Otherwise the next tick will try pod_create again and get "already exists".
-        if let Err(e) = self.start_in_pod(name, &pod_id, run_target, &image_ref, &volume_pairs) {
+        if let Err(e) = self
+            .start_in_pod(name, &pod_id, run_target, &image_ref, &volume_pairs)
+            .await
+        {
             tracing::warn!(
                 event = "pod.cleanup",
                 agent = %name,
                 pod = %pod_id,
                 "Removing orphaned pod after start failure"
             );
-            self.podman.pod_stop_and_remove(&pod_id, 0);
-            self.cleanup_mount_volumes(&mount_volumes);
+            self.podman.pod_stop_and_remove(&pod_id, 0).await;
+            self.cleanup_mount_volumes(&mount_volumes).await;
             return Err(e);
         }
 
@@ -189,7 +197,7 @@ impl ContainerRuntime {
     /// Adds the agent container (with mount volumes), the sidecar container,
     /// and starts the pod.
     /// Called by `start()` — if this fails, `start()` cleans up the orphaned pod.
-    fn start_in_pod(
+    async fn start_in_pod(
         &self,
         name: &str,
         pod_id: &PodId,
@@ -206,6 +214,7 @@ impl ContainerRuntime {
         // 3. Add agent container (with mount volumes, no env vars)
         self.podman
             .container_in_pod(run_target, pod_id, &[], &volume_refs)
+            .await
             .map_err(|e| e.to_string())?;
 
         // 4. Build sidecar env vars
@@ -230,6 +239,7 @@ impl ContainerRuntime {
         let image_digest_str = self
             .podman
             .image_digest(image_ref)
+            .await
             .map(String::from)
             .unwrap_or_default();
 
@@ -259,10 +269,14 @@ impl ContainerRuntime {
         // 5. Add sidecar container (no volumes — sidecar doesn't need file mounts)
         self.podman
             .container_in_pod(sidecar_target, pod_id, &env_refs, &[])
+            .await
             .map_err(|e| e.to_string())?;
 
         // 6. Start the pod (all containers start together)
-        self.podman.pod_start(pod_id).map_err(|e| e.to_string())?;
+        self.podman
+            .pod_start(pod_id)
+            .await
+            .map_err(|e| e.to_string())?;
 
         Ok(())
     }
@@ -335,7 +349,7 @@ impl ContainerRuntime {
     ///   (`ACCESS_KEY:SECRET_KEY`). The file must exist in the Podman VM
     ///   filesystem (not the Mac), so we write it via `podman machine ssh`.
     ///   See `write_s3_credentials` in `podman.rs`.
-    fn provision_mount_volumes(
+    async fn provision_mount_volumes(
         &self,
         agent_name: &str,
         agent: &Agent,
@@ -380,7 +394,7 @@ impl ContainerRuntime {
                 // line that needs to change. The delivery pipeline (write to VM,
                 // pass as mount option, clean up on teardown) is fully wired.
                 let credentials = "test:test";
-                let passwd_path = write_s3_credentials(&vol_name, credentials)?;
+                let passwd_path = write_s3_credentials(&vol_name, credentials).await?;
                 mount_flags.push(format!("passwd_file={passwd_path}"));
             }
 
@@ -394,6 +408,7 @@ impl ContainerRuntime {
 
             self.podman
                 .volume_create(&vol_name, "local", &options)
+                .await
                 .map_err(|e| format!("failed to create volume {vol_name}: {e}"))?;
 
             tracing::info!(
@@ -418,17 +433,20 @@ impl ContainerRuntime {
     /// passwd file written to the VM. If volume removal hangs (stale FUSE
     /// mount), Podman will force-remove it — the `connect_timeout` on the
     /// mount options prevents indefinite hangs.
-    fn cleanup_mount_volumes(&self, volumes: &[String]) {
+    async fn cleanup_mount_volumes(&self, volumes: &[String]) {
         for vol_name in volumes {
             tracing::info!(event = "volume.removed", volume = %vol_name, "Removing mount volume");
-            self.podman.volume_rm(vol_name);
-            remove_s3_credentials(vol_name);
+            self.podman.volume_rm(vol_name).await;
+            remove_s3_credentials(vol_name).await;
         }
     }
 
     /// Reconcile pods with the registry: remove orphans, start missing.
-    fn ensure_containers(&mut self) {
-        let agents = self.registry.get_agents_by_runtime(RuntimeType::Container);
+    async fn ensure_containers(&mut self) {
+        let agents = self
+            .registry
+            .get_agents_by_runtime(RuntimeType::Container)
+            .await;
 
         // Collect agent names from registry
         let agent_names: std::collections::HashSet<&str> =
@@ -445,8 +463,8 @@ impl ContainerRuntime {
         for name in orphaned {
             if let Some(pod) = self.pods.remove(&name) {
                 tracing::info!(event = "pod.orphaned", agent = %name, "Stopping orphaned pod");
-                self.podman.pod_stop_and_remove(&pod.pod_id, 5);
-                self.cleanup_mount_volumes(&pod.mount_volumes);
+                self.podman.pod_stop_and_remove(&pod.pod_id, 5).await;
+                self.cleanup_mount_volumes(&pod.mount_volumes).await;
             }
         }
 
@@ -455,7 +473,7 @@ impl ContainerRuntime {
 
             match status.as_ref() {
                 // Deploying: start pod, transition to Live or Failed
-                Some(AgentStatus::Deploying) => match self.start(&agent.name, agent) {
+                Some(AgentStatus::Deploying) => match self.start(&agent.name, agent).await {
                     Ok(()) => {
                         let agent_name = AgentName::new(&agent.name);
                         let check =
@@ -488,8 +506,8 @@ impl ContainerRuntime {
                     let agent_name = AgentName::new(&agent.name);
                     if let Some(pod) = self.pods.remove(&agent.name) {
                         tracing::info!(event = "pod.teardown", agent = %agent.name, "Tearing down pod");
-                        self.podman.pod_stop_and_remove(&pod.pod_id, 5);
-                        self.cleanup_mount_volumes(&pod.mount_volumes);
+                        self.podman.pod_stop_and_remove(&pod.pod_id, 5).await;
+                        self.cleanup_mount_volumes(&pod.mount_volumes).await;
                     }
                     let check =
                         ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
@@ -505,12 +523,7 @@ impl ContainerRuntime {
     }
 }
 
-impl Drop for ContainerRuntime {
-    fn drop(&mut self) {
-        self.shutdown();
-    }
-}
-
+#[async_trait]
 impl Runtime for ContainerRuntime {
     fn id(&self) -> &ResourceId {
         &self.id
@@ -520,20 +533,23 @@ impl Runtime for ContainerRuntime {
         RuntimeType::Container
     }
 
-    fn tick(&mut self) -> bool {
+    async fn tick(&mut self) -> bool {
         let before = self.pods.len();
-        self.ensure_containers();
+        self.ensure_containers().await;
         self.pods.len() != before
     }
 
-    fn shutdown(&mut self) {
-        for (name, pod) in self.pods.drain() {
+    async fn shutdown(&mut self) {
+        // Collect owned pods first so we don't hold a &mut self.pods borrow
+        // across .await points while also calling self.podman.*.
+        let pods: Vec<(String, Pod)> = self.pods.drain().collect();
+        for (name, pod) in pods {
             tracing::info!(event = "pod.stopped", agent = %name, pod = %pod.pod_id, "Stopping pod");
-            self.podman.pod_stop_and_remove(&pod.pod_id, 5);
+            self.podman.pod_stop_and_remove(&pod.pod_id, 5).await;
             for vol_name in &pod.mount_volumes {
                 tracing::info!(event = "volume.removed", volume = %vol_name, "Removing mount volume");
-                self.podman.volume_rm(vol_name);
-                remove_s3_credentials(vol_name);
+                self.podman.volume_rm(vol_name).await;
+                remove_s3_credentials(vol_name).await;
             }
         }
     }
@@ -557,6 +573,10 @@ fn extract_port(url: &str, default: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::podman_client::{PodmanError, RunTarget};
+    use async_trait::async_trait;
+    use vlinder_core::domain::{ContainerId, ImageDigest};
 
     /// Build a `PodmanRuntimeConfig` for tests (matches `vlinderd`'s `Config::for_test` defaults).
     fn test_config() -> PodmanRuntimeConfig {
@@ -584,22 +604,20 @@ mod tests {
         Arc::new(vlinder_core::domain::InMemoryDagStore::new())
     }
 
-    use crate::podman_client::{PodmanError, RunTarget};
-    use vlinder_core::domain::{ContainerId, ImageDigest};
-
     struct MockPodmanClient;
 
+    #[async_trait]
     impl PodmanClient for MockPodmanClient {
-        fn engine_version(&self) -> Option<semver::Version> {
+        async fn engine_version(&self) -> Option<semver::Version> {
             Some(semver::Version::new(5, 0, 0))
         }
-        fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
+        async fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
             None
         }
-        fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
+        async fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
             Ok(PodId::new("mock-pod"))
         }
-        fn container_in_pod(
+        async fn container_in_pod(
             &self,
             _: RunTarget<'_>,
             _: &PodId,
@@ -608,17 +626,22 @@ mod tests {
         ) -> Result<ContainerId, PodmanError> {
             Ok(ContainerId::new("mock-container"))
         }
-        fn volume_create(&self, _: &str, _: &str, _: &[(&str, &str)]) -> Result<(), PodmanError> {
+        async fn volume_create(
+            &self,
+            _: &str,
+            _: &str,
+            _: &[(&str, &str)],
+        ) -> Result<(), PodmanError> {
             Ok(())
         }
-        fn volume_rm(&self, _: &str) {}
-        fn is_pod_live(&self, _: &PodId) -> bool {
+        async fn volume_rm(&self, _: &str) {}
+        async fn is_pod_live(&self, _: &PodId) -> bool {
             true
         }
-        fn pod_start(&self, _: &PodId) -> Result<(), PodmanError> {
+        async fn pod_start(&self, _: &PodId) -> Result<(), PodmanError> {
             Ok(())
         }
-        fn pod_stop_and_remove(&self, _: &PodId, _: u32) {}
+        async fn pod_stop_and_remove(&self, _: &PodId, _: u32) {}
     }
 
     fn test_runtime() -> ContainerRuntime {
@@ -682,11 +705,11 @@ mod tests {
         assert_eq!(runtime.runtime_type(), RuntimeType::Container);
     }
 
-    #[test]
-    fn tick_returns_false_when_no_agents() {
+    #[tokio::test]
+    async fn tick_returns_false_when_no_agents() {
         let mut runtime = test_runtime();
 
-        assert!(!runtime.tick());
+        assert!(!runtime.tick().await);
     }
 
     // ── S3 mount volume naming (ADR 107) ──
@@ -715,7 +738,7 @@ mod tests {
 
     use vlinder_core::domain::{AgentManifest, AgentName, AgentStatus, RequirementsConfig};
 
-    fn register_test_agent(runtime: &mut ContainerRuntime, name: &str) {
+    async fn register_test_agent(runtime: &mut ContainerRuntime, name: &str) {
         let manifest = AgentManifest {
             name: name.to_string(),
             description: "test agent".to_string(),
@@ -732,7 +755,11 @@ mod tests {
             vector_storage: None,
         };
         runtime.registry().register_runtime(RuntimeType::Container);
-        runtime.registry().register_manifest(manifest).unwrap();
+        runtime
+            .registry()
+            .register_manifest(manifest)
+            .await
+            .unwrap();
         // Create pending readiness check (mirrors PersistentRegistry.register_agent)
         let check = ReadinessCheck::pending(AgentName::new(name), RuntimeType::Container.as_str());
         runtime.repo.append_readiness_check(&check).unwrap();
@@ -760,40 +787,40 @@ mod tests {
         runtime.repo.get_derived_status(name).unwrap().unwrap()
     }
 
-    #[test]
-    fn deploy_transitions_to_live() {
+    #[tokio::test]
+    async fn deploy_transitions_to_live() {
         let mut runtime = test_runtime();
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
     }
 
-    #[test]
-    fn redeploy_transitions_existing_agent_to_live() {
+    #[tokio::test]
+    async fn redeploy_transitions_existing_agent_to_live() {
         let mut runtime = test_runtime();
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
 
         // Re-deploy: set back to Deploying
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
     }
 
-    #[test]
-    fn delete_transitions_to_deleted() {
+    #[tokio::test]
+    async fn delete_transitions_to_deleted() {
         let mut runtime = test_runtime();
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy first
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
 
         // Delete — mark as deleting via readiness check
@@ -802,26 +829,28 @@ mod tests {
                 .deleting();
         runtime.repo.append_readiness_check(&check).unwrap();
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deleting);
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Deleted);
     }
 
-    #[test]
-    fn failed_start_transitions_to_failed() {
+    #[tokio::test]
+    async fn failed_start_transitions_to_failed() {
         use crate::podman_client::PodmanError;
 
         struct FailingPodmanClient;
+
+        #[async_trait]
         impl PodmanClient for FailingPodmanClient {
-            fn engine_version(&self) -> Option<semver::Version> {
+            async fn engine_version(&self) -> Option<semver::Version> {
                 Some(semver::Version::new(5, 0, 0))
             }
-            fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
+            async fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
                 None
             }
-            fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
+            async fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
                 Err(PodmanError::Run("simulated failure".into()))
             }
-            fn container_in_pod(
+            async fn container_in_pod(
                 &self,
                 _: RunTarget<'_>,
                 _: &PodId,
@@ -830,7 +859,7 @@ mod tests {
             ) -> Result<ContainerId, PodmanError> {
                 Ok(ContainerId::new("x"))
             }
-            fn volume_create(
+            async fn volume_create(
                 &self,
                 _: &str,
                 _: &str,
@@ -838,14 +867,14 @@ mod tests {
             ) -> Result<(), PodmanError> {
                 Ok(())
             }
-            fn volume_rm(&self, _: &str) {}
-            fn is_pod_live(&self, _: &PodId) -> bool {
+            async fn volume_rm(&self, _: &str) {}
+            async fn is_pod_live(&self, _: &PodId) -> bool {
                 true
             }
-            fn pod_start(&self, _: &PodId) -> Result<(), PodmanError> {
+            async fn pod_start(&self, _: &PodId) -> Result<(), PodmanError> {
                 Ok(())
             }
-            fn pod_stop_and_remove(&self, _: &PodId, _: u32) {}
+            async fn pod_stop_and_remove(&self, _: &PodId, _: u32) {}
         }
 
         let mut runtime = ContainerRuntime::new(
@@ -854,49 +883,51 @@ mod tests {
             test_repo(),
             Box::new(FailingPodmanClient),
         );
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Failed);
     }
 
-    #[test]
-    fn orphan_pod_is_removed() {
+    #[tokio::test]
+    async fn orphan_pod_is_removed() {
         let mut runtime = test_runtime();
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy
-        runtime.tick();
+        runtime.tick().await;
         assert!(runtime.pods.contains_key("my-agent"));
 
         // Remove from registry (simulate external deletion)
-        runtime.registry().delete_agent("my-agent").unwrap();
+        runtime.registry().delete_agent("my-agent").await.unwrap();
 
         // Tick should clean up the orphaned pod
-        runtime.tick();
+        runtime.tick().await;
         assert!(!runtime.pods.contains_key("my-agent"));
     }
 
-    #[test]
-    fn crashed_pod_is_recreated() {
+    #[tokio::test]
+    async fn crashed_pod_is_recreated() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         struct CrashablePodmanClient {
             pod_alive: Arc<AtomicBool>,
         }
+
+        #[async_trait]
         impl PodmanClient for CrashablePodmanClient {
-            fn engine_version(&self) -> Option<semver::Version> {
+            async fn engine_version(&self) -> Option<semver::Version> {
                 Some(semver::Version::new(5, 0, 0))
             }
-            fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
+            async fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
                 None
             }
-            fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
+            async fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
                 Ok(PodId::new("mock-pod"))
             }
-            fn container_in_pod(
+            async fn container_in_pod(
                 &self,
                 _: RunTarget<'_>,
                 _: &PodId,
@@ -905,7 +936,7 @@ mod tests {
             ) -> Result<ContainerId, PodmanError> {
                 Ok(ContainerId::new("mock-container"))
             }
-            fn volume_create(
+            async fn volume_create(
                 &self,
                 _: &str,
                 _: &str,
@@ -913,14 +944,14 @@ mod tests {
             ) -> Result<(), PodmanError> {
                 Ok(())
             }
-            fn volume_rm(&self, _: &str) {}
-            fn is_pod_live(&self, _: &PodId) -> bool {
+            async fn volume_rm(&self, _: &str) {}
+            async fn is_pod_live(&self, _: &PodId) -> bool {
                 self.pod_alive.load(Ordering::Relaxed)
             }
-            fn pod_start(&self, _: &PodId) -> Result<(), PodmanError> {
+            async fn pod_start(&self, _: &PodId) -> Result<(), PodmanError> {
                 Ok(())
             }
-            fn pod_stop_and_remove(&self, _: &PodId, _: u32) {}
+            async fn pod_stop_and_remove(&self, _: &PodId, _: u32) {}
         }
 
         let pod_alive = Arc::new(AtomicBool::new(true));
@@ -931,11 +962,11 @@ mod tests {
             test_repo(),
             Box::new(CrashablePodmanClient { pod_alive }),
         );
-        register_test_agent(&mut runtime, "my-agent");
+        register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
 
         // Deploy — pod is alive
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
         assert!(runtime.pods.contains_key("my-agent"));
 
@@ -944,7 +975,7 @@ mod tests {
 
         // Re-deploy — should detect the dead pod and recreate
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
-        runtime.tick();
+        runtime.tick().await;
         assert_eq!(get_agent_status(&runtime, "my-agent"), AgentStatus::Live);
         assert!(runtime.pods.contains_key("my-agent"));
     }

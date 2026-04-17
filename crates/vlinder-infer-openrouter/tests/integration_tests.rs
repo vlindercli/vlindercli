@@ -16,26 +16,26 @@ fn openrouter_key_or_skip() -> Option<String> {
     }
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "requires OpenRouter API key"]
-fn lists_models_from_openrouter() {
+async fn lists_models_from_openrouter() {
     let Some(key) = openrouter_key_or_skip() else {
         return;
     };
     let catalog = OpenRouterCatalog::new("https://openrouter.ai/api/v1", &key);
-    let models = catalog.list();
+    let models = catalog.list().await;
     assert!(models.is_ok());
     assert!(!models.unwrap().is_empty());
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "requires OpenRouter API key"]
-fn resolves_model_from_openrouter() {
+async fn resolves_model_from_openrouter() {
     let Some(key) = openrouter_key_or_skip() else {
         return;
     };
     let catalog = OpenRouterCatalog::new("https://openrouter.ai/api/v1", &key);
-    let model = catalog.resolve("anthropic/claude-sonnet-4");
+    let model = catalog.resolve("anthropic/claude-sonnet-4").await;
     assert!(model.is_ok());
     let model = model.unwrap();
     assert_eq!(model.provider, Provider::OpenRouter);

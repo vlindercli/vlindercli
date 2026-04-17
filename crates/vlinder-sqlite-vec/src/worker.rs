@@ -1,16 +1,19 @@
 //! SQLite-vec worker — receives vector storage requests from the queue,
 //! opens `SqliteVectorStorage` per agent, and sends responses back.
 //!
-//! Follows the same pattern as `OllamaWorker` / `OpenRouterWorker`:
-//! the worker lives in the provider crate, next to the route declarations.
+//! Spawns one tokio task per operation (`Store`/`Search`/`Delete`) and
+//! drives each until shutdown. Each task owns its own queue slot so a
+//! long poll on one operation cannot starve another.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use vlinder_core::domain::Registry;
 use vlinder_core::domain::{
-    DagNodeId, DataMessageKind, DataRoutingKey, MessageId, MessageQueue, Operation,
-    ResponseMessage, ServiceBackend, ServiceDiagnostics,
+    Acknowledgement, DagNodeId, DataMessageKind, DataRoutingKey, MessageId, MessageQueue,
+    Operation, QueueError, RequestMessage, ResponseMessage, ServiceBackend, ServiceDiagnostics,
 };
 
 use crate::storage::SqliteVectorStorage;
@@ -75,8 +78,146 @@ impl SqliteVecWorker {
         }
     }
 
+    /// Spawn one tokio task per operation this worker serves and drive
+    /// each until `shutdown` fires. Three tasks, all on `self.service`:
+    /// `Store`, `Search`, `Delete`.
+    ///
+    /// Each task loops: `select!` on shutdown vs. `receive_request`; once a
+    /// request resolves, processing runs outside the select so the
+    /// receive-then-ack path cannot be cancelled mid-flight.
+    pub async fn run(self: Arc<Self>, shutdown: CancellationToken) {
+        let mut set: JoinSet<()> = JoinSet::new();
+
+        for op in [Operation::Store, Operation::Search, Operation::Delete] {
+            let me = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            set.spawn(async move {
+                let service = me.service;
+                loop {
+                    let (key, msg, ack) = tokio::select! {
+                        () = shutdown.cancelled() => break,
+                        result = me.queue.receive_request(service, op) => {
+                            match result {
+                                Ok(tuple) => tuple,
+                                Err(QueueError::Timeout) => continue,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, operation = ?op, "sqlite-vec worker receive error");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    match op {
+                        Operation::Store => me.process_store_request(key, msg, ack).await,
+                        Operation::Search => me.process_search_request(key, msg, ack).await,
+                        Operation::Delete => me.process_delete_request(key, msg, ack).await,
+                        _ => unreachable!("sqlite-vec worker only spawns Store/Search/Delete tasks"),
+                    }
+                }
+            });
+        }
+
+        while set.join_next().await.is_some() {}
+    }
+
+    pub async fn process_store_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let agent = extract_agent(&key);
+        let start = std::time::Instant::now();
+        let response_payload = self.handle_store(agent, &msg.payload).await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::Store,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: msg.state,
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
+    pub async fn process_search_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let agent = extract_agent(&key);
+        let start = std::time::Instant::now();
+        let response_payload = self.handle_search(agent, &msg.payload).await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::Search,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: msg.state,
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
+    pub async fn process_delete_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let agent = extract_agent(&key);
+        let start = std::time::Instant::now();
+        let response_payload = self.handle_delete(agent, &msg.payload).await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::Delete,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: msg.state,
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
     /// Get storage for an agent, opening lazily if needed.
-    fn get_or_open(&self, agent_id: &str) -> Result<Arc<SqliteVectorStorage>, String> {
+    async fn get_or_open(&self, agent_id: &str) -> Result<Arc<SqliteVectorStorage>, String> {
         if let Some(storage) = self.stores.read().unwrap().get(agent_id) {
             return Ok(storage.clone());
         }
@@ -84,6 +225,7 @@ impl SqliteVecWorker {
         let agent = self
             .registry
             .get_agent_by_name(agent_id)
+            .await
             .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
         let uri = agent
             .vector_storage
@@ -100,126 +242,13 @@ impl SqliteVecWorker {
         Ok(storage)
     }
 
-    /// Process one message if available. Returns true if processed.
-    pub fn tick(&self) -> bool {
-        if self.try_store_v2() {
-            return true;
-        }
-        if self.try_search_v2() {
-            return true;
-        }
-        if self.try_delete_v2() {
-            return true;
-        }
-        false
-    }
-
-    fn try_store_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Store) {
-            Ok((key, msg, ack)) => {
-                let agent = extract_agent(&key);
-                let start = std::time::Instant::now();
-                let response_payload = self.handle_store(agent, &msg.payload);
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::Store,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: msg.state,
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response);
-                let _ = ack();
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    fn try_search_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Search) {
-            Ok((key, msg, ack)) => {
-                let agent = extract_agent(&key);
-                let start = std::time::Instant::now();
-                let response_payload = self.handle_search(agent, &msg.payload);
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::Search,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: msg.state,
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response);
-                let _ = ack();
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    fn try_delete_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Delete) {
-            Ok((key, msg, ack)) => {
-                let agent = extract_agent(&key);
-                let start = std::time::Instant::now();
-                let response_payload = self.handle_delete(agent, &msg.payload);
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::Delete,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: msg.state,
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response);
-                let _ = ack();
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    fn handle_store(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
+    async fn handle_store(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
         let req: SqliteVecStoreRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return format!("[error] invalid request: {e}").into_bytes(),
         };
 
-        let store = match self.get_or_open(agent_id) {
+        let store = match self.get_or_open(agent_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -230,13 +259,13 @@ impl SqliteVecWorker {
         }
     }
 
-    fn handle_search(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
+    async fn handle_search(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
         let req: SqliteVecSearchRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return format!("[error] invalid request: {e}").into_bytes(),
         };
 
-        let store = match self.get_or_open(agent_id) {
+        let store = match self.get_or_open(agent_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -262,13 +291,13 @@ impl SqliteVecWorker {
         }
     }
 
-    fn handle_delete(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
+    async fn handle_delete(&self, agent_id: &str, payload: &[u8]) -> Vec<u8> {
         let req: SqliteVecDeleteRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return format!("[error] invalid request: {e}").into_bytes(),
         };
 
-        let store = match self.get_or_open(agent_id) {
+        let store = match self.get_or_open(agent_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -361,9 +390,25 @@ mod tests {
         }
     }
 
-    #[test]
+    async fn drain_store(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &SqliteVecWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(worker.service, Operation::Store)
+            .await
+            .expect("store request should be available");
+        worker.process_store_request(key, msg, ack).await;
+    }
+
+    async fn drain_search(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &SqliteVecWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(worker.service, Operation::Search)
+            .await
+            .expect("search request should be available");
+        worker.process_search_request(key, msg, ack).await;
+    }
+
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
-    fn vector_search_response_echoes_state() {
+    async fn vector_search_response_echoes_state() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("vec.db");
 
@@ -372,7 +417,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_vector_storage(VectorStorageType::SqliteVec);
         let agent = test_agent_with_vector_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = SqliteVecWorker::new(
             Arc::clone(&queue),
@@ -400,8 +445,8 @@ mod tests {
             serde_json::to_vec(&store_payload).unwrap(),
             Some("state-vec".to_string()),
         );
-        queue.send_request(store_key, store_msg).unwrap();
-        handler.tick();
+        queue.send_request(store_key, store_msg).await.unwrap();
+        drain_store(&queue, &handler).await;
         let (_key, store_resp, ack) = queue
             .receive_response(
                 &submission,
@@ -410,8 +455,9 @@ mod tests {
                 Operation::Store,
                 Sequence::first(),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
         assert_eq!(
             store_resp.state,
             Some("state-vec".to_string()),
@@ -433,8 +479,8 @@ mod tests {
             serde_json::to_vec(&search_payload).unwrap(),
             Some("state-vec2".to_string()),
         );
-        queue.send_request(search_key, search_msg).unwrap();
-        handler.tick();
+        queue.send_request(search_key, search_msg).await.unwrap();
+        drain_search(&queue, &handler).await;
         let (_key, search_resp, ack) = queue
             .receive_response(
                 &submission,
@@ -443,8 +489,9 @@ mod tests {
                 Operation::Search,
                 Sequence::from(2),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
         assert_eq!(
             search_resp.state,
             Some("state-vec2".to_string()),
@@ -452,8 +499,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn handles_store_and_search() {
+    #[tokio::test]
+    async fn handles_store_and_search() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("vec.db");
 
@@ -462,7 +509,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_vector_storage(VectorStorageType::SqliteVec);
         let agent = test_agent_with_vector_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = SqliteVecWorker::new(
             Arc::clone(&queue),
@@ -488,8 +535,8 @@ mod tests {
         );
         let store_msg = make_request_msg(serde_json::to_vec(&store_payload).unwrap(), None);
 
-        queue.send_request(store_key, store_msg).unwrap();
-        assert!(handler.tick());
+        queue.send_request(store_key, store_msg).await.unwrap();
+        drain_store(&queue, &handler).await;
         let (_key, response, ack) = queue
             .receive_response(
                 &submission,
@@ -498,9 +545,10 @@ mod tests {
                 Operation::Store,
                 Sequence::first(),
             )
+            .await
             .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
-        ack().unwrap();
+        ack().await.unwrap();
 
         let search_payload = serde_json::json!({
             "vector": embedding,
@@ -515,8 +563,8 @@ mod tests {
         );
         let search_msg = make_request_msg(serde_json::to_vec(&search_payload).unwrap(), None);
 
-        queue.send_request(search_key, search_msg).unwrap();
-        assert!(handler.tick());
+        queue.send_request(search_key, search_msg).await.unwrap();
+        drain_search(&queue, &handler).await;
         let (_key, response, ack) = queue
             .receive_response(
                 &submission,
@@ -525,11 +573,12 @@ mod tests {
                 Operation::Search,
                 Sequence::from(2),
             )
+            .await
             .unwrap();
         let results: Vec<serde_json::Value> =
             serde_json::from_slice(response.payload.as_slice()).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["key"], "doc1");
-        ack().unwrap();
+        ack().await.unwrap();
     }
 }

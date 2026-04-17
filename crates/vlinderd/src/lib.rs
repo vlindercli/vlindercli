@@ -5,5 +5,5 @@ pub mod secret_store_factory;
 pub mod state_factory;
 pub mod supervisor;
 pub mod tracing_setup;
-pub mod worker;
+pub mod worker_async;
 pub mod worker_role;

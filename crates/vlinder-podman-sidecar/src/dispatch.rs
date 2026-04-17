@@ -26,7 +26,7 @@ pub struct DispatchContext {
 }
 
 /// Handle a single invocation: dispatch to agent and send complete.
-pub fn handle_invoke(
+pub async fn handle_invoke(
     ctx: &DispatchContext,
     health: &mut HealthWindow,
     key: &DataRoutingKey,
@@ -37,7 +37,7 @@ pub fn handle_invoke(
         return;
     };
 
-    match shared::dispatch_invoke(&ctx.queue, &ctx.registry, ctx.container_port, key, msg) {
+    match shared::dispatch_invoke(&ctx.queue, &ctx.registry, ctx.container_port, key, msg).await {
         Ok(result) => {
             let diagnostics = health::build_diagnostics(
                 health,
@@ -54,7 +54,8 @@ pub fn handle_invoke(
                 result.output,
                 result.state,
                 diagnostics,
-            );
+            )
+            .await;
         }
         Err(e) => {
             tracing::warn!(event = "dispatch.error", error = %e, "Dispatch failed");
@@ -65,7 +66,8 @@ pub fn handle_invoke(
                 format!("[error] {e}").into_bytes(),
                 None,
                 RuntimeDiagnostics::placeholder(0),
-            );
+            )
+            .await;
         }
     }
 }

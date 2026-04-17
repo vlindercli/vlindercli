@@ -1,8 +1,5 @@
 //! NATS-backed message queue with `JetStream` durability (ADR 044).
 //!
-//! Provides a sync facade over the async NATS client. The runtime is owned
-//! internally, so callers use simple blocking APIs while getting async I/O.
-//!
 //! Uses typed messages exclusively for full observability.
 
 use std::collections::HashMap;
@@ -12,9 +9,8 @@ use std::time::Duration;
 use async_nats::jetstream::{self, consumer, stream};
 type PullConsumer = async_nats::jetstream::consumer::Consumer<consumer::pull::Config>;
 use async_nats::jetstream::message::Message as JetStreamMessage;
+use async_trait::async_trait;
 use futures::StreamExt;
-use tokio::runtime::Runtime;
-
 use std::str::FromStr;
 
 use vlinder_core::domain::{
@@ -25,16 +21,13 @@ use vlinder_core::domain::{
     SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
 
-/// NATS queue with `JetStream` durability.
-///
-/// Sync facade over async internals. Clone is cheap (Arc).
+/// NATS queue with `JetStream` durability. Clone is cheap (Arc).
 #[derive(Clone)]
 pub struct NatsQueue {
     inner: Arc<NatsQueueInner>,
 }
 
 struct NatsQueueInner {
-    runtime: Runtime,
     client: async_nats::Client,
     jetstream: jetstream::Context,
     consumers: Mutex<HashMap<String, PullConsumer>>,
@@ -44,26 +37,14 @@ impl NatsQueue {
     /// Connect to a NATS server using the given config.
     ///
     /// Creates the VLINDER stream if it doesn't exist.
-    pub fn connect(config: &crate::NatsConfig) -> Result<Self, QueueError> {
-        let runtime = Runtime::new()
-            .map_err(|e| QueueError::SendFailed(format!("failed to create runtime: {e}")))?;
-
-        let (client, jetstream) = runtime.block_on(async {
-            let client = crate::connect::nats_connect(config)
-                .await
-                .map_err(QueueError::SendFailed)?;
-
-            let jetstream = jetstream::new(client.clone());
-
-            // Ensure stream exists
-            Self::ensure_stream(&jetstream).await?;
-
-            Ok::<_, QueueError>((client, jetstream))
-        })?;
-
+    pub async fn connect_async(config: &crate::NatsConfig) -> Result<Self, QueueError> {
+        let client = crate::connect::nats_connect(config)
+            .await
+            .map_err(QueueError::SendFailed)?;
+        let jetstream = jetstream::new(client.clone());
+        Self::ensure_stream(&jetstream).await?;
         Ok(Self {
             inner: Arc::new(NatsQueueInner {
-                runtime,
                 client,
                 jetstream,
                 consumers: Mutex::new(HashMap::new()),
@@ -77,8 +58,8 @@ impl NatsQueue {
             name: "VLINDER".to_string(),
             subjects: vec!["vlinder.>".to_string()],
             retention: stream::RetentionPolicy::Limits,
-            max_age: Duration::from_secs(7 * 24 * 60 * 60), // 7 days
-            max_bytes: 100 * 1024 * 1024,                   // 100 MiB — required by NGS
+            max_age: Duration::from_hours(7 * 24),
+            max_bytes: 100 * 1024 * 1024, // 100 MiB — required by NGS
             ..Default::default()
         };
 
@@ -129,8 +110,8 @@ impl NatsQueue {
             .create_consumer(consumer::pull::Config {
                 name: Some(name),
                 filter_subject: filter.to_string(),
-                ack_wait: Duration::from_secs(300),
-                inactive_threshold: Duration::from_secs(300),
+                ack_wait: Duration::from_mins(5),
+                inactive_threshold: Duration::from_mins(5),
                 ..Default::default()
             })
             .await
@@ -152,13 +133,7 @@ impl NatsQueue {
     async fn fetch_one(
         &self,
         filter: &str,
-    ) -> Result<
-        (
-            JetStreamMessage,
-            Box<dyn FnOnce() -> Result<(), QueueError> + Send>,
-        ),
-        QueueError,
-    > {
+    ) -> Result<(JetStreamMessage, Acknowledgement), QueueError> {
         match self.try_fetch_one(filter).await {
             Ok(result) => Ok(result),
             Err(QueueError::ReceiveFailed(ref msg)) if msg.contains("503") => {
@@ -174,19 +149,16 @@ impl NatsQueue {
     async fn try_fetch_one(
         &self,
         filter: &str,
-    ) -> Result<
-        (
-            JetStreamMessage,
-            Box<dyn FnOnce() -> Result<(), QueueError> + Send>,
-        ),
-        QueueError,
-    > {
+    ) -> Result<(JetStreamMessage, Acknowledgement), QueueError> {
         let consumer = self.get_or_create_consumer(filter).await?;
 
         let mut messages = consumer
             .fetch()
             .max_messages(1)
-            .expires(Duration::from_millis(100))
+            // 30s long-poll: safe because every caller is a dedicated task racing
+            // receive against a cancel token (no multi-filter serialization).
+            // See steps 07-11 of the async-cascade refactor.
+            .expires(Duration::from_secs(30))
             .messages()
             .await
             .map_err(|e| QueueError::ReceiveFailed(e.to_string()))?;
@@ -200,18 +172,17 @@ impl NatsQueue {
         // Wrap message for ack closure
         let js_msg_for_ack: Arc<Mutex<Option<JetStreamMessage>>> =
             Arc::new(Mutex::new(Some(js_msg.clone())));
-        let handle = self.inner.runtime.handle().clone();
-
-        let ack_fn: Box<dyn FnOnce() -> Result<(), QueueError> + Send> = Box::new(move || {
-            if let Some(msg) = js_msg_for_ack.lock().unwrap().take() {
-                handle.block_on(async {
+        let ack_fn: Acknowledgement = Box::new(move || {
+            let taken = js_msg_for_ack.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(msg) = taken {
                     msg.ack()
                         .await
                         .map_err(|e| QueueError::ReceiveFailed(format!("ack failed: {e}")))
-                })
-            } else {
-                Ok(())
-            }
+                } else {
+                    Ok(())
+                }
+            })
         });
 
         Ok((js_msg, ack_fn))
@@ -224,45 +195,13 @@ impl NatsQueue {
     }
 }
 
+#[async_trait]
 impl MessageQueue for NatsQueue {
-    fn on_cluster_start(&self) -> Result<(), QueueError> {
-        // Stream is already created in connect(). Log its state for observability.
-        self.inner.runtime.block_on(async {
-            match self.inner.jetstream.get_stream("VLINDER").await {
-                Ok(mut stream) => {
-                    let info = stream.info().await;
-                    match info {
-                        Ok(info) => {
-                            tracing::info!(
-                                stream = "VLINDER",
-                                messages = info.state.messages,
-                                bytes = info.state.bytes,
-                                consumers = info.state.consumer_count,
-                                "NATS stream ready"
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                stream = "VLINDER",
-                                error = %e,
-                                "NATS stream exists but failed to query info"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        stream = "VLINDER",
-                        error = %e,
-                        "NATS stream not found — ensure_stream may have failed at connect time"
-                    );
-                }
-            }
-        });
+    async fn on_cluster_start(&self) -> Result<(), QueueError> {
         Ok(())
     }
 
-    fn on_agent_deployed(&self, agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deployed(&self, agent: &AgentName) -> Result<(), QueueError> {
         // NATS subjects are implicit — no queues to create.
         // The agent's subjects (invoke, complete, response) will be created
         // on first publish. Log for traceability.
@@ -273,7 +212,7 @@ impl MessageQueue for NatsQueue {
         Ok(())
     }
 
-    fn on_agent_deleted(&self, agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deleted(&self, agent: &AgentName) -> Result<(), QueueError> {
         // NATS subjects don't need explicit deletion — messages expire
         // via stream retention policy (max_age / max_bytes).
         tracing::debug!(
@@ -283,49 +222,49 @@ impl MessageQueue for NatsQueue {
         Ok(())
     }
 
-    fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
         let subject = invoke_subject(&key);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize invoke: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, payload.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, payload.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn receive_invoke(
+    async fn receive_invoke(
         &self,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
         let filter = invoke_filter(agent);
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = invoke_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid invoke subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = invoke_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid invoke subject: {subject}"))
+        })?;
 
-            let msg: InvokeMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize invoke: {e}")))?;
+        let msg: InvokeMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize invoke: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
-    fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
+    async fn send_complete(
+        &self,
+        key: DataRoutingKey,
+        msg: CompleteMessage,
+    ) -> Result<(), QueueError> {
         let DataMessageKind::Complete { agent, harness } = &key.kind else {
             return Err(QueueError::SendFailed(
                 "send_complete: expected Complete key".into(),
@@ -335,23 +274,21 @@ impl MessageQueue for NatsQueue {
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize complete: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, payload.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, payload.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn receive_complete(
+    async fn receive_complete(
         &self,
         submission: &SubmissionId,
         harness: HarnessType,
@@ -359,22 +296,24 @@ impl MessageQueue for NatsQueue {
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
         let filter = complete_filter(submission, agent, harness);
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = complete_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid complete subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = complete_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid complete subject: {subject}"))
+        })?;
 
-            let msg: CompleteMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize complete: {e}")))?;
+        let msg: CompleteMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize complete: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
-    fn send_request(&self, key: DataRoutingKey, msg: RequestMessage) -> Result<(), QueueError> {
+    async fn send_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+    ) -> Result<(), QueueError> {
         let DataMessageKind::Request {
             agent,
             service,
@@ -398,45 +337,45 @@ impl MessageQueue for NatsQueue {
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize request: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, payload.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, payload.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn receive_request(
+    async fn receive_request(
         &self,
         service: ServiceBackend,
         operation: Operation,
     ) -> Result<(DataRoutingKey, RequestMessage, Acknowledgement), QueueError> {
         let filter = request_filter(service, operation);
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = request_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid request subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = request_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid request subject: {subject}"))
+        })?;
 
-            let msg: RequestMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize request: {e}")))?;
+        let msg: RequestMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize request: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
-    fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {
+    async fn send_response(
+        &self,
+        key: DataRoutingKey,
+        msg: ResponseMessage,
+    ) -> Result<(), QueueError> {
         let DataMessageKind::Response {
             agent,
             service,
@@ -460,23 +399,21 @@ impl MessageQueue for NatsQueue {
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize response: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, payload.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, payload.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn receive_response(
+    async fn receive_response(
         &self,
         submission: &SubmissionId,
         agent: &AgentName,
@@ -486,22 +423,20 @@ impl MessageQueue for NatsQueue {
     ) -> Result<(DataRoutingKey, ResponseMessage, Acknowledgement), QueueError> {
         let filter = response_filter(submission, agent, service, operation, sequence);
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = response_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid response subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = response_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid response subject: {subject}"))
+        })?;
 
-            let msg: ResponseMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize response: {e}")))?;
+        let msg: ResponseMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize response: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
-    fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
+    async fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
         let SessionMessageKind::Fork { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Fork kind".into()));
         };
@@ -509,22 +444,24 @@ impl MessageQueue for NatsQueue {
         let body = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize fork: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, body.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-            Ok(())
-        })
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, body.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        Ok(())
     }
 
-    fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {
+    async fn send_promote(
+        &self,
+        key: SessionRoutingKey,
+        msg: PromoteMessage,
+    ) -> Result<(), QueueError> {
         let SessionMessageKind::Promote { ref agent_name } = key.kind else {
             return Err(QueueError::SendFailed("expected Promote kind".into()));
         };
@@ -532,22 +469,20 @@ impl MessageQueue for NatsQueue {
         let body = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize promote: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, body.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-            Ok(())
-        })
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, body.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        Ok(())
     }
 
-    fn send_session_start(
+    async fn send_session_start(
         &self,
         _key: SessionRoutingKey,
         _msg: SessionStartMessage,
@@ -557,7 +492,7 @@ impl MessageQueue for NatsQueue {
         Ok(BranchId::from(1))
     }
 
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeployAgentMessage,
@@ -566,22 +501,20 @@ impl MessageQueue for NatsQueue {
         let body = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize deploy_agent: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, body.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-            Ok(())
-        })
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, body.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        Ok(())
     }
 
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
@@ -590,68 +523,60 @@ impl MessageQueue for NatsQueue {
         let body = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize delete_agent: {e}")))?;
 
-        self.inner.runtime.block_on(async {
-            let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", msg.id.as_str());
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
 
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, body.into())
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?
-                .await
-                .map_err(|e| QueueError::SendFailed(e.to_string()))?;
-            Ok(())
-        })
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, body.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+        Ok(())
     }
 
-    fn receive_deploy_agent(
+    async fn receive_deploy_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
         let filter = "vlinder.infra.v1.*.deploy-agent";
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = deploy_agent_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid deploy-agent subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = deploy_agent_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid deploy-agent subject: {subject}"))
+        })?;
 
-            let msg: DeployAgentMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize deploy-agent: {e}")))?;
+        let msg: DeployAgentMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize deploy-agent: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
-    fn receive_delete_agent(
+    async fn receive_delete_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
         let filter = "vlinder.infra.v1.*.delete-agent";
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+        let (js_msg, ack_fn) = self.fetch_one(filter).await?;
 
-            let subject = js_msg.subject.as_str();
-            let key = delete_agent_parse_subject(subject).ok_or_else(|| {
-                QueueError::ReceiveFailed(format!("invalid delete-agent subject: {subject}"))
-            })?;
+        let subject = js_msg.subject.as_str();
+        let key = delete_agent_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid delete-agent subject: {subject}"))
+        })?;
 
-            let msg: DeleteAgentMessage = serde_json::from_slice(&js_msg.payload)
-                .map_err(|e| QueueError::ReceiveFailed(format!("deserialize delete-agent: {e}")))?;
+        let msg: DeleteAgentMessage = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize delete-agent: {e}")))?;
 
-            Ok((key, msg, ack_fn))
-        })
+        Ok((key, msg, ack_fn))
     }
 
-    fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+    async fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
         let filter = "vlinder.>";
 
-        self.inner.runtime.block_on(async {
-            let (js_msg, ack_fn) = self.fetch_one(filter).await?;
-            Ok((js_msg.subject.to_string(), js_msg.payload.to_vec(), ack_fn))
-        })
+        let (js_msg, ack_fn) = self.fetch_one(filter).await?;
+        Ok((js_msg.subject.to_string(), js_msg.payload.to_vec(), ack_fn))
     }
 }
 
@@ -731,7 +656,7 @@ fn complete_subject(
     agent: &AgentName,
     harness: HarnessType,
 ) -> String {
-    format!("{COMPLETE_PREFIX}.{session}.{branch}.{submission}.{COMPLETE_KIND}.{agent}.{harness}",)
+    format!("{COMPLETE_PREFIX}.{session}.{branch}.{submission}.{COMPLETE_KIND}.{agent}.{harness}")
 }
 
 /// Parse a NATS subject back into a `DataRoutingKey` for complete.

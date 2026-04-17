@@ -37,7 +37,7 @@ pub struct DispatchResult {
 ///
 /// The caller is responsible for building diagnostics, sending
 /// the `CompleteMessage`, and acknowledging the invoke.
-pub fn dispatch_invoke(
+pub async fn dispatch_invoke(
     queue: &Arc<dyn MessageQueue + Send + Sync>,
     registry: &Arc<dyn Registry>,
     agent_port: u16,
@@ -52,6 +52,7 @@ pub fn dispatch_invoke(
 
     let agent_info = registry
         .get_agent_by_name(agent.as_str())
+        .await
         .ok_or_else(|| format!("agent '{}' not found in registry", agent.as_str()))?;
 
     let hosts = build_hosts(&agent_info);
@@ -70,7 +71,7 @@ pub fn dispatch_invoke(
         agent.clone(),
         Arc::clone(&state),
     );
-    let provider_server = ProviderServer::start(handler, hosts, state, 3544);
+    let provider_server = ProviderServer::start(handler, hosts, state, 3544).await;
 
     let http = ureq::Agent::new();
     let agent_url = format!("http://127.0.0.1:{agent_port}/invoke");
@@ -97,7 +98,7 @@ pub fn dispatch_invoke(
 }
 
 /// Build and send a `CompleteMessage` on the data plane.
-pub fn send_complete(
+pub async fn send_complete(
     queue: &dyn MessageQueue,
     key: &DataRoutingKey,
     agent: &AgentName,
@@ -124,7 +125,7 @@ pub fn send_complete(
         diagnostics,
         payload: output,
     };
-    if let Err(e) = queue.send_complete(complete_key, msg) {
+    if let Err(e) = queue.send_complete(complete_key, msg).await {
         tracing::error!(error = %e, "failed to send complete");
     }
 }

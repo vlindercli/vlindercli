@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
+async-trait = "0.1"
 lapin = "3.0"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 serde_json = "1"

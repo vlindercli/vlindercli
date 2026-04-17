@@ -3,6 +3,7 @@
 //! Defines how agents are registered and executed.
 
 use super::ResourceId;
+use async_trait::async_trait;
 
 // ============================================================================
 // Runtime Type (compile-time supported runtimes)
@@ -59,6 +60,7 @@ impl std::str::FromStr for RuntimeType {
 /// - Polls their input queues
 /// - Executes agent code on message arrival
 /// - Sends responses to reply queues
+#[async_trait]
 pub trait Runtime {
     /// Unique identifier for this runtime instance.
     /// Format: `<registry_id>/runtimes/<runtime_type>`
@@ -68,13 +70,13 @@ pub trait Runtime {
     fn runtime_type(&self) -> RuntimeType;
 
     /// Process agent work. Returns true if work was done.
-    fn tick(&mut self) -> bool;
+    async fn tick(&mut self) -> bool;
 
     /// Release all resources held by this runtime.
     ///
     /// Called on graceful shutdown. Implementations should stop running
     /// agents and clean up any external resources (containers, connections, etc).
-    fn shutdown(&mut self);
+    async fn shutdown(&mut self);
 }
 
 #[cfg(test)]
@@ -100,6 +102,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl Runtime for MockRuntime {
         fn id(&self) -> &ResourceId {
             &self.id
@@ -109,7 +112,7 @@ mod tests {
             RuntimeType::Container
         }
 
-        fn tick(&mut self) -> bool {
+        async fn tick(&mut self) -> bool {
             if self.work_available {
                 self.work_available = false;
                 true
@@ -118,27 +121,27 @@ mod tests {
             }
         }
 
-        fn shutdown(&mut self) {}
+        async fn shutdown(&mut self) {}
     }
 
-    #[test]
-    fn mock_runtime_implements_trait() {
+    #[tokio::test]
+    async fn mock_runtime_implements_trait() {
         let mut runtime: Box<dyn Runtime> = Box::new(MockRuntime::new());
 
         // No work available
-        assert!(!runtime.tick());
+        assert!(!runtime.tick().await);
     }
 
-    #[test]
-    fn runtime_trait_is_object_safe() {
+    #[tokio::test]
+    async fn runtime_trait_is_object_safe() {
         // Can use Runtime as a trait object
-        fn use_runtime(runtime: &mut dyn Runtime) {
-            runtime.tick();
+        async fn use_runtime(runtime: &mut dyn Runtime) {
+            runtime.tick().await;
         }
 
         let mut mock = MockRuntime::new();
         mock.set_work_available(true);
-        use_runtime(&mut mock);
+        use_runtime(&mut mock).await;
 
         // Work was consumed
         assert!(!mock.work_available);

@@ -68,7 +68,11 @@ impl RegistryService for RegistryServer {
             .ok_or_else(|| Status::invalid_argument("missing agent id"))?
             .into();
 
-        let agent = self.registry.get_agent(&id).map(std::convert::Into::into);
+        let agent = self
+            .registry
+            .get_agent(&id)
+            .await
+            .map(std::convert::Into::into);
 
         Ok(Response::new(GetAgentResponse { agent }))
     }
@@ -82,6 +86,7 @@ impl RegistryService for RegistryServer {
         let agent = self
             .registry
             .get_agent_by_name(&req.name)
+            .await
             .map(std::convert::Into::into);
 
         Ok(Response::new(GetAgentResponse { agent }))
@@ -100,15 +105,7 @@ impl RegistryService for RegistryServer {
             .try_into()
             .map_err(|e: String| Status::invalid_argument(e))?;
 
-        // TECH DEBT: spawn_blocking works around nested tokio runtime panic.
-        // NatsSecretStore owns its own Runtime and calls block_on() — panics
-        // when called from a tokio worker thread (this gRPC handler).
-        // Real fix: secret store should be a separate process, and/or the
-        // Registry trait should be async. See TODO.md.
-        let registry = Arc::clone(&self.registry);
-        let result = tokio::task::spawn_blocking(move || registry.register_agent(domain_agent))
-            .await
-            .map_err(|e| Status::internal(format!("task join error: {e}")))?;
+        let result = self.registry.register_agent(domain_agent).await;
 
         match result {
             Ok(()) => Ok(Response::new(RegisterAgentResponse {
@@ -128,7 +125,7 @@ impl RegistryService for RegistryServer {
     ) -> Result<Response<DeleteAgentResponse>, Status> {
         let req = request.into_inner();
 
-        match self.registry.delete_agent(&req.name) {
+        match self.registry.delete_agent(&req.name).await {
             Ok(deleted) => Ok(Response::new(DeleteAgentResponse {
                 deleted,
                 error: None,
@@ -147,6 +144,7 @@ impl RegistryService for RegistryServer {
         let agents = self
             .registry
             .get_agents()
+            .await
             .into_iter()
             .filter(|a| {
                 self.repo
@@ -174,7 +172,7 @@ impl RegistryService for RegistryServer {
             .try_into()
             .map_err(|e: String| Status::invalid_argument(e))?;
 
-        match self.registry.register_fleet(domain_fleet) {
+        match self.registry.register_fleet(domain_fleet).await {
             Ok(()) => Ok(Response::new(RegisterFleetResponse {
                 success: true,
                 error: None,
@@ -194,6 +192,7 @@ impl RegistryService for RegistryServer {
         let fleet = self
             .registry
             .get_fleet(&req.name)
+            .await
             .map(std::convert::Into::into);
 
         Ok(Response::new(GetFleetResponse { fleet }))
@@ -206,6 +205,7 @@ impl RegistryService for RegistryServer {
         let fleets = self
             .registry
             .get_fleets()
+            .await
             .into_iter()
             .map(std::convert::Into::into)
             .collect();
@@ -221,6 +221,7 @@ impl RegistryService for RegistryServer {
         let model = self
             .registry
             .get_model(&req.name)
+            .await
             .map(std::convert::Into::into);
 
         Ok(Response::new(GetModelResponse { model }))
@@ -233,6 +234,7 @@ impl RegistryService for RegistryServer {
         let models = self
             .registry
             .get_models()
+            .await
             .into_iter()
             .map(std::convert::Into::into)
             .collect();
@@ -253,7 +255,7 @@ impl RegistryService for RegistryServer {
             .try_into()
             .map_err(|e: String| Status::invalid_argument(e))?;
 
-        match self.registry.register_model(domain_model) {
+        match self.registry.register_model(domain_model).await {
             Ok(()) => Ok(Response::new(RegisterModelResponse {
                 success: true,
                 error: None,
@@ -271,7 +273,7 @@ impl RegistryService for RegistryServer {
     ) -> Result<Response<DeleteModelResponse>, Status> {
         let req = request.into_inner();
 
-        match self.registry.delete_model(&req.name) {
+        match self.registry.delete_model(&req.name).await {
             Ok(deleted) => Ok(Response::new(DeleteModelResponse {
                 deleted,
                 error: None,
@@ -299,7 +301,8 @@ impl RegistryService for RegistryServer {
 
         let job_id = self
             .registry
-            .create_job(submission_id.clone(), agent_id, req.input);
+            .create_job(submission_id.clone(), agent_id, req.input)
+            .await;
 
         Ok(Response::new(CreateJobResponse {
             job_id: Some(job_id.into()),
@@ -317,7 +320,11 @@ impl RegistryService for RegistryServer {
             .ok_or_else(|| Status::invalid_argument("missing job id"))?
             .into();
 
-        let job = self.registry.get_job(&job_id).map(std::convert::Into::into);
+        let job = self
+            .registry
+            .get_job(&job_id)
+            .await
+            .map(std::convert::Into::into);
 
         Ok(Response::new(GetJobResponse { job }))
     }
@@ -340,7 +347,7 @@ impl RegistryService for RegistryServer {
             (Err(_), _) => return Err(Status::invalid_argument("invalid status")),
         };
 
-        self.registry.update_job_status(&job_id, status);
+        self.registry.update_job_status(&job_id, status).await;
 
         Ok(Response::new(UpdateJobStatusResponse { success: true }))
     }
@@ -352,6 +359,7 @@ impl RegistryService for RegistryServer {
         let jobs = self
             .registry
             .pending_jobs()
+            .await
             .into_iter()
             .map(std::convert::Into::into)
             .collect();
@@ -375,10 +383,9 @@ impl RegistryService for RegistryServer {
         };
         let msg = DeployAgentMessage::new(manifest);
 
-        let queue = Arc::clone(&self.queue);
-        tokio::task::spawn_blocking(move || queue.send_deploy_agent(key, msg))
+        self.queue
+            .send_deploy_agent(key, msg)
             .await
-            .map_err(|e| Status::internal(format!("task join error: {e}")))?
             .map_err(|e| Status::internal(format!("queue error: {e}")))?;
 
         Ok(Response::new(DeployAgentResponse {
@@ -399,10 +406,9 @@ impl RegistryService for RegistryServer {
         };
         let msg = DeleteAgentMessage::new(AgentName::new(req.name));
 
-        let queue = Arc::clone(&self.queue);
-        tokio::task::spawn_blocking(move || queue.send_delete_agent(key, msg))
+        self.queue
+            .send_delete_agent(key, msg)
             .await
-            .map_err(|e| Status::internal(format!("task join error: {e}")))?
             .map_err(|e| Status::internal(format!("queue error: {e}")))?;
 
         Ok(Response::new(SubmitDeleteAgentResponse {

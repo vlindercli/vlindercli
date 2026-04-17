@@ -8,91 +8,75 @@ use vlinder_core::domain::{
     Registry, ResourceId, RuntimeType, SubmissionId, VectorStorageType,
 };
 
+use async_trait::async_trait;
+
 /// Registry implementation that makes gRPC calls to a remote server.
 pub struct GrpcRegistryClient {
     client: RegistryClient<Channel>,
-    runtime: tokio::runtime::Runtime,
     id: ResourceId,
 }
 
 impl GrpcRegistryClient {
-    /// Connect to a registry server.
-    pub fn connect(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let runtime = tokio::runtime::Runtime::new()?;
-        let client = runtime.block_on(async { RegistryClient::connect(addr.to_string()).await })?;
-
+    /// Connect from within an existing async runtime.
+    pub async fn connect_async(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let client = RegistryClient::connect(addr.to_string()).await?;
         Ok(Self {
             client,
-            runtime,
             id: ResourceId::new(addr),
         })
     }
 
     /// Ping the registry server, returning its protocol version.
-    pub fn ping(&self) -> Option<(u32, u32, u32)> {
+    pub async fn ping(&self) -> Option<(u32, u32, u32)> {
         let mut client = self.client.clone();
-        self.runtime.block_on(async {
-            client.ping(proto::PingRequest {}).await.ok().map(|r| {
-                let v = r.into_inner();
-                (v.major, v.minor, v.patch)
-            })
+        client.ping(proto::PingRequest {}).await.ok().map(|r| {
+            let v = r.into_inner();
+            (v.major, v.minor, v.patch)
         })
     }
 
     /// Submit an agent deploy via the infra plane (CQRS write path).
     ///
     /// Returns a submission ID for polling status.
-    pub fn deploy_agent(
+    pub async fn deploy_agent(
         &self,
         manifest: &vlinder_core::domain::AgentManifest,
     ) -> Result<SubmissionId, String> {
         let manifest_json =
             serde_json::to_string(&manifest).map_err(|e| format!("serialize manifest: {e}"))?;
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async {
-                client
-                    .deploy_agent(proto::DeployAgentRequest { manifest_json })
-                    .await
-            })
+        let response = client
+            .deploy_agent(proto::DeployAgentRequest { manifest_json })
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         Ok(SubmissionId::from(resp.submission_id))
     }
 
     /// Submit an agent delete via the infra plane (CQRS write path).
-    pub fn submit_delete_agent(&self, name: &str) -> Result<SubmissionId, String> {
+    pub async fn submit_delete_agent(&self, name: &str) -> Result<SubmissionId, String> {
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async {
-                client
-                    .submit_delete_agent(proto::SubmitDeleteAgentRequest {
-                        name: name.to_string(),
-                    })
-                    .await
+        let response = client
+            .submit_delete_agent(proto::SubmitDeleteAgentRequest {
+                name: name.to_string(),
             })
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         Ok(SubmissionId::from(resp.submission_id))
     }
 
     /// Query agent deployment status.
-    pub fn get_agent_state(
+    pub async fn get_agent_state(
         &self,
         name: &str,
     ) -> Result<Option<vlinder_core::domain::AgentStatus>, String> {
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async {
-                client
-                    .get_agent_state(proto::GetAgentStateRequest {
-                        name: name.to_string(),
-                    })
-                    .await
+        let response = client
+            .get_agent_state(proto::GetAgentStateRequest {
+                name: name.to_string(),
             })
+            .await
             .map_err(|e| e.to_string())?;
         let resp = response.into_inner();
         match resp.status {
@@ -106,26 +90,17 @@ impl GrpcRegistryClient {
     }
 }
 
-/// Ping a registry server at the given address, returning its protocol version.
-///
-/// Creates a temporary connection and sends a Ping. Returns the server's
-/// version on success, None on any connection or transport error.
-pub fn ping_registry(addr: &str) -> Option<(u32, u32, u32)> {
-    let Ok(runtime) = tokio::runtime::Runtime::new() else {
+pub async fn ping_registry_async(addr: &str) -> Option<(u32, u32, u32)> {
+    let Ok(mut client) = RegistryClient::connect(addr.to_string()).await else {
         return None;
     };
-
-    runtime.block_on(async {
-        let Ok(mut client) = RegistryClient::connect(addr.to_string()).await else {
-            return None;
-        };
-        client.ping(proto::PingRequest {}).await.ok().map(|r| {
-            let v = r.into_inner();
-            (v.major, v.minor, v.patch)
-        })
+    client.ping(proto::PingRequest {}).await.ok().map(|r| {
+        let v = r.into_inner();
+        (v.major, v.minor, v.patch)
     })
 }
 
+#[async_trait]
 impl Registry for GrpcRegistryClient {
     fn id(&self) -> ResourceId {
         self.id.clone()
@@ -133,16 +108,16 @@ impl Registry for GrpcRegistryClient {
 
     // --- Agent operations ---
 
-    fn register_agent(&self, agent: Agent) -> Result<(), RegistrationError> {
+    async fn register_agent(&self, agent: Agent) -> Result<(), RegistrationError> {
         let proto_agent: proto::Agent = agent.into();
         let request = proto::RegisterAgentRequest {
             agent: Some(proto_agent),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.register_agent(request).await })
+        let response = client
+            .register_agent(request)
+            .await
             .map_err(|e| RegistrationError::Remote(e.to_string()))?;
 
         let resp = response.into_inner();
@@ -155,27 +130,22 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
+    async fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
         let request = proto::GetAgentRequest {
             id: Some(id.into()),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_agent(request).await })
-            .ok()?;
+        let response = client.get_agent(request).await.ok()?;
 
         response.into_inner().agent.and_then(|a| a.try_into().ok())
     }
 
-    fn get_agents(&self) -> Vec<Agent> {
+    async fn get_agents(&self) -> Vec<Agent> {
         let request = proto::ListAgentsRequest {};
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_agents(request).await });
+        let response = client.list_agents(request).await;
 
         match response {
             Ok(resp) => resp
@@ -188,31 +158,25 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_agent_by_name(&self, name: &str) -> Option<Agent> {
+    async fn get_agent_by_name(&self, name: &str) -> Option<Agent> {
         let request = proto::GetAgentByNameRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_agent_by_name(request).await })
-            .ok()?;
+        let response = client.get_agent_by_name(request).await.ok()?;
 
         response.into_inner().agent.and_then(|a| a.try_into().ok())
     }
 
-    fn agent_id(&self, name: &str) -> Option<ResourceId> {
+    async fn agent_id(&self, name: &str) -> Option<ResourceId> {
         // Query the server — only it knows its registry_id.
         let request = proto::GetAgentByNameRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_agent_by_name(request).await })
-            .ok()?;
+        let response = client.get_agent_by_name(request).await.ok()?;
 
         let agent = response.into_inner().agent?;
         Some(agent.id?.into())
@@ -225,16 +189,16 @@ impl Registry for GrpcRegistryClient {
 
     // --- Model operations ---
 
-    fn register_model(&self, model: Model) -> Result<(), RegistrationError> {
+    async fn register_model(&self, model: Model) -> Result<(), RegistrationError> {
         let proto_model: proto::Model = model.into();
         let request = proto::RegisterModelRequest {
             model: Some(proto_model),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.register_model(request).await })
+        let response = client
+            .register_model(request)
+            .await
             .map_err(|e| RegistrationError::Persistence(e.to_string()))?;
 
         let resp = response.into_inner();
@@ -248,27 +212,22 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_model(&self, name: &str) -> Option<Model> {
+    async fn get_model(&self, name: &str) -> Option<Model> {
         let request = proto::GetModelRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_model(request).await })
-            .ok()?;
+        let response = client.get_model(request).await.ok()?;
 
         response.into_inner().model.and_then(|m| m.try_into().ok())
     }
 
-    fn get_models(&self) -> Vec<Model> {
+    async fn get_models(&self) -> Vec<Model> {
         let request = proto::ListModelsRequest {};
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_models(request).await });
+        let response = client.list_models(request).await;
 
         match response {
             Ok(resp) => resp
@@ -281,9 +240,9 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
-        // Get all models and find by path
+    async fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
         self.get_models()
+            .await
             .into_iter()
             .find(|m| &m.model_path == path)
     }
@@ -292,15 +251,15 @@ impl Registry for GrpcRegistryClient {
         ResourceId::new(format!("model://{name}"))
     }
 
-    fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
+    async fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
         let request = proto::DeleteModelRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.delete_model(request).await })
+        let response = client
+            .delete_model(request)
+            .await
             .map_err(|e| RegistrationError::Persistence(e.to_string()))?;
 
         let resp = response.into_inner();
@@ -310,15 +269,15 @@ impl Registry for GrpcRegistryClient {
         Ok(resp.deleted)
     }
 
-    fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
+    async fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
         let request = proto::DeleteAgentRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.delete_agent(request).await })
+        let response = client
+            .delete_agent(request)
+            .await
             .map_err(|e| RegistrationError::Remote(e.to_string()))?;
 
         let resp = response.into_inner();
@@ -330,7 +289,7 @@ impl Registry for GrpcRegistryClient {
 
     // --- Job operations ---
 
-    fn create_job(
+    async fn create_job(
         &self,
         submission_id: SubmissionId,
         agent_id: ResourceId,
@@ -343,9 +302,7 @@ impl Registry for GrpcRegistryClient {
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.create_job(request).await });
+        let response = client.create_job(request).await;
 
         match response {
             Ok(resp) => resp.into_inner().job_id.map_or_else(
@@ -356,21 +313,18 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_job(&self, id: &JobId) -> Option<Job> {
+    async fn get_job(&self, id: &JobId) -> Option<Job> {
         let request = proto::GetJobRequest {
             id: Some(id.into()),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_job(request).await })
-            .ok()?;
+        let response = client.get_job(request).await.ok()?;
 
         response.into_inner().job.and_then(|j| j.try_into().ok())
     }
 
-    fn update_job_status(&self, id: &JobId, status: JobStatus) {
+    async fn update_job_status(&self, id: &JobId, status: JobStatus) {
         // Extract output from Completed/Failed status
         let output = match &status {
             JobStatus::Completed(result) => Some(result.clone()),
@@ -385,18 +339,14 @@ impl Registry for GrpcRegistryClient {
         };
 
         let mut client = self.client.clone();
-        let _ = self
-            .runtime
-            .block_on(async { client.update_job_status(request).await });
+        let _ = client.update_job_status(request).await;
     }
 
-    fn pending_jobs(&self) -> Vec<Job> {
+    async fn pending_jobs(&self) -> Vec<Job> {
         let request = proto::ListPendingJobsRequest {};
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_pending_jobs(request).await });
+        let response = client.list_pending_jobs(request).await;
 
         match response {
             Ok(resp) => resp
@@ -411,16 +361,16 @@ impl Registry for GrpcRegistryClient {
 
     // --- Fleet operations ---
 
-    fn register_fleet(&self, fleet: Fleet) -> Result<(), RegistrationError> {
+    async fn register_fleet(&self, fleet: Fleet) -> Result<(), RegistrationError> {
         let proto_fleet: proto::Fleet = fleet.into();
         let request = proto::RegisterFleetRequest {
             fleet: Some(proto_fleet),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.register_fleet(request).await })
+        let response = client
+            .register_fleet(request)
+            .await
             .map_err(|e| RegistrationError::Remote(e.to_string()))?;
 
         let resp = response.into_inner();
@@ -433,27 +383,22 @@ impl Registry for GrpcRegistryClient {
         }
     }
 
-    fn get_fleet(&self, name: &str) -> Option<Fleet> {
+    async fn get_fleet(&self, name: &str) -> Option<Fleet> {
         let request = proto::GetFleetRequest {
             name: name.to_string(),
         };
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.get_fleet(request).await })
-            .ok()?;
+        let response = client.get_fleet(request).await.ok()?;
 
         response.into_inner().fleet.and_then(|f| f.try_into().ok())
     }
 
-    fn get_fleets(&self) -> Vec<Fleet> {
+    async fn get_fleets(&self) -> Vec<Fleet> {
         let request = proto::ListFleetsRequest {};
 
         let mut client = self.client.clone();
-        let response = self
-            .runtime
-            .block_on(async { client.list_fleets(request).await });
+        let response = client.list_fleets(request).await;
 
         match response {
             Ok(resp) => resp

@@ -15,8 +15,10 @@ use crate::domain::{
     MessageType, PromoteMessage, Registry, ResourceId, SessionId, SessionMessageKind,
     SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
+use async_trait::async_trait;
 
 /// Common harness operations shared across all harness types.
+#[async_trait]
 pub trait Harness {
     /// Identify which transport submitted the job.
     ///
@@ -28,14 +30,14 @@ pub trait Harness {
     ///
     /// Creates a session and its default "main" branch. Returns the
     /// `SessionId` and the default branch's `BranchId`.
-    fn start_session(&self, agent_name: &str) -> (SessionId, BranchId);
+    async fn start_session(&self, agent_name: &str) -> (SessionId, BranchId);
 
     /// Run an agent to completion synchronously.
     ///
     /// Sends input to the agent and blocks until the response arrives.
     /// Returns the agent's output as a string.
     #[allow(clippy::too_many_arguments)]
-    fn run_agent(
+    async fn run_agent(
         &self,
         agent_id: &ResourceId,
         input: &str,
@@ -50,7 +52,7 @@ pub trait Harness {
     ///
     /// Fire-and-forget: both SQL (via `RecordingQueue`) and git (via
     /// `GitDagWorker`) react to the message. No response is expected.
-    fn fork_timeline(
+    async fn fork_timeline(
         &self,
         params: ForkParams,
         session_id: SessionId,
@@ -61,7 +63,7 @@ pub trait Harness {
     ///
     /// Fire-and-forget: both SQL (via `RecordingQueue`) and git (via
     /// `GitDagWorker`) react to the message. No response is expected.
-    fn promote_timeline(
+    async fn promote_timeline(
         &self,
         params: PromoteParams,
         session_id: SessionId,
@@ -142,7 +144,7 @@ impl CoreHarness {
     ///
     /// Returns the routing key, payload message, and job ID.
     #[allow(clippy::too_many_arguments)]
-    fn build_invoke(
+    async fn build_invoke(
         &self,
         agent_id: &ResourceId,
         input: &str,
@@ -162,6 +164,7 @@ impl CoreHarness {
         let agent = self
             .registry
             .get_agent(agent_id)
+            .await
             .ok_or_else(|| format!("agent not deployed: {agent_id}"))?;
         let runtime = self
             .registry
@@ -171,21 +174,27 @@ impl CoreHarness {
         let last_invoke_node = self
             .store
             .latest_node_on_branch(timeline, Some(MessageType::Invoke))
+            .await
             .unwrap_or(None);
-        let last_invoke_payload = last_invoke_node.as_ref().and_then(|n| {
-            self.store
+        let last_invoke_payload = match last_invoke_node {
+            Some(n) => self
+                .store
                 .get_invoke_node(&n.id)
+                .await
                 .ok()
                 .flatten()
-                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
-        });
+                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string()),
+            None => None,
+        };
         let last_complete_node = self
             .store
             .latest_node_on_branch(timeline, Some(MessageType::Complete))
+            .await
             .unwrap_or(None);
-        let last_complete = last_complete_node
-            .as_ref()
-            .and_then(|n| self.store.get_complete_node(&n.id).ok().flatten());
+        let last_complete = match last_complete_node {
+            Some(n) => self.store.get_complete_node(&n.id).await.ok().flatten(),
+            None => None,
+        };
         let last_complete_payload = last_complete
             .as_ref()
             .map(|m| String::from_utf8_lossy(&m.payload).to_string());
@@ -200,9 +209,10 @@ impl CoreHarness {
             .and_then(|m| m.state.as_ref().map(std::string::ToString::to_string))
             .or_else(|| initial_state.map(std::string::ToString::to_string));
 
-        let job_id =
-            self.registry
-                .create_job(submission.clone(), agent_id.clone(), input.to_string());
+        let job_id = self
+            .registry
+            .create_job(submission.clone(), agent_id.clone(), input.to_string())
+            .await;
 
         let key = DataRoutingKey {
             session: session_id.clone(),
@@ -230,12 +240,13 @@ impl CoreHarness {
     }
 }
 
+#[async_trait]
 impl Harness for CoreHarness {
     fn harness_type(&self) -> HarnessType {
         self.harness_type
     }
 
-    fn start_session(&self, agent_name: &str) -> (SessionId, BranchId) {
+    async fn start_session(&self, agent_name: &str) -> (SessionId, BranchId) {
         let session_id = SessionId::new();
         let key = SessionRoutingKey {
             session: session_id.clone(),
@@ -245,15 +256,19 @@ impl Harness for CoreHarness {
             },
         };
         let msg = SessionStartMessage::new();
-        let branch_id = self.queue.send_session_start(key, msg).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "Failed to send session start message");
-            BranchId::from(1)
-        });
+        let branch_id = self
+            .queue
+            .send_session_start(key, msg)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to send session start message");
+                BranchId::from(1)
+            });
 
         (session_id, branch_id)
     }
 
-    fn run_agent(
+    async fn run_agent(
         &self,
         agent_id: &ResourceId,
         input: &str,
@@ -263,43 +278,51 @@ impl Harness for CoreHarness {
         initial_state: Option<String>,
         dag_parent: DagNodeId,
     ) -> Result<String, String> {
-        let (key, msg, job_id) = self.build_invoke(
-            agent_id,
-            input,
-            &session_id,
-            timeline,
-            sealed,
-            initial_state.as_deref(),
-            &dag_parent,
-        )?;
-        self.registry.update_job_status(&job_id, JobStatus::Running);
+        let (key, msg, job_id) = self
+            .build_invoke(
+                agent_id,
+                input,
+                &session_id,
+                timeline,
+                sealed,
+                initial_state.as_deref(),
+                &dag_parent,
+            )
+            .await?;
+        self.registry
+            .update_job_status(&job_id, JobStatus::Running)
+            .await;
 
         let harness = self.harness_type();
         let submission = key.submission.clone();
         let agent = crate::domain::agent_routing_key(agent_id);
         self.queue
             .send_invoke(key, msg)
+            .await
             .map_err(|e| format!("queue error: {e}"))?;
 
         let result = loop {
-            match self.queue.receive_complete(&submission, harness, &agent) {
+            match self
+                .queue
+                .receive_complete(&submission, harness, &agent)
+                .await
+            {
                 Ok((_key, v2, ack)) => {
-                    let _ = ack();
+                    let _ = ack().await;
                     break String::from_utf8_lossy(&v2.payload).to_string();
                 }
-                Err(crate::domain::QueueError::Timeout) => {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
+                Err(crate::domain::QueueError::Timeout) => {}
                 Err(e) => return Err(format!("queue error: {e}")),
             }
         };
 
         self.registry
-            .update_job_status(&job_id, JobStatus::Completed(result.clone()));
+            .update_job_status(&job_id, JobStatus::Completed(result.clone()))
+            .await;
         Ok(result)
     }
 
-    fn fork_timeline(
+    async fn fork_timeline(
         &self,
         params: ForkParams,
         session_id: SessionId,
@@ -316,10 +339,11 @@ impl Harness for CoreHarness {
 
         self.queue
             .send_fork(key, msg)
+            .await
             .map_err(|e| format!("queue error: {e}"))
     }
 
-    fn promote_timeline(
+    async fn promote_timeline(
         &self,
         params: PromoteParams,
         session_id: SessionId,
@@ -336,6 +360,7 @@ impl Harness for CoreHarness {
 
         self.queue
             .send_promote(key, msg)
+            .await
             .map_err(|e| format!("queue error: {e}"))
     }
 }

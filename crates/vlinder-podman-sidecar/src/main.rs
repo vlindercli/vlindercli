@@ -12,7 +12,8 @@ mod sidecar;
 use config::SidecarConfig;
 use sidecar::Sidecar;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Tracing — filter external crates to warn, show sidecar at info+
     let filter = std::env::var("RUST_LOG")
         .unwrap_or_else(|_| "warn,vlinder_podman_sidecar=info".to_string());
@@ -35,7 +36,7 @@ fn main() {
         "Sidecar configuration loaded"
     );
 
-    let sidecar = match Sidecar::new(&config) {
+    let sidecar = match Sidecar::new(&config).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "Failed to initialize sidecar");
@@ -43,7 +44,7 @@ fn main() {
         }
     };
 
-    if let Err(e) = sidecar.run() {
+    if let Err(e) = sidecar.run().await {
         tracing::error!(error = %e, "Sidecar exited with error");
         std::process::exit(1);
     }

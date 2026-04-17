@@ -11,7 +11,7 @@ mod convert;
 mod server;
 
 #[cfg(feature = "client")]
-pub use client::{ping_catalog_service, GrpcCatalogClient};
+pub use client::{ping_catalog_service_async, GrpcCatalogClient};
 #[cfg(feature = "server")]
 pub use server::CatalogServiceServer;
 

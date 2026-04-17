@@ -67,19 +67,19 @@ pub enum Command {
     },
 }
 
-pub fn run() {
+pub async fn run() {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Agent { cmd } => agent::execute(cmd),
-        Command::Fleet { cmd } => fleet::execute(cmd),
-        Command::Support => help::execute(),
-        Command::Model { cmd } => model::execute(cmd),
-        Command::Secret { cmd } => secret::execute(cmd),
-        Command::Session { cmd } => session::execute(cmd),
-        Command::Branch { cmd } => branch::execute(cmd),
-        Command::Turn { cmd } => turn::execute(cmd),
-        Command::Context { cmd } => context::execute(cmd),
+        Command::Agent { cmd } => agent::execute(cmd).await,
+        Command::Fleet { cmd } => fleet::execute(cmd).await,
+        Command::Support => help::execute().await,
+        Command::Model { cmd } => model::execute(cmd).await,
+        Command::Secret { cmd } => secret::execute(cmd).await,
+        Command::Session { cmd } => session::execute(cmd).await,
+        Command::Branch { cmd } => branch::execute(cmd).await,
+        Command::Turn { cmd } => turn::execute(cmd).await,
+        Command::Context { cmd } => context::execute(cmd).await,
     }
 }
 

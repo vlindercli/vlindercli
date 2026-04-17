@@ -3,7 +3,8 @@ mod commands;
 mod config;
 mod tracing_setup;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
@@ -12,5 +13,5 @@ fn main() {
     let filter = format!("warn,vlinder={}", config.logging.level);
     tracing_setup::init_tracing(&filter);
 
-    commands::run();
+    commands::run().await;
 }

@@ -7,6 +7,7 @@
 use std::io::Read;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use vlinder_core::domain::{
     Acknowledgement, AgentName, CompleteMessage, DataRoutingKey, DeleteAgentMessage,
     DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey, InvokeMessage, MessageQueue,
@@ -37,17 +38,18 @@ impl LambdaRuntimeQueue {
     }
 }
 
+#[async_trait]
 impl MessageQueue for LambdaRuntimeQueue {
     // -------------------------------------------------------------------------
     // Invoke — from Lambda Runtime API, not from the queue
     // -------------------------------------------------------------------------
 
-    fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
         // Lambda functions don't send invokes — the daemon or event source does.
-        self.inner.send_invoke(key, msg)
+        self.inner.send_invoke(key, msg).await
     }
 
-    fn receive_invoke(
+    async fn receive_invoke(
         &self,
         _agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
@@ -85,13 +87,16 @@ impl MessageQueue for LambdaRuntimeQueue {
         let runtime_api = self.runtime_api.clone();
         let http = self.http.clone();
         let ack: Acknowledgement = Box::new(move || {
-            let response_url = format!(
-                "http://{runtime_api}/2018-06-01/runtime/invocation/{request_id}/response",
-            );
-            http.post(&response_url).send_bytes(b"ok").map_err(|e| {
-                QueueError::ReceiveFailed(format!("POST invocation response failed: {e}"))
-            })?;
-            Ok(())
+            let result = (|| {
+                let response_url = format!(
+                    "http://{runtime_api}/2018-06-01/runtime/invocation/{request_id}/response",
+                );
+                http.post(&response_url).send_bytes(b"ok").map_err(|e| {
+                    QueueError::ReceiveFailed(format!("POST invocation response failed: {e}"))
+                })?;
+                Ok(())
+            })();
+            Box::pin(async move { result })
         });
 
         Ok((payload.key, payload.msg, ack))
@@ -101,36 +106,50 @@ impl MessageQueue for LambdaRuntimeQueue {
     // Everything else delegates to the inner queue
     // -------------------------------------------------------------------------
 
-    fn send_complete(&self, key: DataRoutingKey, msg: CompleteMessage) -> Result<(), QueueError> {
-        self.inner.send_complete(key, msg)
+    async fn send_complete(
+        &self,
+        key: DataRoutingKey,
+        msg: CompleteMessage,
+    ) -> Result<(), QueueError> {
+        self.inner.send_complete(key, msg).await
     }
 
-    fn receive_complete(
+    async fn receive_complete(
         &self,
         submission: &SubmissionId,
         harness: HarnessType,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
-        self.inner.receive_complete(submission, harness, agent)
+        self.inner
+            .receive_complete(submission, harness, agent)
+            .await
     }
 
-    fn send_request(&self, key: DataRoutingKey, msg: RequestMessage) -> Result<(), QueueError> {
-        self.inner.send_request(key, msg)
+    async fn send_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+    ) -> Result<(), QueueError> {
+        self.inner.send_request(key, msg).await
     }
 
-    fn receive_request(
+    async fn receive_request(
         &self,
         service: ServiceBackend,
         operation: Operation,
     ) -> Result<(DataRoutingKey, RequestMessage, Acknowledgement), QueueError> {
-        self.inner.receive_request(service, operation)
+        self.inner.receive_request(service, operation).await
     }
 
-    fn send_response(&self, key: DataRoutingKey, msg: ResponseMessage) -> Result<(), QueueError> {
-        self.inner.send_response(key, msg)
+    async fn send_response(
+        &self,
+        key: DataRoutingKey,
+        msg: ResponseMessage,
+    ) -> Result<(), QueueError> {
+        self.inner.send_response(key, msg).await
     }
 
-    fn receive_response(
+    async fn receive_response(
         &self,
         submission: &SubmissionId,
         agent: &AgentName,
@@ -140,37 +159,42 @@ impl MessageQueue for LambdaRuntimeQueue {
     ) -> Result<(DataRoutingKey, ResponseMessage, Acknowledgement), QueueError> {
         self.inner
             .receive_response(submission, agent, service, operation, sequence)
+            .await
     }
 
-    fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
-        self.inner.send_fork(key, msg)
+    async fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {
+        self.inner.send_fork(key, msg).await
     }
 
-    fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError> {
-        self.inner.send_promote(key, msg)
+    async fn send_promote(
+        &self,
+        key: SessionRoutingKey,
+        msg: PromoteMessage,
+    ) -> Result<(), QueueError> {
+        self.inner.send_promote(key, msg).await
     }
 
-    fn send_session_start(
+    async fn send_session_start(
         &self,
         key: SessionRoutingKey,
         msg: SessionStartMessage,
     ) -> Result<vlinder_core::domain::BranchId, QueueError> {
-        self.inner.send_session_start(key, msg)
+        self.inner.send_session_start(key, msg).await
     }
 
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeployAgentMessage,
     ) -> Result<(), QueueError> {
-        self.inner.send_deploy_agent(key, msg)
+        self.inner.send_deploy_agent(key, msg).await
     }
 
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
     ) -> Result<(), QueueError> {
-        self.inner.send_delete_agent(key, msg)
+        self.inner.send_delete_agent(key, msg).await
     }
 }

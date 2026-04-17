@@ -20,19 +20,19 @@ pub enum SecretCommand {
     Exists { name: String },
 }
 
-pub fn execute(cmd: SecretCommand) {
+pub async fn execute(cmd: SecretCommand) {
     match cmd {
-        SecretCommand::Put { name } => put(&name),
-        SecretCommand::Get { name } => get(&name),
-        SecretCommand::Delete { name } => delete(&name),
-        SecretCommand::Exists { name } => exists(&name),
+        SecretCommand::Put { name } => put(&name).await,
+        SecretCommand::Get { name } => get(&name).await,
+        SecretCommand::Delete { name } => delete(&name).await,
+        SecretCommand::Exists { name } => exists(&name).await,
     }
 }
 
-fn open_store() -> Arc<dyn SecretStore> {
+async fn open_store() -> Arc<dyn SecretStore> {
     let config = CliConfig::load();
-    let addr = &config.daemon.secret_addr;
-    match GrpcSecretClient::connect(addr) {
+    let addr = config.daemon.secret_addr.clone();
+    match GrpcSecretClient::connect_async(&addr).await {
         Ok(client) => Arc::new(client),
         Err(e) => {
             eprintln!("Failed to connect to secret service at {addr}: {e}");
@@ -41,16 +41,16 @@ fn open_store() -> Arc<dyn SecretStore> {
     }
 }
 
-fn put(name: &str) {
+async fn put(name: &str) {
     let mut buf = Vec::new();
     if let Err(e) = io::stdin().read_to_end(&mut buf) {
         eprintln!("Failed to read stdin: {e}");
         process::exit(1);
     }
 
-    let store = open_store();
+    let store = open_store().await;
 
-    if let Err(e) = store.put(name, &buf) {
+    if let Err(e) = store.put(name, &buf).await {
         eprintln!("Failed to store secret: {e}");
         process::exit(1);
     }
@@ -58,10 +58,10 @@ fn put(name: &str) {
     eprintln!("Stored secret '{name}'");
 }
 
-fn get(name: &str) {
-    let store = open_store();
+async fn get(name: &str) {
+    let store = open_store().await;
 
-    match store.get(name) {
+    match store.get(name).await {
         Ok(value) => {
             if let Err(e) = io::stdout().write_all(&value) {
                 eprintln!("Failed to write to stdout: {e}");
@@ -75,10 +75,10 @@ fn get(name: &str) {
     }
 }
 
-fn delete(name: &str) {
-    let store = open_store();
+async fn delete(name: &str) {
+    let store = open_store().await;
 
-    if let Err(e) = store.delete(name) {
+    if let Err(e) = store.delete(name).await {
         eprintln!("{e}");
         process::exit(1);
     }
@@ -86,10 +86,10 @@ fn delete(name: &str) {
     eprintln!("Deleted secret '{name}'");
 }
 
-fn exists(name: &str) {
-    let store = open_store();
+async fn exists(name: &str) {
+    let store = open_store().await;
 
-    match store.exists(name) {
+    match store.exists(name).await {
         Ok(true) => {
             println!("exists");
         }

@@ -49,11 +49,7 @@ impl HarnessService for HarnessServer {
         request: Request<StartSessionRequest>,
     ) -> Result<Response<StartSessionResponse>, Status> {
         let req = request.into_inner();
-        let harness = Arc::clone(&self.harness);
-        let (session_id, branch_id) =
-            tokio::task::spawn_blocking(move || harness.start_session(&req.agent_name))
-                .await
-                .map_err(|e| Status::internal(format!("spawn_blocking failed: {e}")))?;
+        let (session_id, branch_id) = self.harness.start_session(&req.agent_name).await;
         Ok(Response::new(StartSessionResponse {
             session_id: session_id.as_str().to_string(),
             default_branch_id: branch_id.as_i64(),
@@ -67,13 +63,13 @@ impl HarnessService for HarnessServer {
         let req = request.into_inner();
         let harness = Arc::clone(&self.harness);
 
-        let result = tokio::task::spawn_blocking(move || {
-            let id = ResourceId::new(&req.agent_id);
-            let session_id = SessionId::try_from(req.session_id)
-                .map_err(|e| format!("invalid session_id: {e}"))?;
-            let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
-            let dag_parent = DagNodeId::from(req.dag_parent);
-            harness.run_agent(
+        let id = ResourceId::new(&req.agent_id);
+        let session_id = SessionId::try_from(req.session_id)
+            .map_err(|e| Status::invalid_argument(format!("invalid session_id: {e}")))?;
+        let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
+        let dag_parent = DagNodeId::from(req.dag_parent);
+        let result = harness
+            .run_agent(
                 &id,
                 &req.input,
                 session_id,
@@ -82,9 +78,7 @@ impl HarnessService for HarnessServer {
                 req.initial_state,
                 dag_parent,
             )
-        })
-        .await
-        .map_err(|e| Status::internal(format!("spawn_blocking failed: {e}")))?;
+            .await;
 
         match result {
             Ok(output) => Ok(Response::new(RunAgentResponse {
@@ -105,19 +99,15 @@ impl HarnessService for HarnessServer {
         let req = request.into_inner();
         let harness = Arc::clone(&self.harness);
 
-        let result = tokio::task::spawn_blocking(move || {
-            let params = ForkParams {
-                agent_name: AgentName::new(req.agent_name),
-                branch_name: req.branch_name,
-                fork_point: DagNodeId::from(req.fork_point),
-            };
-            let session_id = SessionId::try_from(req.session_id)
-                .map_err(|e| format!("invalid session_id: {e}"))?;
-            let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
-            harness.fork_timeline(params, session_id, timeline)
-        })
-        .await
-        .map_err(|e| Status::internal(format!("spawn_blocking failed: {e}")))?;
+        let params = ForkParams {
+            agent_name: AgentName::new(req.agent_name),
+            branch_name: req.branch_name,
+            fork_point: DagNodeId::from(req.fork_point),
+        };
+        let session_id = SessionId::try_from(req.session_id)
+            .map_err(|e| Status::invalid_argument(format!("invalid session_id: {e}")))?;
+        let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
+        let result = harness.fork_timeline(params, session_id, timeline).await;
 
         match result {
             Ok(()) => Ok(Response::new(ForkTimelineResponse { error: None })),
@@ -130,21 +120,18 @@ impl HarnessService for HarnessServer {
         request: Request<PromoteTimelineRequest>,
     ) -> Result<Response<PromoteTimelineResponse>, Status> {
         let req = request.into_inner();
-        let harness = Arc::clone(&self.harness);
+        let params = PromoteParams {
+            agent_name: AgentName::new(req.agent_name),
+        };
+        let session_id = SessionId::try_from(req.session_id)
+            .map_err(|e| Status::invalid_argument(format!("invalid session_id: {e}")))?;
+        let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
 
-        let result = tokio::task::spawn_blocking(move || {
-            let params = PromoteParams {
-                agent_name: AgentName::new(req.agent_name),
-            };
-            let session_id = SessionId::try_from(req.session_id)
-                .map_err(|e| format!("invalid session_id: {e}"))?;
-            let timeline = BranchId::from(req.branch_id.parse::<i64>().unwrap_or(0));
-            harness.promote_timeline(params, session_id, timeline)
-        })
-        .await
-        .map_err(|e| Status::internal(format!("spawn_blocking failed: {e}")))?;
-
-        match result {
+        match self
+            .harness
+            .promote_timeline(params, session_id, timeline)
+            .await
+        {
             Ok(()) => Ok(Response::new(PromoteTimelineResponse { error: None })),
             Err(e) => Ok(Response::new(PromoteTimelineResponse { error: Some(e) })),
         }

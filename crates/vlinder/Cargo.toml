@@ -11,6 +11,7 @@ vlinder-nats = { path = "../vlinder-nats", default-features = false, features = 
 vlinder-harness = { path = "../vlinder-harness", default-features = false, features = ["client"] }
 vlinder-sql-registry = { path = "../vlinder-sql-registry", default-features = false, features = ["client"] }
 vlinder-sql-state = { path = "../vlinder-sql-state", default-features = false, features = ["client"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 indicatif = "0.17"

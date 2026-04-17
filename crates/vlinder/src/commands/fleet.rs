@@ -31,10 +31,10 @@ pub enum FleetCommand {
     },
 }
 
-pub fn execute(cmd: FleetCommand) {
+pub async fn execute(cmd: FleetCommand) {
     match cmd {
-        FleetCommand::Deploy { path } => deploy(path),
-        FleetCommand::Run { name, prompt } => run(&name, prompt.as_deref()),
+        FleetCommand::Deploy { path } => deploy(path).await,
+        FleetCommand::Run { name, prompt } => run(&name, prompt.as_deref()).await,
         FleetCommand::New { name } => scaffold(&name),
     }
 }
@@ -87,7 +87,7 @@ fn scaffold(name: &str) {
     println!("  vlinder fleet run {name}");
 }
 
-pub fn deploy(path: Option<PathBuf>) {
+pub async fn deploy(path: Option<PathBuf>) {
     let config = CliConfig::load();
     let fleet_path =
         path.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
@@ -105,30 +105,32 @@ pub fn deploy(path: Option<PathBuf>) {
     });
 
     // Deploy all agents in the fleet via registry gRPC
-    let registry = connect_registry(&config);
+    let registry = connect_registry(&config).await;
 
     // Deploy fleet-level models from <fleet_dir>/models/*.toml
-    let fleet_models = deploy_fleet_models(&absolute_path, &*registry);
+    let fleet_models = deploy_fleet_models(&absolute_path, &*registry).await;
     for name in &fleet_models {
         println!("  Model: {name} (fleet-level)");
     }
 
     for (name, agent_entry) in &manifest.agents {
         let agent_path = absolute_path.join(&agent_entry.path);
-        let agent = super::agent::deploy_agent_from_path(&agent_path, &*registry);
+        let agent = super::agent::deploy_agent_from_path(&agent_path, &*registry).await;
         println!("  Agent: {} ({})", name, agent.id);
     }
 
     // Build Fleet from manifest + registry, then register
-    let fleet = Fleet::from_manifest(manifest, &*registry).unwrap_or_else(|e| {
-        eprintln!("Failed to build fleet: {e}");
-        std::process::exit(1);
-    });
+    let fleet = Fleet::from_manifest(manifest, &*registry)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to build fleet: {e}");
+            std::process::exit(1);
+        });
 
     let fleet_name = fleet.name.clone();
     let entry_id = fleet.entry.clone();
 
-    registry.register_fleet(fleet).unwrap_or_else(|e| {
+    registry.register_fleet(fleet).await.unwrap_or_else(|e| {
         eprintln!("Failed to register fleet: {e}");
         std::process::exit(1);
     });
@@ -141,7 +143,7 @@ pub fn deploy(path: Option<PathBuf>) {
 /// Fleet-level models are registered before agents, so agents can reference
 /// shared models without bundling their own copies. Agent-level models deploy
 /// after, so an agent can override a fleet-level model if needed.
-fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<String> {
+async fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<String> {
     let models_dir = fleet_dir.join("models");
     if !models_dir.is_dir() {
         return Vec::new();
@@ -160,7 +162,7 @@ fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<String>
 
     let mut deployed = Vec::new();
     for entry in entries {
-        match super::model::load_and_register_model(&entry.path(), registry) {
+        match super::model::load_and_register_model(&entry.path(), registry).await {
             Ok(model) => deployed.push(model.name),
             Err(e) => {
                 eprintln!("{e}");
@@ -172,11 +174,11 @@ fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<String>
     deployed
 }
 
-pub fn run(name: &str, prompt: Option<&str>) {
+pub async fn run(name: &str, prompt: Option<&str>) {
     let config = CliConfig::load();
-    let registry = connect_registry(&config);
+    let registry = connect_registry(&config).await;
 
-    let Some(fleet) = registry.get_fleet(name) else {
+    let Some(fleet) = registry.get_fleet(name).await else {
         eprintln!("Fleet '{name}' not found — deploy it first with: vlinder fleet deploy");
         std::process::exit(1);
     };
@@ -185,13 +187,13 @@ pub fn run(name: &str, prompt: Option<&str>) {
     let entry_agent_name = agent_routing_key(&entry_agent_id);
 
     // Build fleet context for the entry agent
-    let fleet_context = build_fleet_context(&*registry, &fleet);
+    let fleet_context = build_fleet_context(&*registry, &fleet).await;
 
     // Connect harness via gRPC — the daemon owns queue and registry
-    let harness = connect_harness(&config);
+    let harness = connect_harness(&config).await;
 
     // New session — start fresh, no prior state
-    let (session_id, branch_id) = harness.start_session(entry_agent_name.as_str());
+    let (session_id, branch_id) = harness.start_session(entry_agent_name.as_str()).await;
 
     tracing::debug!(fleet = %fleet.name, "Fleet session started");
 
@@ -202,18 +204,18 @@ pub fn run(name: &str, prompt: Option<&str>) {
 
     let invoke = |input: &str| -> String {
         let enriched_input = format!("{fleet_context}\n\n{input}");
-        match harness.run_agent(
-            &entry_agent_id,
-            &enriched_input,
-            session_id.clone(),
-            branch_id,
-            false,
-            None,
-            DagNodeId::root(),
-        ) {
-            Ok(result) => result,
-            Err(e) => format!("[error] {e}"),
-        }
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(harness.run_agent(
+                &entry_agent_id,
+                &enriched_input,
+                session_id.clone(),
+                branch_id,
+                false,
+                None,
+                DagNodeId::root(),
+            ))
+        })
+        .unwrap_or_else(|e| format!("[error] {e}"))
     };
 
     if let Some(message) = prompt {
@@ -227,7 +229,10 @@ pub fn run(name: &str, prompt: Option<&str>) {
 ///
 /// Lists all non-entry agents with their descriptions so the entry agent
 /// knows what it can delegate to.
-fn build_fleet_context(registry: &dyn vlinder_core::domain::Registry, fleet: &Fleet) -> String {
+async fn build_fleet_context(
+    registry: &dyn vlinder_core::domain::Registry,
+    fleet: &Fleet,
+) -> String {
     let mut lines = vec![
         format!("Fleet: {}", fleet.name),
         "Available agents for delegation (use /delegate endpoint):".to_string(),
@@ -237,7 +242,7 @@ fn build_fleet_context(registry: &dyn vlinder_core::domain::Registry, fleet: &Fl
         if *agent_id == fleet.entry {
             continue;
         }
-        if let Some(agent) = registry.get_agent(agent_id) {
+        if let Some(agent) = registry.get_agent(agent_id).await {
             lines.push(format!("- {}: {}", agent.name, agent.description));
         }
     }
@@ -269,8 +274,8 @@ mod tests {
     // deploy_fleet_models
     // ========================================================================
 
-    #[test]
-    fn deploy_fleet_models_registers_all_toml_files() {
+    #[tokio::test]
+    async fn deploy_fleet_models_registers_all_toml_files() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -291,25 +296,25 @@ mod tests {
         registry.register_inference_engine(Provider::OpenRouter);
         registry.register_inference_engine(Provider::Ollama);
 
-        let deployed = deploy_fleet_models(dir.path(), &*registry);
+        let deployed = deploy_fleet_models(dir.path(), &*registry).await;
 
         assert_eq!(deployed.len(), 2);
-        assert!(registry.get_model("claude-sonnet").is_some());
-        assert!(registry.get_model("llama3").is_some());
+        assert!(registry.get_model("claude-sonnet").await.is_some());
+        assert!(registry.get_model("llama3").await.is_some());
     }
 
-    #[test]
-    fn deploy_fleet_models_returns_empty_when_no_models_dir() {
+    #[tokio::test]
+    async fn deploy_fleet_models_returns_empty_when_no_models_dir() {
         let dir = tempfile::tempdir().unwrap();
         let registry = test_registry();
 
-        let deployed = deploy_fleet_models(dir.path(), &*registry);
+        let deployed = deploy_fleet_models(dir.path(), &*registry).await;
 
         assert!(deployed.is_empty());
     }
 
-    #[test]
-    fn deploy_fleet_models_ignores_non_toml_files() {
+    #[tokio::test]
+    async fn deploy_fleet_models_ignores_non_toml_files() {
         let dir = tempfile::tempdir().unwrap();
         write_model_toml(
             dir.path(),
@@ -326,13 +331,13 @@ mod tests {
         let registry = test_registry();
         registry.register_inference_engine(Provider::OpenRouter);
 
-        let deployed = deploy_fleet_models(dir.path(), &*registry);
+        let deployed = deploy_fleet_models(dir.path(), &*registry).await;
 
         assert_eq!(deployed, vec!["claude-sonnet"]);
     }
 
-    #[test]
-    fn deploy_fleet_models_returns_sorted_by_filename() {
+    #[tokio::test]
+    async fn deploy_fleet_models_returns_sorted_by_filename() {
         let dir = tempfile::tempdir().unwrap();
         // Write in reverse-alpha order to verify sorting
         write_model_toml(
@@ -354,7 +359,7 @@ mod tests {
         registry.register_inference_engine(Provider::OpenRouter);
         registry.register_inference_engine(Provider::Ollama);
 
-        let deployed = deploy_fleet_models(dir.path(), &*registry);
+        let deployed = deploy_fleet_models(dir.path(), &*registry).await;
 
         // Sorted by filename: claude-sonnet.toml comes before llama3.toml
         assert_eq!(deployed, vec!["claude-sonnet", "llama3"]);

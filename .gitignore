@@ -5,3 +5,4 @@ test_content/
 
 # Python bytecode
 __pycache__/
+.aider*

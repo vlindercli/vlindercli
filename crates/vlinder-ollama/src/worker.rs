@@ -6,10 +6,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_openai::types::chat::{CreateChatCompletionRequest, CreateChatCompletionResponse};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use vlinder_core::domain::{
-    DagNodeId, DataMessageKind, DataRoutingKey, EmbeddingBackendType, InferenceBackendType,
-    MessageId, MessageQueue, Operation, RequestMessage, ResponseMessage, ServiceBackend,
-    ServiceDiagnostics, ServiceMetrics, ServiceType,
+    Acknowledgement, DagNodeId, DataMessageKind, DataRoutingKey, EmbeddingBackendType,
+    InferenceBackendType, MessageId, MessageQueue, Operation, QueueError, RequestMessage,
+    ResponseMessage, ServiceBackend, ServiceDiagnostics, ServiceMetrics, ServiceType,
 };
 
 use crate::types::{
@@ -48,50 +50,94 @@ fn response_key_from_request(req_key: &DataRoutingKey) -> DataRoutingKey {
 pub struct OllamaWorker {
     queue: Arc<dyn MessageQueue + Send + Sync>,
     endpoint: String,
+    client: reqwest::Client,
 }
 
 impl OllamaWorker {
     pub fn new(queue: Arc<dyn MessageQueue + Send + Sync>, endpoint: String) -> Self {
-        Self { queue, endpoint }
+        Self {
+            queue,
+            endpoint,
+            client: reqwest::Client::new(),
+        }
     }
 
-    /// Process one message if available. Polls inference and embed queues.
-    /// Returns true if a message was processed.
-    pub fn tick(&self) -> bool {
+    /// Spawn one tokio task per (service, operation) this worker serves and
+    /// drive each until `shutdown` fires. Four tasks: three on
+    /// `Infer(Ollama)` for `Run`/`Chat`/`Generate` and one on `Embed(Ollama)`
+    /// for `Run`.
+    ///
+    /// Each task loops: `select!` on shutdown vs. `receive_request`; once a
+    /// request resolves, processing runs outside the select so the
+    /// receive-then-ack path cannot be cancelled mid-flight.
+    pub async fn run(self: Arc<Self>, shutdown: CancellationToken) {
+        let mut set: JoinSet<()> = JoinSet::new();
+
         for op in [Operation::Run, Operation::Chat, Operation::Generate] {
-            if let Ok((key, msg, ack)) = self
-                .queue
-                .receive_request(ServiceBackend::Infer(InferenceBackendType::Ollama), op)
-            {
-                self.process_v2(&key, msg, ack, op);
-                return true;
-            }
+            let me = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            set.spawn(async move {
+                let service = ServiceBackend::Infer(InferenceBackendType::Ollama);
+                loop {
+                    let (key, msg, ack) = tokio::select! {
+                        () = shutdown.cancelled() => break,
+                        result = me.queue.receive_request(service, op) => {
+                            match result {
+                                Ok(tuple) => tuple,
+                                Err(QueueError::Timeout) => continue,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, operation = ?op, "Ollama worker infer receive error");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    me.process_infer_request(key, msg, ack, op).await;
+                }
+            });
         }
 
-        if let Ok((key, msg, ack)) = self.queue.receive_request(
-            ServiceBackend::Embed(EmbeddingBackendType::Ollama),
-            Operation::Run,
-        ) {
-            self.process_embed_v2(&key, msg, ack);
-            return true;
+        {
+            let me = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            set.spawn(async move {
+                let service = ServiceBackend::Embed(EmbeddingBackendType::Ollama);
+                let operation = Operation::Run;
+                loop {
+                    let (key, msg, ack) = tokio::select! {
+                        () = shutdown.cancelled() => break,
+                        result = me.queue.receive_request(service, operation) => {
+                            match result {
+                                Ok(tuple) => tuple,
+                                Err(QueueError::Timeout) => continue,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Ollama worker embed receive error");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    me.process_embed_request(key, msg, ack).await;
+                }
+            });
         }
 
-        false
+        while set.join_next().await.is_some() {}
     }
 
-    fn process_v2(
+    pub async fn process_infer_request(
         &self,
-        key: &DataRoutingKey,
+        key: DataRoutingKey,
         msg: RequestMessage,
-        ack: Box<dyn FnOnce() -> Result<(), vlinder_core::domain::QueueError> + Send>,
+        ack: Acknowledgement,
         operation: Operation,
     ) {
         let start = Instant::now();
 
         let (http_response, metrics) = match operation {
-            Operation::Run => self.handle_openai(&msg.payload),
-            Operation::Chat => self.handle_chat(&msg.payload),
-            Operation::Generate => self.handle_generate(&msg.payload),
+            Operation::Run => self.handle_openai(&msg.payload).await,
+            Operation::Chat => self.handle_chat(&msg.payload).await,
+            Operation::Generate => self.handle_generate(&msg.payload).await,
             _ => error_result(400, "unsupported operation"),
         };
 
@@ -109,7 +155,7 @@ impl OllamaWorker {
             metrics,
         };
 
-        let response_key = response_key_from_request(key);
+        let response_key = response_key_from_request(&key);
         let response = ResponseMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
@@ -120,18 +166,18 @@ impl OllamaWorker {
             status_code,
             checkpoint: msg.checkpoint,
         };
-        let _ = self.queue.send_response(response_key, response);
-        let _ = ack();
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
     }
 
-    fn process_embed_v2(
+    pub async fn process_embed_request(
         &self,
-        key: &DataRoutingKey,
+        key: DataRoutingKey,
         msg: RequestMessage,
-        ack: Box<dyn FnOnce() -> Result<(), vlinder_core::domain::QueueError> + Send>,
+        ack: Acknowledgement,
     ) {
         let start = Instant::now();
-        let (http_response, metrics) = self.handle_embed(&msg.payload);
+        let (http_response, metrics) = self.handle_embed(&msg.payload).await;
 
         let status_code = http_response.status().as_u16();
         let wire = vlinder_core::domain::wire::WireResponse {
@@ -147,7 +193,7 @@ impl OllamaWorker {
             metrics,
         };
 
-        let response_key = response_key_from_request(key);
+        let response_key = response_key_from_request(&key);
         let response = ResponseMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
@@ -158,13 +204,13 @@ impl OllamaWorker {
             status_code,
             checkpoint: msg.checkpoint,
         };
-        let _ = self.queue.send_response(response_key, response);
-        let _ = ack();
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
     }
 
     // ---- OpenAI-compatible: /v1/chat/completions ----
 
-    fn handle_openai(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle_openai(&self, payload: &[u8]) -> HandlerResult {
         let req: CreateChatCompletionRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string()),
@@ -172,7 +218,7 @@ impl OllamaWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw("/v1/chat/completions", &req) {
+        let http_response = match self.call_upstream_raw("/v1/chat/completions", &req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e),
         };
@@ -198,7 +244,7 @@ impl OllamaWorker {
 
     // ---- Native: /api/chat ----
 
-    fn handle_chat(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle_chat(&self, payload: &[u8]) -> HandlerResult {
         let req: OllamaChatRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string()),
@@ -206,7 +252,7 @@ impl OllamaWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw("/api/chat", &req) {
+        let http_response = match self.call_upstream_raw("/api/chat", &req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e),
         };
@@ -229,7 +275,7 @@ impl OllamaWorker {
 
     // ---- Native: /api/generate ----
 
-    fn handle_generate(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle_generate(&self, payload: &[u8]) -> HandlerResult {
         let req: OllamaGenerateRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string()),
@@ -237,7 +283,7 @@ impl OllamaWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw("/api/generate", &req) {
+        let http_response = match self.call_upstream_raw("/api/generate", &req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e),
         };
@@ -260,7 +306,7 @@ impl OllamaWorker {
 
     // ---- Embed: /api/embed ----
 
-    fn handle_embed(&self, payload: &[u8]) -> HandlerResult {
+    async fn handle_embed(&self, payload: &[u8]) -> HandlerResult {
         let req: OllamaEmbedRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return error_result(400, &e.to_string()),
@@ -268,7 +314,7 @@ impl OllamaWorker {
 
         let model_name = req.model.clone();
 
-        let http_response = match self.call_upstream_raw("/api/embed", &req) {
+        let http_response = match self.call_upstream_raw("/api/embed", &req).await {
             Ok(r) => r,
             Err(e) => return error_result(500, &e),
         };
@@ -294,14 +340,20 @@ impl OllamaWorker {
     // ---- HTTP ----
 
     /// Call the upstream Ollama endpoint and return the full HTTP response.
-    fn call_upstream_raw(
+    async fn call_upstream_raw(
         &self,
         path: &str,
-        req: &impl serde::Serialize,
+        req: &(impl serde::Serialize + Send + Sync),
     ) -> Result<http::Response<Vec<u8>>, String> {
         let url = format!("{}{}", self.endpoint, path);
 
-        let mut response = ureq::post(&url).send_json(req).map_err(|e| e.to_string())?;
+        let response = self
+            .client
+            .post(&url)
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
 
         let status = response.status();
         let mut builder = http::Response::builder().status(status);
@@ -314,9 +366,10 @@ impl OllamaWorker {
         }
 
         let body = response
-            .body_mut()
-            .read_to_vec()
-            .map_err(|e| format!("failed to read response body: {e}"))?;
+            .bytes()
+            .await
+            .map_err(|e| format!("failed to read response body: {e}"))?
+            .to_vec();
 
         builder
             .body(body)
@@ -376,7 +429,7 @@ mod tests {
 
     /// Send an infer request via v2 API and return (service, operation, sequence)
     /// needed to receive the response.
-    fn send_infer_request(
+    async fn send_infer_request(
         queue: &Arc<dyn MessageQueue + Send + Sync>,
         operation: Operation,
         payload: Vec<u8>,
@@ -404,11 +457,11 @@ mod tests {
             payload,
             checkpoint: None,
         };
-        queue.send_request(key, msg).unwrap();
+        queue.send_request(key, msg).await.unwrap();
         (submission, service, operation, sequence)
     }
 
-    fn send_embed_request(
+    async fn send_embed_request(
         queue: &Arc<dyn MessageQueue + Send + Sync>,
         payload: Vec<u8>,
         state: Option<String>,
@@ -436,7 +489,7 @@ mod tests {
             payload,
             checkpoint: None,
         };
-        queue.send_request(key, msg).unwrap();
+        queue.send_request(key, msg).await.unwrap();
         (submission, service, operation, sequence)
     }
 
@@ -444,26 +497,53 @@ mod tests {
         OllamaWorker::new(Arc::clone(queue), "http://127.0.0.1:1".to_string())
     }
 
+    async fn drain_infer(
+        queue: &Arc<dyn MessageQueue + Send + Sync>,
+        worker: &OllamaWorker,
+        operation: Operation,
+    ) {
+        let (key, msg, ack) = queue
+            .receive_request(
+                ServiceBackend::Infer(InferenceBackendType::Ollama),
+                operation,
+            )
+            .await
+            .expect("infer request should be available");
+        worker.process_infer_request(key, msg, ack, operation).await;
+    }
+
+    async fn drain_embed(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &OllamaWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(
+                ServiceBackend::Embed(EmbeddingBackendType::Ollama),
+                Operation::Run,
+            )
+            .await
+            .expect("embed request should be available");
+        worker.process_embed_request(key, msg, ack).await;
+    }
+
     // --- Operation::Run (OpenAI-compatible) ---
 
-    #[test]
-    fn run_rejects_invalid_payload() {
+    #[tokio::test]
+    async fn run_rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
         let (sub, svc, op, seq) =
-            send_infer_request(&queue, Operation::Run, b"not json".to_vec(), None);
-        assert!(worker.tick());
+            send_infer_request(&queue, Operation::Run, b"not json".to_vec(), None).await;
+        drain_infer(&queue, &worker, Operation::Run).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.status_code, 400);
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn run_echoes_state() {
+    #[tokio::test]
+    async fn run_echoes_state() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -476,18 +556,20 @@ mod tests {
             Operation::Run,
             serde_json::to_vec(&body).unwrap(),
             Some("xyz".to_string()),
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        drain_infer(&queue, &worker, Operation::Run).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.state, Some("xyz".to_string()));
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn run_unreachable_endpoint_returns_500() {
+    #[tokio::test]
+    async fn run_unreachable_endpoint_returns_500() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -500,36 +582,39 @@ mod tests {
             Operation::Run,
             serde_json::to_vec(&body).unwrap(),
             None,
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        drain_infer(&queue, &worker, Operation::Run).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.status_code, 500);
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
     // --- Operation::Chat (/api/chat) ---
 
-    #[test]
-    fn chat_rejects_invalid_payload() {
+    #[tokio::test]
+    async fn chat_rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
         let (sub, svc, op, seq) =
-            send_infer_request(&queue, Operation::Chat, b"not json".to_vec(), None);
-        assert!(worker.tick());
+            send_infer_request(&queue, Operation::Chat, b"not json".to_vec(), None).await;
+        drain_infer(&queue, &worker, Operation::Chat).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.status_code, 400);
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn chat_echoes_state() {
+    #[tokio::test]
+    async fn chat_echoes_state() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -542,18 +627,20 @@ mod tests {
             Operation::Chat,
             serde_json::to_vec(&body).unwrap(),
             Some("abc".to_string()),
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        drain_infer(&queue, &worker, Operation::Chat).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.state, Some("abc".to_string()));
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn chat_unreachable_endpoint_returns_500() {
+    #[tokio::test]
+    async fn chat_unreachable_endpoint_returns_500() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -566,36 +653,39 @@ mod tests {
             Operation::Chat,
             serde_json::to_vec(&body).unwrap(),
             None,
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        drain_infer(&queue, &worker, Operation::Chat).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.status_code, 500);
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
     // --- Operation::Generate (/api/generate) ---
 
-    #[test]
-    fn generate_rejects_invalid_payload() {
+    #[tokio::test]
+    async fn generate_rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
         let (sub, svc, op, seq) =
-            send_infer_request(&queue, Operation::Generate, b"not json".to_vec(), None);
-        assert!(worker.tick());
+            send_infer_request(&queue, Operation::Generate, b"not json".to_vec(), None).await;
+        drain_infer(&queue, &worker, Operation::Generate).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.status_code, 400);
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn generate_echoes_state() {
+    #[tokio::test]
+    async fn generate_echoes_state() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -608,18 +698,20 @@ mod tests {
             Operation::Generate,
             serde_json::to_vec(&body).unwrap(),
             Some("def".to_string()),
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        drain_infer(&queue, &worker, Operation::Generate).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.state, Some("def".to_string()));
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn generate_unreachable_endpoint_returns_500() {
+    #[tokio::test]
+    async fn generate_unreachable_endpoint_returns_500() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -632,35 +724,38 @@ mod tests {
             Operation::Generate,
             serde_json::to_vec(&body).unwrap(),
             None,
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        drain_infer(&queue, &worker, Operation::Generate).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.status_code, 500);
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
     // --- Embed (/api/embed) ---
 
-    #[test]
-    fn embed_rejects_invalid_payload() {
+    #[tokio::test]
+    async fn embed_rejects_invalid_payload() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
-        let (sub, svc, op, seq) = send_embed_request(&queue, b"not json".to_vec(), None);
-        assert!(worker.tick());
+        let (sub, svc, op, seq) = send_embed_request(&queue, b"not json".to_vec(), None).await;
+        drain_embed(&queue, &worker).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.status_code, 400);
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn embed_echoes_state() {
+    #[tokio::test]
+    async fn embed_echoes_state() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -672,18 +767,20 @@ mod tests {
             &queue,
             serde_json::to_vec(&body).unwrap(),
             Some("embed-state".to_string()),
-        );
-        assert!(worker.tick());
+        )
+        .await;
+        drain_embed(&queue, &worker).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.state, Some("embed-state".to_string()));
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn embed_unreachable_endpoint_returns_500() {
+    #[tokio::test]
+    async fn embed_unreachable_endpoint_returns_500() {
         let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
         let worker = make_worker(&queue);
 
@@ -692,22 +789,14 @@ mod tests {
             "input": "hello world"
         });
         let (sub, svc, op, seq) =
-            send_embed_request(&queue, serde_json::to_vec(&body).unwrap(), None);
-        assert!(worker.tick());
+            send_embed_request(&queue, serde_json::to_vec(&body).unwrap(), None).await;
+        drain_embed(&queue, &worker).await;
 
         let (_key, response, ack) = queue
             .receive_response(&sub, &AgentName::new("test-agent"), svc, op, seq)
+            .await
             .unwrap();
         assert_eq!(response.status_code, 500);
-        ack().unwrap();
-    }
-
-    // --- General ---
-
-    #[test]
-    fn no_message_returns_false() {
-        let queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
-        let worker = make_worker(&queue);
-        assert!(!worker.tick());
+        ack().await.unwrap();
     }
 }

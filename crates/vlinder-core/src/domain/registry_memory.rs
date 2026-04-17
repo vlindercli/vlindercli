@@ -5,6 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use async_trait::async_trait;
+
 use super::{
     ensure_agent_identity, Agent, AgentManifest, Fleet, Job, JobId, JobStatus, Model, ModelType,
     ObjectStorageType, Provider, RegistrationError, Registry, ResourceId, RuntimeType, SecretStore,
@@ -107,6 +109,7 @@ impl InMemoryRegistry {
     }
 }
 
+#[async_trait]
 impl Registry for InMemoryRegistry {
     fn id(&self) -> ResourceId {
         self.registry_id.clone()
@@ -115,138 +118,148 @@ impl Registry for InMemoryRegistry {
     // --- Agent operations ---
 
     #[allow(clippy::too_many_lines)]
-    fn register_agent(&self, mut agent: Agent) -> Result<(), RegistrationError> {
-        let mut state = self.state.write().unwrap();
-
-        // Idempotency: same config → Ok, different config same name → error
+    async fn register_agent(&self, mut agent: Agent) -> Result<(), RegistrationError> {
         let agent_id = self.agent_id_internal(&agent.name);
-        if let Some(existing) = state.agents.get(&agent_id) {
-            if existing.config() == agent.config() {
-                return Ok(());
-            }
-            return Err(RegistrationError::DuplicateName(agent.name.clone()));
-        }
 
-        // Validate runtime is available
-        if self.select_runtime_internal(&agent, &state).is_none() {
-            return Err(RegistrationError::NoRuntime(ResourceId::new(format!(
-                "runtime:{}",
-                agent.runtime.as_str()
-            ))));
-        }
+        // Phase 1: validate under lock, then drop the guard before await
+        {
+            let state = self.state.read().unwrap();
 
-        // Validate object storage if declared
-        if let Some(ref uri) = agent.object_storage {
-            let scheme = uri.scheme().unwrap_or("unknown");
-            let storage_type = ObjectStorageType::from_scheme(uri.scheme())
-                .ok_or_else(|| RegistrationError::UnknownObjectStorageScheme(scheme.to_string()))?;
-            if !state.available_object_storage.contains(&storage_type) {
-                return Err(RegistrationError::ObjectStorageUnavailable(storage_type));
-            }
-        }
-
-        // Validate vector storage if declared
-        if let Some(ref uri) = agent.vector_storage {
-            let scheme = uri.scheme().unwrap_or("unknown");
-            let storage_type = VectorStorageType::from_scheme(uri.scheme())
-                .ok_or_else(|| RegistrationError::UnknownVectorStorageScheme(scheme.to_string()))?;
-            if !state.available_vector_storage.contains(&storage_type) {
-                return Err(RegistrationError::VectorStorageUnavailable(storage_type));
-            }
-        }
-
-        // Validate all declared models are registered and their engines are available (ADR 094)
-        for (model_alias, model_name) in &agent.requirements.models {
-            let model = state.models.values().find(|m| m.name == *model_name);
-            let Some(model) = model else {
-                return Err(RegistrationError::ModelNotRegistered(
-                    model_alias.clone(),
-                    model_name.clone(),
-                ));
-            };
-
-            match model.model_type {
-                ModelType::Inference => {
-                    if !state.available_inference_engines.contains(&model.provider) {
-                        return Err(RegistrationError::InferenceEngineUnavailable(
-                            model.provider,
-                            model.name.clone(),
-                        ));
-                    }
-                    if !agent
-                        .requirements
-                        .services
-                        .contains_key(&ServiceType::Infer)
-                    {
-                        return Err(RegistrationError::InferenceServiceNotDeclared(
-                            model_alias.clone(),
-                        ));
-                    }
+            // Idempotency: same config → Ok, different config same name → error
+            if let Some(existing) = state.agents.get(&agent_id) {
+                if existing.config() == agent.config() {
+                    return Ok(());
                 }
-                ModelType::Embedding => {
-                    if !state.available_embedding_engines.contains(&model.provider) {
-                        return Err(RegistrationError::EmbeddingEngineUnavailable(
-                            model.provider,
-                            model.name.clone(),
-                        ));
-                    }
-                    if !agent
-                        .requirements
-                        .services
-                        .contains_key(&ServiceType::Embed)
-                    {
-                        return Err(RegistrationError::EmbeddingServiceNotDeclared(
-                            model_alias.clone(),
-                        ));
-                    }
+                return Err(RegistrationError::DuplicateName(agent.name.clone()));
+            }
+
+            // Validate runtime is available
+            if self.select_runtime_internal(&agent, &state).is_none() {
+                return Err(RegistrationError::NoRuntime(ResourceId::new(format!(
+                    "runtime:{}",
+                    agent.runtime.as_str()
+                ))));
+            }
+
+            // Validate object storage if declared
+            if let Some(ref uri) = agent.object_storage {
+                let scheme = uri.scheme().unwrap_or("unknown");
+                let storage_type =
+                    ObjectStorageType::from_scheme(uri.scheme()).ok_or_else(|| {
+                        RegistrationError::UnknownObjectStorageScheme(scheme.to_string())
+                    })?;
+                if !state.available_object_storage.contains(&storage_type) {
+                    return Err(RegistrationError::ObjectStorageUnavailable(storage_type));
                 }
             }
-        }
 
-        // Validate services have corresponding models
-        if agent
-            .requirements
-            .services
-            .contains_key(&ServiceType::Infer)
-        {
-            let has_inference_model = agent.requirements.models.values().any(|name| {
-                state
-                    .models
-                    .values()
-                    .any(|m| m.name == *name && m.model_type == ModelType::Inference)
-            });
-            if !has_inference_model {
-                return Err(RegistrationError::InferenceServiceWithoutModel);
+            // Validate vector storage if declared
+            if let Some(ref uri) = agent.vector_storage {
+                let scheme = uri.scheme().unwrap_or("unknown");
+                let storage_type =
+                    VectorStorageType::from_scheme(uri.scheme()).ok_or_else(|| {
+                        RegistrationError::UnknownVectorStorageScheme(scheme.to_string())
+                    })?;
+                if !state.available_vector_storage.contains(&storage_type) {
+                    return Err(RegistrationError::VectorStorageUnavailable(storage_type));
+                }
             }
-        }
-        if agent
-            .requirements
-            .services
-            .contains_key(&ServiceType::Embed)
-        {
-            let has_embedding_model = agent.requirements.models.values().any(|name| {
-                state
-                    .models
-                    .values()
-                    .any(|m| m.name == *name && m.model_type == ModelType::Embedding)
-            });
-            if !has_embedding_model {
-                return Err(RegistrationError::EmbeddingServiceWithoutModel);
-            }
-        }
 
-        // Provision identity (ADR 084): generate Ed25519 key pair, store private key
+            // Validate all declared models are registered and their engines are available (ADR 094)
+            for (model_alias, model_name) in &agent.requirements.models {
+                let model = state.models.values().find(|m| m.name == *model_name);
+                let Some(model) = model else {
+                    return Err(RegistrationError::ModelNotRegistered(
+                        model_alias.clone(),
+                        model_name.clone(),
+                    ));
+                };
+
+                match model.model_type {
+                    ModelType::Inference => {
+                        if !state.available_inference_engines.contains(&model.provider) {
+                            return Err(RegistrationError::InferenceEngineUnavailable(
+                                model.provider,
+                                model.name.clone(),
+                            ));
+                        }
+                        if !agent
+                            .requirements
+                            .services
+                            .contains_key(&ServiceType::Infer)
+                        {
+                            return Err(RegistrationError::InferenceServiceNotDeclared(
+                                model_alias.clone(),
+                            ));
+                        }
+                    }
+                    ModelType::Embedding => {
+                        if !state.available_embedding_engines.contains(&model.provider) {
+                            return Err(RegistrationError::EmbeddingEngineUnavailable(
+                                model.provider,
+                                model.name.clone(),
+                            ));
+                        }
+                        if !agent
+                            .requirements
+                            .services
+                            .contains_key(&ServiceType::Embed)
+                        {
+                            return Err(RegistrationError::EmbeddingServiceNotDeclared(
+                                model_alias.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Validate services have corresponding models
+            if agent
+                .requirements
+                .services
+                .contains_key(&ServiceType::Infer)
+            {
+                let has_inference_model = agent.requirements.models.values().any(|name| {
+                    state
+                        .models
+                        .values()
+                        .any(|m| m.name == *name && m.model_type == ModelType::Inference)
+                });
+                if !has_inference_model {
+                    return Err(RegistrationError::InferenceServiceWithoutModel);
+                }
+            }
+            if agent
+                .requirements
+                .services
+                .contains_key(&ServiceType::Embed)
+            {
+                let has_embedding_model = agent.requirements.models.values().any(|name| {
+                    state
+                        .models
+                        .values()
+                        .any(|m| m.name == *name && m.model_type == ModelType::Embedding)
+                });
+                if !has_embedding_model {
+                    return Err(RegistrationError::EmbeddingServiceWithoutModel);
+                }
+            }
+        } // guard dropped here — safe to await
+
+        // Phase 2: async identity provisioning (no lock held)
         let identity = ensure_agent_identity(&agent.name, self.secret_store.as_ref())
+            .await
             .map_err(|e| RegistrationError::IdentityFailed(e.to_string()))?;
         agent.public_key = Some(identity.public_key.to_vec());
 
-        // Assign registry identity and store
+        // Phase 3: re-acquire write lock and insert
+        let mut state = self.state.write().unwrap();
         agent.id = agent_id.clone();
         state.agents.insert(agent_id, agent);
         Ok(())
     }
 
-    fn register_manifest(&self, manifest: AgentManifest) -> Result<Agent, RegistrationError> {
+    async fn register_manifest(&self, manifest: AgentManifest) -> Result<Agent, RegistrationError> {
         let agent_id = self.agent_id_internal(&manifest.name);
 
         // Check idempotency: does an agent with this name already exist?
@@ -268,7 +281,7 @@ impl Registry for InMemoryRegistry {
         // New agent: convert manifest → agent, validate via register_agent
         let agent = Agent::from_manifest(manifest.clone())
             .map_err(|e| RegistrationError::Persistence(format!("{e:?}")))?;
-        self.register_agent(agent)?;
+        self.register_agent(agent).await?;
 
         // Store manifest alongside the agent
         let mut state = self.state.write().unwrap();
@@ -280,12 +293,12 @@ impl Registry for InMemoryRegistry {
             .clone())
     }
 
-    fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
+    async fn get_agent(&self, id: &ResourceId) -> Option<Agent> {
         let state = self.state.read().unwrap();
         state.agents.get(id).cloned()
     }
 
-    fn get_agents(&self) -> Vec<Agent> {
+    async fn get_agents(&self) -> Vec<Agent> {
         let state = self.state.read().unwrap();
         state.agents.values().cloned().collect()
     }
@@ -297,7 +310,7 @@ impl Registry for InMemoryRegistry {
 
     // --- Model operations ---
 
-    fn register_model(&self, mut model: Model) -> Result<(), RegistrationError> {
+    async fn register_model(&self, mut model: Model) -> Result<(), RegistrationError> {
         let model_id = self.model_id(&model.name);
         model.id = model_id.clone();
         let mut state = self.state.write().unwrap();
@@ -326,18 +339,18 @@ impl Registry for InMemoryRegistry {
         Ok(())
     }
 
-    fn get_model(&self, name: &str) -> Option<Model> {
+    async fn get_model(&self, name: &str) -> Option<Model> {
         let model_id = self.model_id(name);
         let state = self.state.read().unwrap();
         state.models.get(&model_id).cloned()
     }
 
-    fn get_models(&self) -> Vec<Model> {
+    async fn get_models(&self) -> Vec<Model> {
         let state = self.state.read().unwrap();
         state.models.values().cloned().collect()
     }
 
-    fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
+    async fn get_model_by_path(&self, path: &ResourceId) -> Option<Model> {
         let state = self.state.read().unwrap();
         state
             .models
@@ -346,7 +359,7 @@ impl Registry for InMemoryRegistry {
             .cloned()
     }
 
-    fn agent_id(&self, name: &str) -> Option<ResourceId> {
+    async fn agent_id(&self, name: &str) -> Option<ResourceId> {
         let id = self.agent_id_internal(name);
         let state = self.state.read().unwrap();
         if state.agents.contains_key(&id) {
@@ -360,7 +373,7 @@ impl Registry for InMemoryRegistry {
         ResourceId::new(format!("{}/models/{}", self.registry_id.as_str(), name))
     }
 
-    fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
+    async fn delete_model(&self, name: &str) -> Result<bool, RegistrationError> {
         let model_id = self.model_id(name);
         let mut state = self.state.write().unwrap();
 
@@ -383,7 +396,7 @@ impl Registry for InMemoryRegistry {
         Ok(true)
     }
 
-    fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
+    async fn delete_agent(&self, name: &str) -> Result<bool, RegistrationError> {
         let agent_id = self.agent_id_internal(name);
         let mut state = self.state.write().unwrap();
 
@@ -410,7 +423,7 @@ impl Registry for InMemoryRegistry {
 
     // --- Fleet operations ---
 
-    fn register_fleet(&self, mut fleet: Fleet) -> Result<(), RegistrationError> {
+    async fn register_fleet(&self, mut fleet: Fleet) -> Result<(), RegistrationError> {
         let mut state = self.state.write().unwrap();
 
         // Idempotency: same fleet → Ok, different fleet same name → error
@@ -449,19 +462,19 @@ impl Registry for InMemoryRegistry {
         Ok(())
     }
 
-    fn get_fleet(&self, name: &str) -> Option<Fleet> {
+    async fn get_fleet(&self, name: &str) -> Option<Fleet> {
         let state = self.state.read().unwrap();
         state.fleets.get(name).cloned()
     }
 
-    fn get_fleets(&self) -> Vec<Fleet> {
+    async fn get_fleets(&self) -> Vec<Fleet> {
         let state = self.state.read().unwrap();
         state.fleets.values().cloned().collect()
     }
 
     // --- Job operations ---
 
-    fn create_job(
+    async fn create_job(
         &self,
         submission_id: SubmissionId,
         agent_id: ResourceId,
@@ -480,19 +493,19 @@ impl Registry for InMemoryRegistry {
         id
     }
 
-    fn get_job(&self, id: &JobId) -> Option<Job> {
+    async fn get_job(&self, id: &JobId) -> Option<Job> {
         let state = self.state.read().unwrap();
         state.jobs.get(id).cloned()
     }
 
-    fn update_job_status(&self, id: &JobId, status: JobStatus) {
+    async fn update_job_status(&self, id: &JobId, status: JobStatus) {
         let mut state = self.state.write().unwrap();
         if let Some(job) = state.jobs.get_mut(id) {
             job.status = status;
         }
     }
 
-    fn pending_jobs(&self) -> Vec<Job> {
+    async fn pending_jobs(&self) -> Vec<Job> {
         let state = self.state.read().unwrap();
         state
             .jobs
@@ -565,8 +578,8 @@ mod tests {
         ResourceId::new("http://127.0.0.1:9000/agents/test-agent")
     }
 
-    #[test]
-    fn registry_has_api_endpoint() {
+    #[tokio::test]
+    async fn registry_has_api_endpoint() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Registry exposes an HTTP API endpoint
@@ -575,72 +588,87 @@ mod tests {
         assert!(id.as_str().starts_with("http://127.0.0.1:"));
     }
 
-    #[test]
-    fn job_id_includes_registry_id() {
+    #[tokio::test]
+    async fn job_id_includes_registry_id() {
         let registry = InMemoryRegistry::new(test_secret_store());
         let agent_id = test_agent_id();
 
-        let job_id = registry.create_job(SubmissionId::new(), agent_id, "test".to_string());
+        let job_id = registry
+            .create_job(SubmissionId::new(), agent_id, "test".to_string())
+            .await;
 
         // JobId format: <registry_id>/jobs/<uuid>
         assert!(job_id.as_str().starts_with(registry.id().as_str()));
         assert!(job_id.as_str().contains("/jobs/"));
     }
 
-    #[test]
-    fn job_lifecycle() {
+    #[tokio::test]
+    async fn job_lifecycle() {
         let registry = InMemoryRegistry::new(test_secret_store());
         let agent_id = test_agent_id();
 
         // Create job
-        let job_id =
-            registry.create_job(SubmissionId::new(), agent_id.clone(), "hello".to_string());
+        let job_id = registry
+            .create_job(SubmissionId::new(), agent_id.clone(), "hello".to_string())
+            .await;
 
         // Initial state is Pending
-        let job = registry.get_job(&job_id).unwrap();
+        let job = registry.get_job(&job_id).await.unwrap();
         assert_eq!(job.status, JobStatus::Pending);
         assert_eq!(job.agent_id, agent_id);
         assert_eq!(job.input, "hello");
 
         // Update to Running
-        registry.update_job_status(&job_id, JobStatus::Running);
+        registry
+            .update_job_status(&job_id, JobStatus::Running)
+            .await;
         assert_eq!(
-            registry.get_job(&job_id).unwrap().status,
+            registry.get_job(&job_id).await.unwrap().status,
             JobStatus::Running
         );
 
         // Update to Completed
-        registry.update_job_status(&job_id, JobStatus::Completed("result".to_string()));
+        registry
+            .update_job_status(&job_id, JobStatus::Completed("result".to_string()))
+            .await;
         assert_eq!(
-            registry.get_job(&job_id).unwrap().status,
+            registry.get_job(&job_id).await.unwrap().status,
             JobStatus::Completed("result".to_string())
         );
     }
 
-    #[test]
-    fn pending_jobs_filters_by_status() {
+    #[tokio::test]
+    async fn pending_jobs_filters_by_status() {
         let registry = InMemoryRegistry::new(test_secret_store());
         let agent_id = test_agent_id();
 
-        let job1 = registry.create_job(SubmissionId::new(), agent_id.clone(), "a".to_string());
-        let job2 = registry.create_job(SubmissionId::new(), agent_id.clone(), "b".to_string());
-        let _job3 = registry.create_job(SubmissionId::new(), agent_id.clone(), "c".to_string());
+        let job1 = registry
+            .create_job(SubmissionId::new(), agent_id.clone(), "a".to_string())
+            .await;
+        let job2 = registry
+            .create_job(SubmissionId::new(), agent_id.clone(), "b".to_string())
+            .await;
+        let _job3 = registry
+            .create_job(SubmissionId::new(), agent_id.clone(), "c".to_string())
+            .await;
 
         // All three are pending
-        assert_eq!(registry.pending_jobs().len(), 3);
+        assert_eq!(registry.pending_jobs().await.len(), 3);
 
         // Mark one as running, one as completed
-        registry.update_job_status(&job1, JobStatus::Running);
-        registry.update_job_status(&job2, JobStatus::Completed("done".to_string()));
+        registry.update_job_status(&job1, JobStatus::Running).await;
+        registry
+            .update_job_status(&job2, JobStatus::Completed("done".to_string()))
+            .await;
 
         // Only one pending now
-        assert_eq!(registry.pending_jobs().len(), 1);
+        assert_eq!(registry.pending_jobs().await.len(), 1);
     }
 
     // --- Object storage tests ---
 
-    #[test]
-    fn register_object_storage_types() {
+    #[tokio::test]
+    async fn register_object_storage_types() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Initially nothing available
@@ -660,8 +688,8 @@ mod tests {
 
     // --- Vector storage tests ---
 
-    #[test]
-    fn register_vector_storage_types() {
+    #[tokio::test]
+    async fn register_vector_storage_types() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Initially nothing available
@@ -681,8 +709,8 @@ mod tests {
 
     // --- Inference engine tests ---
 
-    #[test]
-    fn register_inference_engine_types() {
+    #[tokio::test]
+    async fn register_inference_engine_types() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Initially nothing available
@@ -702,8 +730,8 @@ mod tests {
 
     // --- Embedding engine tests ---
 
-    #[test]
-    fn register_embedding_engine_types() {
+    #[tokio::test]
+    async fn register_embedding_engine_types() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         // Initially nothing available
@@ -747,28 +775,28 @@ mod tests {
         }
     }
 
-    #[test]
-    fn restore_agent_bypasses_validation() {
+    #[tokio::test]
+    async fn restore_agent_bypasses_validation() {
         let registry = InMemoryRegistry::new(test_secret_store());
         // No runtimes, storage, or models registered — register_agent would fail
         let agent = minimal_agent("echo");
 
         // register_agent should fail (no container runtime registered)
-        let result = registry.register_agent(agent.clone());
+        let result = registry.register_agent(agent.clone()).await;
         assert!(result.is_err());
 
         // restore_agent should succeed despite no capabilities
         registry.restore_agent(agent).unwrap();
 
-        let agents = registry.get_agents();
+        let agents = registry.get_agents().await;
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].name, "echo");
         // ID should be reassigned by the registry
         assert!(agents[0].id.as_str().contains("/agents/echo"));
     }
 
-    #[test]
-    fn restore_agent_rejects_duplicate() {
+    #[tokio::test]
+    async fn restore_agent_rejects_duplicate() {
         let registry = InMemoryRegistry::new(test_secret_store());
 
         registry.restore_agent(minimal_agent("echo")).unwrap();
@@ -799,87 +827,87 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_manifest_returns_agent_with_registry_id() {
+    #[tokio::test]
+    async fn register_manifest_returns_agent_with_registry_id() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let manifest = minimal_manifest("echo");
-        let agent = registry.register_manifest(manifest).unwrap();
+        let agent = registry.register_manifest(manifest).await.unwrap();
 
         assert_eq!(agent.name, "echo");
         assert!(agent.id.as_str().contains("/agents/echo"));
         assert!(agent.public_key.is_some());
     }
 
-    #[test]
-    fn register_manifest_idempotent_same_manifest() {
+    #[tokio::test]
+    async fn register_manifest_idempotent_same_manifest() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let manifest = minimal_manifest("echo");
-        let agent1 = registry.register_manifest(manifest.clone()).unwrap();
-        let agent2 = registry.register_manifest(manifest).unwrap();
+        let agent1 = registry.register_manifest(manifest.clone()).await.unwrap();
+        let agent2 = registry.register_manifest(manifest).await.unwrap();
 
         assert_eq!(agent1.id, agent2.id);
         assert_eq!(agent1.name, agent2.name);
     }
 
-    #[test]
-    fn register_manifest_rejects_different_manifest_same_name() {
+    #[tokio::test]
+    async fn register_manifest_rejects_different_manifest_same_name() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let manifest1 = minimal_manifest("echo");
-        registry.register_manifest(manifest1).unwrap();
+        registry.register_manifest(manifest1).await.unwrap();
 
         let mut manifest2 = minimal_manifest("echo");
         manifest2.description = "different description".to_string();
 
-        let result = registry.register_manifest(manifest2);
+        let result = registry.register_manifest(manifest2).await;
         assert!(matches!(result, Err(RegistrationError::ConfigMismatch(_))));
     }
 
     // --- register_agent idempotency ---
 
-    #[test]
-    fn register_agent_idempotent_same_config() {
+    #[tokio::test]
+    async fn register_agent_idempotent_same_config() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let agent = minimal_agent("echo");
-        registry.register_agent(agent.clone()).unwrap();
-        registry.register_agent(agent).unwrap(); // should succeed
+        registry.register_agent(agent.clone()).await.unwrap();
+        registry.register_agent(agent).await.unwrap(); // should succeed
     }
 
-    #[test]
-    fn register_agent_rejects_different_config_same_name() {
+    #[tokio::test]
+    async fn register_agent_rejects_different_config_same_name() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let agent1 = minimal_agent("echo");
-        registry.register_agent(agent1).unwrap();
+        registry.register_agent(agent1).await.unwrap();
 
         let mut agent2 = minimal_agent("echo");
         agent2.executable = "localhost/echo:v2".to_string();
 
-        let result = registry.register_agent(agent2);
+        let result = registry.register_agent(agent2).await;
         assert!(matches!(result, Err(RegistrationError::DuplicateName(_))));
     }
 
     // --- Fleet registration tests ---
 
-    fn make_fleet(
+    async fn make_fleet(
         registry: &InMemoryRegistry,
         name: &str,
         entry: &str,
         agent_names: &[&str],
     ) -> Fleet {
-        let entry_id = registry.agent_id(entry).unwrap();
-        let agents: HashSet<ResourceId> = agent_names
-            .iter()
-            .map(|n| registry.agent_id(n).unwrap())
-            .collect();
+        let entry_id = registry.agent_id(entry).await.unwrap();
+        let mut agents = HashSet::new();
+        for n in agent_names {
+            agents.insert(registry.agent_id(n).await.unwrap());
+        }
         Fleet {
             id: Fleet::placeholder_id(name),
             name: name.to_string(),
@@ -888,54 +916,54 @@ mod tests {
         }
     }
 
-    #[test]
-    fn get_fleets_empty_initially() {
+    #[tokio::test]
+    async fn get_fleets_empty_initially() {
         let registry = InMemoryRegistry::new(test_secret_store());
-        assert!(registry.get_fleets().is_empty());
+        assert!(registry.get_fleets().await.is_empty());
     }
 
-    #[test]
-    fn get_fleet_returns_none_for_unknown() {
+    #[tokio::test]
+    async fn get_fleet_returns_none_for_unknown() {
         let registry = InMemoryRegistry::new(test_secret_store());
-        assert!(registry.get_fleet("nonexistent").is_none());
+        assert!(registry.get_fleet("nonexistent").await.is_none());
     }
 
-    #[test]
-    fn register_fleet_with_valid_agents() {
+    #[tokio::test]
+    async fn register_fleet_with_valid_agents() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("alpha")).unwrap();
         registry.restore_agent(minimal_agent("beta")).unwrap();
 
-        let fleet = make_fleet(&registry, "my-fleet", "alpha", &["alpha", "beta"]);
-        registry.register_fleet(fleet).unwrap();
+        let fleet = make_fleet(&registry, "my-fleet", "alpha", &["alpha", "beta"]).await;
+        registry.register_fleet(fleet).await.unwrap();
 
-        let stored = registry.get_fleet("my-fleet").unwrap();
+        let stored = registry.get_fleet("my-fleet").await.unwrap();
         assert_eq!(stored.name, "my-fleet");
         assert_eq!(stored.agents.len(), 2);
     }
 
-    #[test]
-    fn register_fleet_assigns_registry_id() {
+    #[tokio::test]
+    async fn register_fleet_assigns_registry_id() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("solo")).unwrap();
 
-        let fleet = make_fleet(&registry, "test", "solo", &["solo"]);
+        let fleet = make_fleet(&registry, "test", "solo", &["solo"]).await;
         assert!(fleet.id.as_str().contains("pending-registration"));
 
-        registry.register_fleet(fleet).unwrap();
+        registry.register_fleet(fleet).await.unwrap();
 
-        let stored = registry.get_fleet("test").unwrap();
+        let stored = registry.get_fleet("test").await.unwrap();
         assert!(stored.id.as_str().contains("/fleets/test"));
         assert!(!stored.id.as_str().contains("pending-registration"));
     }
 
-    #[test]
-    fn register_fleet_validates_agents_exist() {
+    #[tokio::test]
+    async fn register_fleet_validates_agents_exist() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("real")).unwrap();
 
         // Build a fleet referencing both a real and a fake agent
-        let real_id = registry.agent_id("real").unwrap();
+        let real_id = registry.agent_id("real").await.unwrap();
         let fake_id = ResourceId::new("http://127.0.0.1:9000/agents/fake");
         let fleet = Fleet {
             id: Fleet::placeholder_id("bad-fleet"),
@@ -944,7 +972,7 @@ mod tests {
             agents: HashSet::from([real_id, fake_id]),
         };
 
-        let result = registry.register_fleet(fleet);
+        let result = registry.register_fleet(fleet).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             RegistrationError::FleetAgentNotRegistered(fleet_name, agent_ref) => {
@@ -955,15 +983,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_fleet_validates_entry_in_agents() {
+    #[tokio::test]
+    async fn register_fleet_validates_entry_in_agents() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("worker")).unwrap();
         registry.restore_agent(minimal_agent("entry-only")).unwrap();
 
         // Fleet has "worker" in agents but "entry-only" as entry — entry not in agents set
-        let entry_id = registry.agent_id("entry-only").unwrap();
-        let worker_id = registry.agent_id("worker").unwrap();
+        let entry_id = registry.agent_id("entry-only").await.unwrap();
+        let worker_id = registry.agent_id("worker").await.unwrap();
         let fleet = Fleet {
             id: Fleet::placeholder_id("bad-entry"),
             name: "bad-entry".to_string(),
@@ -971,7 +999,7 @@ mod tests {
             agents: HashSet::from([worker_id]),
         };
 
-        let result = registry.register_fleet(fleet);
+        let result = registry.register_fleet(fleet).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             RegistrationError::FleetAgentNotRegistered(fleet_name, agent_ref) => {
@@ -982,154 +1010,158 @@ mod tests {
         }
     }
 
-    #[test]
-    fn register_fleet_idempotent_same_config() {
+    #[tokio::test]
+    async fn register_fleet_idempotent_same_config() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("a")).unwrap();
 
-        let fleet1 = make_fleet(&registry, "idempotent", "a", &["a"]);
-        let fleet2 = make_fleet(&registry, "idempotent", "a", &["a"]);
+        let fleet1 = make_fleet(&registry, "idempotent", "a", &["a"]).await;
+        let fleet2 = make_fleet(&registry, "idempotent", "a", &["a"]).await;
 
-        registry.register_fleet(fleet1).unwrap();
-        registry.register_fleet(fleet2).unwrap(); // should succeed
+        registry.register_fleet(fleet1).await.unwrap();
+        registry.register_fleet(fleet2).await.unwrap(); // should succeed
     }
 
-    #[test]
-    fn register_fleet_rejects_config_mismatch_different_entry() {
+    #[tokio::test]
+    async fn register_fleet_rejects_config_mismatch_different_entry() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("a")).unwrap();
         registry.restore_agent(minimal_agent("b")).unwrap();
 
-        let fleet1 = make_fleet(&registry, "mismatch", "a", &["a", "b"]);
-        registry.register_fleet(fleet1).unwrap();
+        let fleet1 = make_fleet(&registry, "mismatch", "a", &["a", "b"]).await;
+        registry.register_fleet(fleet1).await.unwrap();
 
         // Same name and agents, different entry
-        let fleet2 = make_fleet(&registry, "mismatch", "b", &["a", "b"]);
-        let result = registry.register_fleet(fleet2);
+        let fleet2 = make_fleet(&registry, "mismatch", "b", &["a", "b"]).await;
+        let result = registry.register_fleet(fleet2).await;
         assert!(matches!(
             result,
             Err(RegistrationError::FleetConfigMismatch(_))
         ));
     }
 
-    #[test]
-    fn register_fleet_rejects_config_mismatch_different_agents() {
+    #[tokio::test]
+    async fn register_fleet_rejects_config_mismatch_different_agents() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("a")).unwrap();
         registry.restore_agent(minimal_agent("b")).unwrap();
         registry.restore_agent(minimal_agent("c")).unwrap();
 
-        let fleet1 = make_fleet(&registry, "mismatch", "a", &["a", "b"]);
-        registry.register_fleet(fleet1).unwrap();
+        let fleet1 = make_fleet(&registry, "mismatch", "a", &["a", "b"]).await;
+        registry.register_fleet(fleet1).await.unwrap();
 
         // Same name and entry, different agent set
-        let fleet2 = make_fleet(&registry, "mismatch", "a", &["a", "c"]);
-        let result = registry.register_fleet(fleet2);
+        let fleet2 = make_fleet(&registry, "mismatch", "a", &["a", "c"]).await;
+        let result = registry.register_fleet(fleet2).await;
         assert!(matches!(
             result,
             Err(RegistrationError::FleetConfigMismatch(_))
         ));
     }
 
-    #[test]
-    fn register_fleet_single_agent() {
+    #[tokio::test]
+    async fn register_fleet_single_agent() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("solo")).unwrap();
 
-        let fleet = make_fleet(&registry, "solo-fleet", "solo", &["solo"]);
-        registry.register_fleet(fleet).unwrap();
+        let fleet = make_fleet(&registry, "solo-fleet", "solo", &["solo"]).await;
+        registry.register_fleet(fleet).await.unwrap();
 
-        let stored = registry.get_fleet("solo-fleet").unwrap();
+        let stored = registry.get_fleet("solo-fleet").await.unwrap();
         assert_eq!(stored.agents.len(), 1);
-        assert_eq!(stored.entry, registry.agent_id("solo").unwrap());
+        assert_eq!(stored.entry, registry.agent_id("solo").await.unwrap());
     }
 
-    #[test]
-    fn register_fleet_multiple_fleets() {
+    #[tokio::test]
+    async fn register_fleet_multiple_fleets() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("a")).unwrap();
         registry.restore_agent(minimal_agent("b")).unwrap();
         registry.restore_agent(minimal_agent("c")).unwrap();
 
-        let fleet1 = make_fleet(&registry, "fleet-1", "a", &["a", "b"]);
-        let fleet2 = make_fleet(&registry, "fleet-2", "b", &["b", "c"]);
+        let fleet1 = make_fleet(&registry, "fleet-1", "a", &["a", "b"]).await;
+        let fleet2 = make_fleet(&registry, "fleet-2", "b", &["b", "c"]).await;
 
-        registry.register_fleet(fleet1).unwrap();
-        registry.register_fleet(fleet2).unwrap();
+        registry.register_fleet(fleet1).await.unwrap();
+        registry.register_fleet(fleet2).await.unwrap();
 
-        assert_eq!(registry.get_fleets().len(), 2);
-        assert!(registry.get_fleet("fleet-1").is_some());
-        assert!(registry.get_fleet("fleet-2").is_some());
+        assert_eq!(registry.get_fleets().await.len(), 2);
+        assert!(registry.get_fleet("fleet-1").await.is_some());
+        assert!(registry.get_fleet("fleet-2").await.is_some());
     }
 
-    #[test]
-    fn get_fleet_returns_correct_data() {
+    #[tokio::test]
+    async fn get_fleet_returns_correct_data() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("x")).unwrap();
         registry.restore_agent(minimal_agent("y")).unwrap();
 
-        let fleet = make_fleet(&registry, "lookup-test", "x", &["x", "y"]);
-        registry.register_fleet(fleet).unwrap();
+        let fleet = make_fleet(&registry, "lookup-test", "x", &["x", "y"]).await;
+        registry.register_fleet(fleet).await.unwrap();
 
-        let stored = registry.get_fleet("lookup-test").unwrap();
+        let stored = registry.get_fleet("lookup-test").await.unwrap();
         assert_eq!(stored.name, "lookup-test");
-        assert_eq!(stored.entry, registry.agent_id("x").unwrap());
-        assert!(stored.agents.contains(&registry.agent_id("x").unwrap()));
-        assert!(stored.agents.contains(&registry.agent_id("y").unwrap()));
+        assert_eq!(stored.entry, registry.agent_id("x").await.unwrap());
+        assert!(stored
+            .agents
+            .contains(&registry.agent_id("x").await.unwrap()));
+        assert!(stored
+            .agents
+            .contains(&registry.agent_id("y").await.unwrap()));
     }
 
     // --- delete_agent tests ---
 
-    #[test]
-    fn delete_agent_succeeds() {
+    #[tokio::test]
+    async fn delete_agent_succeeds() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("echo")).unwrap();
-        assert_eq!(registry.get_agents().len(), 1);
+        assert_eq!(registry.get_agents().await.len(), 1);
 
-        let deleted = registry.delete_agent("echo").unwrap();
+        let deleted = registry.delete_agent("echo").await.unwrap();
         assert!(deleted);
-        assert!(registry.get_agents().is_empty());
+        assert!(registry.get_agents().await.is_empty());
     }
 
-    #[test]
-    fn delete_agent_nonexistent_returns_false() {
+    #[tokio::test]
+    async fn delete_agent_nonexistent_returns_false() {
         let registry = InMemoryRegistry::new(test_secret_store());
-        let deleted = registry.delete_agent("nope").unwrap();
+        let deleted = registry.delete_agent("nope").await.unwrap();
         assert!(!deleted);
     }
 
-    #[test]
-    fn delete_agent_blocked_by_fleet() {
+    #[tokio::test]
+    async fn delete_agent_blocked_by_fleet() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.restore_agent(minimal_agent("alpha")).unwrap();
         registry.restore_agent(minimal_agent("beta")).unwrap();
 
-        let fleet = make_fleet(&registry, "my-fleet", "alpha", &["alpha", "beta"]);
-        registry.register_fleet(fleet).unwrap();
+        let fleet = make_fleet(&registry, "my-fleet", "alpha", &["alpha", "beta"]).await;
+        registry.register_fleet(fleet).await.unwrap();
 
-        let result = registry.delete_agent("alpha");
+        let result = registry.delete_agent("alpha").await;
         assert!(matches!(result, Err(RegistrationError::AgentInUse(_, _))));
 
         // Agent should still exist
-        assert!(registry.get_agent_by_name("alpha").is_some());
+        assert!(registry.get_agent_by_name("alpha").await.is_some());
     }
 
-    #[test]
-    fn delete_agent_cleans_up_manifest() {
+    #[tokio::test]
+    async fn delete_agent_cleans_up_manifest() {
         let registry = InMemoryRegistry::new(test_secret_store());
         registry.register_runtime(RuntimeType::Container);
 
         let manifest = minimal_manifest("echo");
-        registry.register_manifest(manifest).unwrap();
-        assert!(registry.get_agent_by_name("echo").is_some());
+        registry.register_manifest(manifest).await.unwrap();
+        assert!(registry.get_agent_by_name("echo").await.is_some());
 
-        let deleted = registry.delete_agent("echo").unwrap();
+        let deleted = registry.delete_agent("echo").await.unwrap();
         assert!(deleted);
-        assert!(registry.get_agent_by_name("echo").is_none());
+        assert!(registry.get_agent_by_name("echo").await.is_none());
 
         // Re-registering should work (manifest was cleaned up)
         let manifest2 = minimal_manifest("echo");
-        registry.register_manifest(manifest2).unwrap();
-        assert!(registry.get_agent_by_name("echo").is_some());
+        registry.register_manifest(manifest2).await.unwrap();
+        assert!(registry.get_agent_by_name("echo").await.is_some());
     }
 }

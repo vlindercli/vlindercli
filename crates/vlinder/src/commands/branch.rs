@@ -23,23 +23,24 @@ pub enum BranchCommand {
     },
 }
 
-pub fn execute(cmd: BranchCommand) {
+pub async fn execute(cmd: BranchCommand) {
     match cmd {
-        BranchCommand::List { session } => list(&session),
+        BranchCommand::List { session } => list(&session).await,
         BranchCommand::Get {
             branch_name,
             session,
-        } => get(&session, &branch_name),
+        } => get(&session, &branch_name).await,
     }
 }
 
-fn list(session_id_or_name: &str) {
+async fn list(session_id_or_name: &str) {
     let config = CliConfig::load();
-    let store = require_dag_store(&config);
-    let session_id = resolve_session_id(&*store, session_id_or_name);
+    let store = require_dag_store(&config).await;
+    let session_id = resolve_session_id(&*store, session_id_or_name).await;
 
     let branches = store
         .get_branches_for_session(&session_id)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to query branches: {e}");
             std::process::exit(1);
@@ -51,7 +52,10 @@ fn list(session_id_or_name: &str) {
     }
 
     // Count turns (distinct submissions) per branch
-    let nodes = store.get_session_nodes(&session_id).unwrap_or_default();
+    let nodes = store
+        .get_session_nodes(&session_id)
+        .await
+        .unwrap_or_default();
     let turn_counts: std::collections::HashMap<vlinder_core::domain::BranchId, usize> = {
         let mut per_branch: std::collections::HashMap<
             vlinder_core::domain::BranchId,
@@ -81,13 +85,14 @@ fn list(session_id_or_name: &str) {
 }
 
 #[allow(clippy::too_many_lines)]
-fn get(session_id_or_name: &str, branch_name: &str) {
+async fn get(session_id_or_name: &str, branch_name: &str) {
     let config = CliConfig::load();
-    let store = require_dag_store(&config);
-    let session_id = resolve_session_id(&*store, session_id_or_name);
+    let store = require_dag_store(&config).await;
+    let session_id = resolve_session_id(&*store, session_id_or_name).await;
 
     let branch = store
         .get_branch_by_name(branch_name)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to look up branch: {e}");
             std::process::exit(1);
@@ -106,10 +111,13 @@ fn get(session_id_or_name: &str, branch_name: &str) {
     }
 
     // Get all session nodes and filter to those on this branch's timeline
-    let nodes = store.get_session_nodes(&session_id).unwrap_or_else(|e| {
-        eprintln!("Failed to query session nodes: {e}");
-        std::process::exit(1);
-    });
+    let nodes = store
+        .get_session_nodes(&session_id)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to query session nodes: {e}");
+            std::process::exit(1);
+        });
 
     let branch_nodes: Vec<_> = nodes
         .into_iter()
@@ -142,7 +150,7 @@ fn get(session_id_or_name: &str, branch_name: &str) {
             let (from, to, operation, checkpoint) = if node.message_type()
                 == vlinder_core::domain::MessageType::Invoke
             {
-                if let Ok(Some((key, _msg))) = store.get_invoke_node(&node.id) {
+                if let Ok(Some((key, _msg))) = store.get_invoke_node(&node.id).await {
                     let vlinder_core::domain::DataMessageKind::Invoke { harness, agent, .. } =
                         &key.kind
                     else {
@@ -190,18 +198,18 @@ fn get(session_id_or_name: &str, branch_name: &str) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn require_dag_store(config: &CliConfig) -> Box<dyn DagStore> {
-    open_dag_store(config).unwrap_or_else(|| {
+async fn require_dag_store(config: &CliConfig) -> Box<dyn DagStore> {
+    open_dag_store(config).await.unwrap_or_else(|| {
         eprintln!("Cannot connect to state service. Is the daemon running?");
         std::process::exit(1);
     })
 }
 
-fn resolve_session_id(store: &dyn DagStore, id_or_name: &str) -> SessionId {
+async fn resolve_session_id(store: &dyn DagStore, id_or_name: &str) -> SessionId {
     if let Ok(session_id) = SessionId::try_from(id_or_name.to_string()) {
         return session_id;
     }
-    if let Some(session) = store.get_session_by_name(id_or_name).ok().flatten() {
+    if let Some(session) = store.get_session_by_name(id_or_name).await.ok().flatten() {
         return session.id;
     }
     eprintln!("Session '{id_or_name}' not found");

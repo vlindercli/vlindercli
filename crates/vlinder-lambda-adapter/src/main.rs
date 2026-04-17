@@ -31,7 +31,8 @@ use vlinder_provider_server::factory;
 use adapter::build_lambda_diagnostics;
 use config::AdapterConfig;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Install rustls crypto provider before any TLS connection (AMQPS).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -61,12 +62,12 @@ fn main() {
 
     let queue = match &config.queue {
         config::QueueBackendConfig::Nats { url } => {
-            let nats_config = factory::resolve_nats_config(config.secret_url.as_deref(), url);
-            factory::connect(&factory::QueueConfig::Nats(nats_config))
+            let nats_config = factory::resolve_nats_config(config.secret_url.as_deref(), url).await;
+            factory::connect_async(&factory::QueueConfig::Nats(nats_config)).await
         }
         config::QueueBackendConfig::Amqp { url } => {
             let amqp_config = vlinder_amqp::AmqpConfig { url: url.clone() };
-            factory::connect(&factory::QueueConfig::Amqp(amqp_config))
+            factory::connect_async(&factory::QueueConfig::Amqp(amqp_config)).await
         }
     };
     let queue = match queue {
@@ -76,7 +77,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let store = match factory::connect_state(&config.state_url) {
+    let store = match factory::connect_state_async(&config.state_url).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "Failed to connect to state service");
@@ -85,7 +86,7 @@ fn main() {
     };
     let queue = factory::with_recording(queue, store);
 
-    let registry = match factory::connect_registry(&config.registry_url) {
+    let registry = match factory::connect_registry_async(&config.registry_url).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "Failed to connect to registry");
@@ -94,7 +95,7 @@ fn main() {
     };
 
     let http = ureq::Agent::new();
-    if let Err(e) = wait_for_agent(&http, config.agent_port) {
+    if let Err(e) = wait_for_agent(&http, config.agent_port).await {
         tracing::error!(error = %e, "Agent did not become ready");
         std::process::exit(1);
     }
@@ -104,11 +105,11 @@ fn main() {
     );
 
     tracing::info!(event = "adapter.started", agent = %config.agent, "Entering dispatch loop");
-    dispatch_loop(&config.agent, config.agent_port, &lambda_queue, &registry);
+    dispatch_loop(&config.agent, config.agent_port, &lambda_queue, &registry).await;
 }
 
 /// Receive invokes from the Lambda Runtime API, dispatch to agent, send complete.
-fn dispatch_loop(
+async fn dispatch_loop(
     function_name: &str,
     agent_port: u16,
     queue: &Arc<dyn MessageQueue + Send + Sync>,
@@ -116,14 +117,14 @@ fn dispatch_loop(
 ) {
     let agent_id = vlinder_core::domain::AgentName::new(function_name);
     loop {
-        match queue.receive_invoke(&agent_id) {
+        match queue.receive_invoke(&agent_id).await {
             Ok((key, invoke, ack)) => {
                 let vlinder_core::domain::DataMessageKind::Invoke { ref agent, .. } = key.kind
                 else {
                     continue;
                 };
 
-                match shared::dispatch_invoke(queue, registry, agent_port, &key, &invoke) {
+                match shared::dispatch_invoke(queue, registry, agent_port, &key, &invoke).await {
                     Ok(result) => {
                         let region = std::env::var("AWS_REGION")
                             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
@@ -137,7 +138,8 @@ fn dispatch_loop(
                             result.output,
                             result.state,
                             diagnostics,
-                        );
+                        )
+                        .await;
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Dispatch failed");
@@ -148,10 +150,11 @@ fn dispatch_loop(
                             format!("[error] {e}").into_bytes(),
                             None,
                             vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
-                        );
+                        )
+                        .await;
                     }
                 }
-                if let Err(e) = ack() {
+                if let Err(e) = ack().await {
                     tracing::error!(error = %e, "Failed to ack invocation");
                 }
             }
@@ -208,9 +211,9 @@ fn register_extension(runtime_api: &str) {
 }
 
 /// Block until the agent's health endpoint responds (up to 60s).
-fn wait_for_agent(http: &ureq::Agent, port: u16) -> Result<(), String> {
+async fn wait_for_agent(http: &ureq::Agent, port: u16) -> Result<(), String> {
     let url = format!("http://127.0.0.1:{port}/health");
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
 
     tracing::info!(
         event = "adapter.waiting",
@@ -228,6 +231,6 @@ fn wait_for_agent(http: &ureq::Agent, port: u16) -> Result<(), String> {
             tracing::info!(event = "adapter.agent_ready", "Agent is ready");
             return Ok(());
         }
-        std::thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

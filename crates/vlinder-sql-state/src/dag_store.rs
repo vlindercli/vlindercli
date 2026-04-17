@@ -12,6 +12,7 @@ use diesel::prelude::*;
 use diesel::sql_types::{Integer, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 
+use async_trait::async_trait;
 use vlinder_core::domain::session::Session;
 use vlinder_core::domain::{
     Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, SessionId, SessionSummary,
@@ -286,8 +287,9 @@ struct SessionSummaryRow {
     last_type: Option<String>,
 }
 
+#[async_trait]
 impl DagStore for SqliteDagStore {
-    fn insert_invoke_node(
+    async fn insert_invoke_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -346,7 +348,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn insert_complete_node(
+    async fn insert_complete_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -400,7 +402,7 @@ impl DagStore for SqliteDagStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_request_node(
+    async fn insert_request_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -460,7 +462,7 @@ impl DagStore for SqliteDagStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn insert_response_node(
+    async fn insert_response_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -521,7 +523,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
+    async fn get_node(&self, hash: &DagNodeId) -> Result<Option<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -535,7 +537,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(dag_node_row_to_domain))
     }
 
-    fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
+    async fn get_node_by_prefix(&self, prefix: &str) -> Result<Option<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -563,7 +565,7 @@ impl DagStore for SqliteDagStore {
         }
     }
 
-    fn get_session_nodes(&self, session_id: &SessionId) -> Result<Vec<DagNode>, String> {
+    async fn get_session_nodes(&self, session_id: &SessionId) -> Result<Vec<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -577,7 +579,7 @@ impl DagStore for SqliteDagStore {
         Ok(rows.into_iter().map(dag_node_row_to_domain).collect())
     }
 
-    fn get_children(&self, parent_hash: &DagNodeId) -> Result<Vec<DagNode>, String> {
+    async fn get_children(&self, parent_hash: &DagNodeId) -> Result<Vec<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -603,7 +605,7 @@ impl DagStore for SqliteDagStore {
     // Branch methods
     // -------------------------------------------------------------------------
 
-    fn create_branch(
+    async fn create_branch(
         &self,
         name: &str,
         session_id: &SessionId,
@@ -634,7 +636,7 @@ impl DagStore for SqliteDagStore {
         Ok(BranchId::from(id))
     }
 
-    fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String> {
+    async fn get_branch_by_name(&self, name: &str) -> Result<Option<Branch>, String> {
         use crate::schema::branches;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -648,7 +650,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(branch_row_to_domain))
     }
 
-    fn get_branch(&self, id: BranchId) -> Result<Option<Branch>, String> {
+    async fn get_branch(&self, id: BranchId) -> Result<Option<Branch>, String> {
         use crate::schema::branches;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -662,7 +664,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(branch_row_to_domain))
     }
 
-    fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+    async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
         let rows: Vec<SessionSummaryRow> = diesel::sql_query(
             "SELECT
@@ -700,7 +702,7 @@ impl DagStore for SqliteDagStore {
             .collect()
     }
 
-    fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
+    async fn get_nodes_by_submission(&self, submission_id: &str) -> Result<Vec<DagNode>, String> {
         use crate::schema::dag_nodes;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -714,7 +716,7 @@ impl DagStore for SqliteDagStore {
         Ok(rows.into_iter().map(dag_node_row_to_domain).collect())
     }
 
-    fn get_invoke_node(
+    async fn get_invoke_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<
@@ -796,7 +798,7 @@ impl DagStore for SqliteDagStore {
         Ok(result)
     }
 
-    fn get_complete_node(
+    async fn get_complete_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::CompleteMessage>, String> {
@@ -824,7 +826,7 @@ impl DagStore for SqliteDagStore {
         }))
     }
 
-    fn get_request_node(
+    async fn get_request_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::RequestMessage>, String> {
@@ -859,7 +861,7 @@ impl DagStore for SqliteDagStore {
         }))
     }
 
-    fn get_response_node(
+    async fn get_response_node(
         &self,
         dag_hash: &DagNodeId,
     ) -> Result<Option<vlinder_core::domain::ResponseMessage>, String> {
@@ -897,7 +899,10 @@ impl DagStore for SqliteDagStore {
         }))
     }
 
-    fn get_branches_for_session(&self, session_id: &SessionId) -> Result<Vec<Branch>, String> {
+    async fn get_branches_for_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<Branch>, String> {
         use crate::schema::branches;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -911,7 +916,7 @@ impl DagStore for SqliteDagStore {
         Ok(rows.into_iter().map(branch_row_to_domain).collect())
     }
 
-    fn latest_node_on_branch(
+    async fn latest_node_on_branch(
         &self,
         branch_id: BranchId,
         message_type: Option<MessageType>,
@@ -942,7 +947,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(dag_node_row_to_domain))
     }
 
-    fn rename_branch(&self, id: BranchId, new_name: &str) -> Result<(), String> {
+    async fn rename_branch(&self, id: BranchId, new_name: &str) -> Result<(), String> {
         use crate::schema::branches;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -956,7 +961,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn seal_branch(
+    async fn seal_branch(
         &self,
         id: BranchId,
         broken_at: chrono::DateTime<chrono::Utc>,
@@ -978,7 +983,7 @@ impl DagStore for SqliteDagStore {
     // Session CRUD
     // -------------------------------------------------------------------------
 
-    fn update_session_default_branch(
+    async fn update_session_default_branch(
         &self,
         session_id: &SessionId,
         branch_id: BranchId,
@@ -996,7 +1001,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn create_session(&self, session: &Session) -> Result<(), String> {
+    async fn create_session(&self, session: &Session) -> Result<(), String> {
         use crate::schema::sessions;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1013,7 +1018,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn get_session(&self, session_id: &SessionId) -> Result<Option<Session>, String> {
+    async fn get_session(&self, session_id: &SessionId) -> Result<Option<Session>, String> {
         use crate::schema::sessions;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1027,7 +1032,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(session_row_to_domain))
     }
 
-    fn insert_fork_node(
+    async fn insert_fork_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -1045,7 +1050,8 @@ impl DagStore for SqliteDagStore {
 
         // Look up branch BEFORE locking conn (get_branch_by_name also locks conn)
         let branch_id = self
-            .get_branch_by_name(&msg.branch_name)?
+            .get_branch_by_name(&msg.branch_name)
+            .await?
             .map_or(vlinder_core::domain::BranchId::from(1), |b| b.id);
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1082,7 +1088,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn insert_promote_node(
+    async fn insert_promote_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -1131,7 +1137,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn insert_deploy_agent_node(
+    async fn insert_deploy_agent_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -1179,7 +1185,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn insert_delete_agent_node(
+    async fn insert_delete_agent_node(
         &self,
         dag_id: &DagNodeId,
         parent_id: &DagNodeId,
@@ -1224,7 +1230,7 @@ impl DagStore for SqliteDagStore {
         Ok(())
     }
 
-    fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {
+    async fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {
         use crate::schema::sessions;
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
@@ -1238,7 +1244,7 @@ impl DagStore for SqliteDagStore {
         Ok(row.map(session_row_to_domain))
     }
 
-    fn exists_in_submission(
+    async fn exists_in_submission(
         &self,
         submission: &SubmissionId,
         branch: BranchId,
@@ -1297,7 +1303,7 @@ mod tests {
     use super::*;
     use vlinder_core::domain::{hash_dag_node, BranchId, Snapshot, SubmissionId};
 
-    fn test_store() -> (SqliteDagStore, tempfile::TempDir) {
+    async fn test_store() -> (SqliteDagStore, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.db");
         let store = SqliteDagStore::open(&path).unwrap();
@@ -1309,8 +1315,8 @@ mod tests {
             default_branch: BranchId::from(1),
             created_at: Utc::now(),
         };
-        store.create_session(&session).unwrap();
-        store.create_branch("main", &sess(), None).unwrap();
+        store.create_session(&session).await.unwrap();
+        store.create_branch("main", &sess(), None).await.unwrap();
         (store, dir)
     }
 
@@ -1338,44 +1344,45 @@ mod tests {
         }
     }
 
-    #[test]
-    fn round_trip_insert_get() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn round_trip_insert_get() {
+        let (store, _dir) = test_store().await;
         let node = test_node(b"hello", &DagNodeId::root());
 
         store.insert_node(&node).unwrap();
-        let retrieved = store.get_node(&node.id).unwrap().unwrap();
+        let retrieved = store.get_node(&node.id).await.unwrap().unwrap();
 
         assert_eq!(retrieved.id, node.id);
         assert_eq!(retrieved.parent_id, node.parent_id);
     }
 
-    #[test]
-    fn get_node_returns_none_for_unknown() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_node_returns_none_for_unknown() {
+        let (store, _dir) = test_store().await;
         assert_eq!(
             store
                 .get_node(&DagNodeId::from("nonexistent".to_string()))
+                .await
                 .unwrap(),
             None
         );
     }
 
-    #[test]
-    fn idempotent_insert() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn idempotent_insert() {
+        let (store, _dir) = test_store().await;
         let node = test_node(b"data", &DagNodeId::root());
 
         store.insert_node(&node).unwrap();
         store.insert_node(&node).unwrap(); // No error
 
-        let retrieved = store.get_node(&node.id).unwrap().unwrap();
+        let retrieved = store.get_node(&node.id).await.unwrap().unwrap();
         assert_eq!(retrieved.id, node.id);
     }
 
-    #[test]
-    fn get_children() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_children() {
+        let (store, _dir) = test_store().await;
 
         let parent = test_node(b"parent", &DagNodeId::root());
 
@@ -1396,19 +1403,19 @@ mod tests {
         store.insert_node(&parent).unwrap();
         store.insert_node(&child).unwrap();
 
-        let children = store.get_children(&parent.id).unwrap();
+        let children = store.get_children(&parent.id).await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].id, child.id);
 
         // Root has one child (the parent node, whose parent_id is root)
-        let root_children = store.get_children(&DagNodeId::root()).unwrap();
+        let root_children = store.get_children(&DagNodeId::root()).await.unwrap();
         assert_eq!(root_children.len(), 1);
         assert_eq!(root_children[0].id, parent.id);
     }
 
-    #[test]
-    fn different_sessions_are_isolated() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn different_sessions_are_isolated() {
+        let (store, _dir) = test_store().await;
 
         let sess1 =
             SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
@@ -1423,8 +1430,8 @@ mod tests {
             default_branch: BranchId::from(1),
             created_at: Utc::now(),
         };
-        store.create_session(&session2).unwrap();
-        store.create_branch("main", &sess2, None).unwrap();
+        store.create_session(&session2).await.unwrap();
+        store.create_branch("main", &sess2, None).await.unwrap();
 
         let id_a = hash_dag_node(b"a", &DagNodeId::root(), &MessageType::Fork, &[], &sess1);
         let node_a = DagNode {
@@ -1455,11 +1462,11 @@ mod tests {
         store.insert_node(&node_a).unwrap();
         store.insert_node(&node_b).unwrap();
 
-        let s1_nodes = store.get_session_nodes(&sess1).unwrap();
+        let s1_nodes = store.get_session_nodes(&sess1).await.unwrap();
         assert_eq!(s1_nodes.len(), 1);
         assert_eq!(*s1_nodes[0].session_id(), sess1);
 
-        let s2_nodes = store.get_session_nodes(&sess2).unwrap();
+        let s2_nodes = store.get_session_nodes(&sess2).await.unwrap();
         assert_eq!(s2_nodes.len(), 1);
         assert_eq!(*s2_nodes[0].session_id(), sess2);
     }
@@ -1468,67 +1475,74 @@ mod tests {
     // Timeline tests (ADR 093)
     // ========================================================================
 
-    #[test]
-    fn create_timeline_returns_auto_id() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn create_timeline_returns_auto_id() {
+        let (store, _dir) = test_store().await;
 
         let session_id = sess();
         let fork = DagNodeId::from("abc123".to_string());
         let id = store
             .create_branch("repair-1", &session_id, Some(&fork))
+            .await
             .unwrap();
         assert!(id.as_i64() >= 1);
 
-        let tl = store.get_branch(id).unwrap().unwrap();
+        let tl = store.get_branch(id).await.unwrap().unwrap();
         assert_eq!(tl.name, "repair-1");
         assert_eq!(tl.session_id, session_id);
         assert_eq!(tl.fork_point, Some(DagNodeId::from("abc123".to_string())));
         assert!(tl.broken_at.is_none());
     }
 
-    #[test]
-    fn create_timeline_with_parent() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn create_timeline_with_parent() {
+        let (store, _dir) = test_store().await;
 
         let session_id = sess();
         // "main" branch already created by test_store()
         let fork = DagNodeId::from("abc123".to_string());
         let fork_id = store
             .create_branch("repair-1", &session_id, Some(&fork))
+            .await
             .unwrap();
 
-        let tl = store.get_branch(fork_id).unwrap().unwrap();
+        let tl = store.get_branch(fork_id).await.unwrap().unwrap();
         assert_eq!(tl.fork_point, Some(fork));
     }
 
-    #[test]
-    fn get_timeline_by_branch() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_timeline_by_branch() {
+        let (store, _dir) = test_store().await;
         let session_id = sess();
         // "main" branch already created by test_store()
 
-        let tl = store.get_branch_by_name("main").unwrap().unwrap();
+        let tl = store.get_branch_by_name("main").await.unwrap().unwrap();
         assert_eq!(tl.session_id, session_id);
 
-        assert!(store.get_branch_by_name("nonexistent").unwrap().is_none());
+        assert!(store
+            .get_branch_by_name("nonexistent")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     // ========================================================================
     // latest_node_on_branch tests
     // ========================================================================
 
-    #[test]
-    fn latest_node_on_branch_returns_none_for_empty() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn latest_node_on_branch_returns_none_for_empty() {
+        let (store, _dir) = test_store().await;
         let result = store
             .latest_node_on_branch(BranchId::from(1), None)
+            .await
             .unwrap();
         assert!(result.is_none());
     }
 
-    #[test]
-    fn latest_node_on_branch_returns_most_recent() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn latest_node_on_branch_returns_most_recent() {
+        let (store, _dir) = test_store().await;
 
         let node1 = test_node(b"first", &DagNodeId::root());
         store.insert_node(&node1).unwrap();
@@ -1550,6 +1564,7 @@ mod tests {
         // No filter — returns the most recent
         let latest = store
             .latest_node_on_branch(BranchId::from(1), None)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(latest.id, node2.id);
@@ -1559,19 +1574,19 @@ mod tests {
     // Session CRUD tests
     // ========================================================================
 
-    #[test]
-    fn create_and_get_session() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn create_and_get_session() {
+        let (store, _dir) = test_store().await;
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
             "pensieve",
             BranchId::from(1),
         );
 
-        store.create_session(&session).unwrap();
+        store.create_session(&session).await.unwrap();
 
         let sid = SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap();
-        let retrieved = store.get_session(&sid).unwrap().unwrap();
+        let retrieved = store.get_session(&sid).await.unwrap().unwrap();
         assert_eq!(
             retrieved.id.as_str(),
             "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -1580,9 +1595,9 @@ mod tests {
         assert_eq!(retrieved.name, session.name);
     }
 
-    #[test]
-    fn get_session_by_name() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_session_by_name() {
+        let (store, _dir) = test_store().await;
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
             "pensieve",
@@ -1590,9 +1605,9 @@ mod tests {
         );
         let name = session.name.clone();
 
-        store.create_session(&session).unwrap();
+        store.create_session(&session).await.unwrap();
 
-        let retrieved = store.get_session_by_name(&name).unwrap().unwrap();
+        let retrieved = store.get_session_by_name(&name).await.unwrap().unwrap();
         assert_eq!(
             retrieved.id.as_str(),
             "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -1600,51 +1615,56 @@ mod tests {
         assert_eq!(retrieved.agent, "pensieve");
     }
 
-    #[test]
-    fn get_session_returns_none_for_unknown() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn get_session_returns_none_for_unknown() {
+        let (store, _dir) = test_store().await;
         let sid = SessionId::try_from("00000000-0000-0000-0000-000000000000".to_string()).unwrap();
-        assert!(store.get_session(&sid).unwrap().is_none());
+        assert!(store.get_session(&sid).await.unwrap().is_none());
     }
 
-    #[test]
-    fn get_session_by_name_returns_none_for_unknown() {
-        let (store, _dir) = test_store();
-        assert!(store.get_session_by_name("nonexistent").unwrap().is_none());
+    #[tokio::test]
+    async fn get_session_by_name_returns_none_for_unknown() {
+        let (store, _dir) = test_store().await;
+        assert!(store
+            .get_session_by_name("nonexistent")
+            .await
+            .unwrap()
+            .is_none());
     }
 
-    #[test]
-    fn create_session_is_idempotent() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn create_session_is_idempotent() {
+        let (store, _dir) = test_store().await;
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
             "pensieve",
             BranchId::from(1),
         );
 
-        store.create_session(&session).unwrap();
-        store.create_session(&session).unwrap(); // No error
+        store.create_session(&session).await.unwrap();
+        store.create_session(&session).await.unwrap(); // No error
 
         let sid = SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap();
-        let retrieved = store.get_session(&sid).unwrap().unwrap();
+        let retrieved = store.get_session(&sid).await.unwrap().unwrap();
         assert_eq!(retrieved.agent, "pensieve");
     }
 
-    #[test]
-    fn dag_node_row_with_message_blob_ignores_it() {
+    #[tokio::test]
+    async fn dag_node_row_with_message_blob_ignores_it() {
         // The old message_blob column has been removed from dag_nodes.
         // Verify a raw insert with only the slimmed columns round-trips.
         use diesel::connection::SimpleConnection;
 
-        let (store, _dir) = test_store();
-        let mut conn = store.conn.lock().unwrap();
-        conn.batch_execute(
-            "INSERT INTO dag_nodes (hash, parent_hash, message_type, session_id, submission_id, created_at, protocol_version, branch_id, snapshot)
-             VALUES ('h1', NULL, 'fork', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', '2025-01-01T00:00:00Z', '', 1, '{}')",
-        ).unwrap();
-        drop(conn);
+        let (store, _dir) = test_store().await;
+        {
+            let mut conn = store.conn.lock().unwrap();
+            conn.batch_execute(
+                "INSERT INTO dag_nodes (hash, parent_hash, message_type, session_id, submission_id, created_at, protocol_version, branch_id, snapshot)
+                 VALUES ('h1', NULL, 'fork', 'd4761d76-dee4-4ebf-9df4-43b52efa4f78', 'sub-1', '2025-01-01T00:00:00Z', '', 1, '{}')",
+            ).unwrap();
+        }
 
-        let result = store.get_node(&DagNodeId::from("h1".to_string()));
+        let result = store.get_node(&DagNodeId::from("h1".to_string())).await;
         assert!(result.is_ok());
         let node = result.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::Fork);
@@ -1654,9 +1674,9 @@ mod tests {
     // Infra plane insert tests
     // ========================================================================
 
-    #[test]
-    fn insert_deploy_agent_node_round_trip() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn insert_deploy_agent_node_round_trip() {
+        let (store, _dir) = test_store().await;
 
         let manifest = vlinder_core::domain::AgentManifest {
             name: "test-agent".to_string(),
@@ -1690,16 +1710,17 @@ mod tests {
                 &key,
                 &msg,
             )
+            .await
             .unwrap();
 
-        let node = store.get_node(&dag_id).unwrap().unwrap();
+        let node = store.get_node(&dag_id).await.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::DeployAgent);
         assert!(node.session.as_str().contains("00000000")); // nullable → default
     }
 
-    #[test]
-    fn insert_delete_agent_node_round_trip() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn insert_delete_agent_node_round_trip() {
+        let (store, _dir) = test_store().await;
 
         let msg = vlinder_core::domain::DeleteAgentMessage::new(
             vlinder_core::domain::AgentName::new("echo"),
@@ -1719,9 +1740,10 @@ mod tests {
                 &key,
                 &msg,
             )
+            .await
             .unwrap();
 
-        let node = store.get_node(&dag_id).unwrap().unwrap();
+        let node = store.get_node(&dag_id).await.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::DeleteAgent);
     }
 
@@ -1729,17 +1751,18 @@ mod tests {
     // Idempotency guard (ADR 125)
     // ========================================================================
 
-    #[test]
-    fn exists_in_submission_returns_false_when_empty() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_false_when_empty() {
+        let (store, _dir) = test_store().await;
         assert!(!store
             .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
+            .await
             .unwrap());
     }
 
-    #[test]
-    fn exists_in_submission_returns_true_when_matching_node_exists() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_true_when_matching_node_exists() {
+        let (store, _dir) = test_store().await;
 
         let mut node = test_node(b"payload", &DagNodeId::root());
         node.msg_type = MessageType::Complete;
@@ -1747,12 +1770,13 @@ mod tests {
 
         assert!(store
             .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
+            .await
             .unwrap());
     }
 
-    #[test]
-    fn exists_in_submission_returns_false_for_wrong_type() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_false_for_wrong_type() {
+        let (store, _dir) = test_store().await;
 
         let mut node = test_node(b"payload", &DagNodeId::root());
         node.msg_type = MessageType::Invoke;
@@ -1760,12 +1784,13 @@ mod tests {
 
         assert!(!store
             .exists_in_submission(&sub(), BranchId::from(1), MessageType::Complete)
+            .await
             .unwrap());
     }
 
-    #[test]
-    fn exists_in_submission_returns_false_for_wrong_branch() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_false_for_wrong_branch() {
+        let (store, _dir) = test_store().await;
 
         let mut node = test_node(b"payload", &DagNodeId::root());
         node.msg_type = MessageType::Complete;
@@ -1773,12 +1798,13 @@ mod tests {
 
         assert!(!store
             .exists_in_submission(&sub(), BranchId::from(2), MessageType::Complete)
+            .await
             .unwrap());
     }
 
-    #[test]
-    fn exists_in_submission_returns_false_for_wrong_submission() {
-        let (store, _dir) = test_store();
+    #[tokio::test]
+    async fn exists_in_submission_returns_false_for_wrong_submission() {
+        let (store, _dir) = test_store().await;
 
         let mut node = test_node(b"payload", &DagNodeId::root());
         node.msg_type = MessageType::Complete;
@@ -1787,6 +1813,7 @@ mod tests {
         let other_sub = SubmissionId::from("sub-other".to_string());
         assert!(!store
             .exists_in_submission(&other_sub, BranchId::from(1), MessageType::Complete)
+            .await
             .unwrap());
     }
 }

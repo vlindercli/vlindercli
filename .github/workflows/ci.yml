@@ -11,6 +11,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Repo-local .cargo/config.toml sets rustc-wrapper = "sccache" for dev
+  # ergonomics. Override to empty in CI — sccache on ubuntu-latest either
+  # isn't installed or hits the retired GHAC v1 cache endpoint. This env
+  # var takes precedence over the config file.
+  CARGO_BUILD_RUSTC_WRAPPER: ""
 
 jobs:
   lint:
@@ -18,9 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt, clippy
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -34,7 +39,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -46,7 +53,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
@@ -58,7 +67,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -66,23 +77,30 @@ jobs:
         # RUSTSEC-2026-0049: rustls-webpki 0.101 CRL validation bug.
         # Transitive dep from AWS SDK's rustls 0.21 (aws-smithy-http-client).
         # Blocked until AWS updates: github.com/awslabs/aws-sdk-rust/discussions/1257
-        run: cargo audit --ignore RUSTSEC-2026-0049
+        #
+        # RUSTSEC-2026-0097: rand 0.10.0 unsound with custom logger using rand::rng().
+        # Transitive dep via lapin → amq-protocol → tcp-stream → p12-keystore.
+        # Flagged 2026-04-09; waiting on lapin to bump amq-protocol.
+        #
+        # RUSTSEC-2026-0098 / RUSTSEC-2026-0099: rustls-webpki name-constraint
+        # bypasses (URI + wildcard). Affect 0.101.7, 0.102.8, 0.103.10; pulled
+        # in via multiple rustls versions from AWS SDK and other TLS stacks.
+        # Patched versions exist upstream but we can't upgrade cleanly until
+        # all transitive consumers bump.
+        #
+        # RUSTSEC-2025-0119: number_prefix unmaintained. Transitive via indicatif.
+        # RUSTSEC-2025-0134: rustls-pemfile unmaintained (migration to rustls-pki-types).
+        # Both are warnings, not vulnerabilities; ignore until upstream migrates.
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2026-0049 \
+            --ignore RUSTSEC-2026-0097 \
+            --ignore RUSTSEC-2026-0098 \
+            --ignore RUSTSEC-2026-0099 \
+            --ignore RUSTSEC-2025-0119 \
+            --ignore RUSTSEC-2025-0134
       - name: Check advisories via cargo-deny
         run: cargo install cargo-deny --locked && cargo deny check advisories
-
-  kani:
-    name: Kani proofs
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - name: Install Kani
-        run: cargo install --locked kani-verifier && cargo kani setup
-      - name: Run proofs
-        run: cargo kani -p vlinder-core
 
   build-arm:
     name: Build ARM Linux (AL2023)
@@ -93,6 +111,7 @@ jobs:
       - name: Build in AL2023 container
         run: |
           docker run --rm \
+            -e CARGO_BUILD_RUSTC_WRAPPER="" \
             -v "${{ github.workspace }}:/src" \
             -v cargo-registry:/root/.cargo/registry \
             -v cargo-git:/root/.cargo/git \

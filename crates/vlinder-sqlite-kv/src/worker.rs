@@ -2,8 +2,9 @@
 //! opens `SqliteObjectStorage` + `SqliteStateStore` per agent, and sends
 //! responses back.
 //!
-//! Follows the same pattern as `SqliteVecWorker`: 3-arg constructor,
-//! lazy `get_or_open()`, `tick()` polling.
+//! Spawns one tokio task per (service, operation) pair and drives each
+//! until shutdown. Each task owns its own queue slot so a long poll on
+//! one operation cannot starve another.
 //!
 //! Key differences from the old `ObjectServiceWorker`:
 //! - State comes from the message envelope (request.state), not JSON payload
@@ -13,10 +14,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use vlinder_core::domain::Registry;
 use vlinder_core::domain::{
-    DagNodeId, DataMessageKind, DataRoutingKey, MessageId, MessageQueue, Operation,
-    ResponseMessage, ServiceBackend, ServiceDiagnostics,
+    Acknowledgement, DagNodeId, DataMessageKind, DataRoutingKey, MessageId, MessageQueue,
+    Operation, QueueError, RequestMessage, ResponseMessage, ServiceBackend, ServiceDiagnostics,
 };
 
 use crate::state_store::{hash_snapshot, hash_state_commit, hash_value, SqliteStateStore};
@@ -87,11 +90,193 @@ impl KvWorker {
         }
     }
 
+    /// Spawn one tokio task per operation this worker serves and drive
+    /// each until `shutdown` fires. Four tasks, all on `self.service`:
+    /// `Get`, `Put`, `List`, `Delete`.
+    ///
+    /// Each task loops: `select!` on shutdown vs. `receive_request`; once a
+    /// request resolves, processing runs outside the select so the
+    /// receive-then-ack path cannot be cancelled mid-flight.
+    pub async fn run(self: Arc<Self>, shutdown: CancellationToken) {
+        let mut set: JoinSet<()> = JoinSet::new();
+
+        for op in [
+            Operation::Get,
+            Operation::Put,
+            Operation::List,
+            Operation::Delete,
+        ] {
+            let me = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            set.spawn(async move {
+                let service = me.service;
+                loop {
+                    let (key, msg, ack) = tokio::select! {
+                        () = shutdown.cancelled() => break,
+                        result = me.queue.receive_request(service, op) => {
+                            match result {
+                                Ok(tuple) => tuple,
+                                Err(QueueError::Timeout) => continue,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, operation = ?op, "KV worker receive error");
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    match op {
+                        Operation::Get => me.process_get_request(key, msg, ack).await,
+                        Operation::Put => me.process_put_request(key, msg, ack).await,
+                        Operation::List => me.process_list_request(key, msg, ack).await,
+                        Operation::Delete => me.process_delete_request(key, msg, ack).await,
+                        _ => unreachable!("KV worker only spawns Get/Put/List/Delete tasks"),
+                    }
+                }
+            });
+        }
+
+        while set.join_next().await.is_some() {}
+    }
+
+    pub async fn process_get_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let (agent, session) = extract_agent_session(&key);
+        let start = std::time::Instant::now();
+        let response_payload = self
+            .handle_get(agent, session, &msg.payload, msg.state.as_deref())
+            .await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::Get,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: msg.state,
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
+    pub async fn process_put_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let (agent, session) = extract_agent_session(&key);
+        let start = std::time::Instant::now();
+        let (response_payload, new_state) = self
+            .handle_put(agent, session, &msg.payload, msg.state.as_deref())
+            .await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::Put,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: new_state.or(msg.state),
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
+    pub async fn process_list_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let (agent, session) = extract_agent_session(&key);
+        let start = std::time::Instant::now();
+        let response_payload = self
+            .handle_list(agent, session, &msg.payload, msg.state.as_deref())
+            .await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::List,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: msg.state,
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
+    pub async fn process_delete_request(
+        &self,
+        key: DataRoutingKey,
+        msg: RequestMessage,
+        ack: Acknowledgement,
+    ) {
+        let (agent, session) = extract_agent_session(&key);
+        let start = std::time::Instant::now();
+        let response_payload = self.handle_delete(agent, session, &msg.payload).await;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let diag = ServiceDiagnostics::storage(
+            self.service.service_type(),
+            self.service.backend_str(),
+            Operation::Delete,
+            response_payload.len() as u64,
+            duration_ms,
+        );
+        let response_key = response_key_from_request(&key);
+        let response = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: msg.id,
+            state: msg.state,
+            diagnostics: diag,
+            payload: response_payload,
+            status_code: 200,
+            checkpoint: msg.checkpoint,
+        };
+        let _ = self.queue.send_response(response_key, response).await;
+        let _ = ack().await;
+    }
+
     /// Get object storage for an agent+session, opening lazily if needed.
     ///
     /// Storage is scoped to the session: each session gets its own database
     /// under `<agent_storage_dir>/sessions/<session_id>/objects.db`.
-    fn get_or_open(
+    async fn get_or_open(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -109,6 +294,7 @@ impl KvWorker {
         let agent = self
             .registry
             .get_agent_by_name(agent_id)
+            .await
             .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
         let uri = agent
             .object_storage
@@ -134,7 +320,7 @@ impl KvWorker {
     ///
     /// State store is co-located with the session-scoped object storage:
     /// `<agent_storage_dir>/sessions/<session_id>/state.db`.
-    fn get_or_open_state_store(
+    async fn get_or_open_state_store(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -152,6 +338,7 @@ impl KvWorker {
         let agent = self
             .registry
             .get_agent_by_name(agent_id)
+            .await
             .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
         let uri = agent
             .object_storage
@@ -187,159 +374,7 @@ impl KvWorker {
         Ok(store)
     }
 
-    /// Process one message if available. Returns true if processed.
-    pub fn tick(&self) -> bool {
-        if self.try_get_v2() {
-            return true;
-        }
-        if self.try_put_v2() {
-            return true;
-        }
-        if self.try_list_v2() {
-            return true;
-        }
-        if self.try_delete_v2() {
-            return true;
-        }
-        false
-    }
-
-    fn try_get_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Get) {
-            Ok((key, msg, ack)) => {
-                let (agent, session) = extract_agent_session(&key);
-                let start = std::time::Instant::now();
-                let response_payload =
-                    self.handle_get(agent, session, &msg.payload, msg.state.as_deref());
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::Get,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: msg.state,
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response);
-                let _ = ack();
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    fn try_put_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Put) {
-            Ok((key, msg, ack)) => {
-                let (agent, session) = extract_agent_session(&key);
-                let start = std::time::Instant::now();
-                let (response_payload, new_state) =
-                    self.handle_put(agent, session, &msg.payload, msg.state.as_deref());
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::Put,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: new_state.or(msg.state),
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response);
-                let _ = ack();
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    fn try_list_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::List) {
-            Ok((key, msg, ack)) => {
-                let (agent, session) = extract_agent_session(&key);
-                let start = std::time::Instant::now();
-                let response_payload =
-                    self.handle_list(agent, session, &msg.payload, msg.state.as_deref());
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::List,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: msg.state,
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response);
-                let _ = ack();
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    fn try_delete_v2(&self) -> bool {
-        match self.queue.receive_request(self.service, Operation::Delete) {
-            Ok((key, msg, ack)) => {
-                let (agent, session) = extract_agent_session(&key);
-                let start = std::time::Instant::now();
-                let response_payload = self.handle_delete(agent, session, &msg.payload);
-                let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let diag = ServiceDiagnostics::storage(
-                    self.service.service_type(),
-                    self.service.backend_str(),
-                    Operation::Delete,
-                    response_payload.len() as u64,
-                    duration_ms,
-                );
-                let response_key = response_key_from_request(&key);
-                let response = ResponseMessage {
-                    id: MessageId::new(),
-                    dag_id: DagNodeId::root(),
-                    correlation_id: msg.id,
-                    state: msg.state,
-                    diagnostics: diag,
-                    payload: response_payload,
-                    status_code: 200,
-                    checkpoint: msg.checkpoint,
-                };
-                let _ = self.queue.send_response(response_key, response);
-                let _ = ack();
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    fn handle_get(
+    async fn handle_get(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -355,7 +390,10 @@ impl KvWorker {
         // State comes from the envelope, not the payload.
         if let Some(state_hash) = state {
             if !state_hash.is_empty() {
-                return match self.versioned_get(agent_id, session_id, state_hash, &req.path) {
+                return match self
+                    .versioned_get(agent_id, session_id, state_hash, &req.path)
+                    .await
+                {
                     Ok(Some(content)) => content,
                     Ok(None) => Vec::new(),
                     Err(e) => format!("[error] {e}").into_bytes(),
@@ -364,7 +402,7 @@ impl KvWorker {
         }
 
         // Unversioned fallback
-        let store = match self.get_or_open(agent_id, session_id) {
+        let store = match self.get_or_open(agent_id, session_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -377,7 +415,7 @@ impl KvWorker {
     }
 
     /// Returns `(response_payload, new_state_option)`.
-    fn handle_put(
+    async fn handle_put(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -389,7 +427,7 @@ impl KvWorker {
             Err(e) => return (format!("[error] invalid request: {e}").into_bytes(), None),
         };
 
-        let store = match self.get_or_open(agent_id, session_id) {
+        let store = match self.get_or_open(agent_id, session_id).await {
             Ok(s) => s,
             Err(e) => return (format!("[error] {e}").into_bytes(), None),
         };
@@ -404,7 +442,9 @@ impl KvWorker {
 
         // Versioned put (ADR 055): state comes from the envelope
         if let Some(parent_state) = state {
-            return match self.versioned_put(agent_id, session_id, parent_state, &req.path, content)
+            return match self
+                .versioned_put(agent_id, session_id, parent_state, &req.path, content)
+                .await
             {
                 Ok(new_state) => {
                     let response = serde_json::json!({"state": new_state});
@@ -421,7 +461,7 @@ impl KvWorker {
         (b"ok".to_vec(), None)
     }
 
-    fn handle_list(
+    async fn handle_list(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -436,7 +476,10 @@ impl KvWorker {
         // Versioned list: resolve paths from the state snapshot
         if let Some(state_hash) = state {
             if !state_hash.is_empty() {
-                return match self.versioned_list(agent_id, session_id, state_hash, &req.path) {
+                return match self
+                    .versioned_list(agent_id, session_id, state_hash, &req.path)
+                    .await
+                {
                     Ok(files) => serde_json::to_string(&files).map_or_else(
                         |e| format!("[error] {e}").into_bytes(),
                         std::string::String::into_bytes,
@@ -447,7 +490,7 @@ impl KvWorker {
         }
 
         // Unversioned fallback
-        let store = match self.get_or_open(agent_id, session_id) {
+        let store = match self.get_or_open(agent_id, session_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -461,13 +504,13 @@ impl KvWorker {
         }
     }
 
-    fn handle_delete(&self, agent_id: &str, session_id: &str, payload: &[u8]) -> Vec<u8> {
+    async fn handle_delete(&self, agent_id: &str, session_id: &str, payload: &[u8]) -> Vec<u8> {
         let req: KvDeleteRequest = match serde_json::from_slice(payload) {
             Ok(r) => r,
             Err(e) => return format!("[error] invalid request: {e}").into_bytes(),
         };
 
-        let store = match self.get_or_open(agent_id, session_id) {
+        let store = match self.get_or_open(agent_id, session_id).await {
             Ok(s) => s,
             Err(e) => return format!("[error] {e}").into_bytes(),
         };
@@ -482,7 +525,7 @@ impl KvWorker {
     // --- Versioned operations (ADR 055) ---
 
     /// Versioned put: store value, update snapshot, create state commit.
-    fn versioned_put(
+    async fn versioned_put(
         &self,
         agent_id: &str,
         session_id: &str,
@@ -490,7 +533,7 @@ impl KvWorker {
         path: &str,
         content: &[u8],
     ) -> Result<String, String> {
-        let state_store = self.get_or_open_state_store(agent_id, session_id)?;
+        let state_store = self.get_or_open_state_store(agent_id, session_id).await?;
 
         // 1. Store value
         let value_hash = hash_value(content);
@@ -524,14 +567,14 @@ impl KvWorker {
     }
 
     /// Versioned get: resolve through state commit -> snapshot -> value.
-    fn versioned_get(
+    async fn versioned_get(
         &self,
         agent_id: &str,
         session_id: &str,
         state_hash: &str,
         path: &str,
     ) -> Result<Option<Vec<u8>>, String> {
-        let state_store = self.get_or_open_state_store(agent_id, session_id)?;
+        let state_store = self.get_or_open_state_store(agent_id, session_id).await?;
 
         // Load state commit
         let commit = state_store
@@ -553,14 +596,14 @@ impl KvWorker {
     }
 
     /// Versioned list: return paths from the snapshot that match a prefix.
-    fn versioned_list(
+    async fn versioned_list(
         &self,
         agent_id: &str,
         session_id: &str,
         state_hash: &str,
         prefix: &str,
     ) -> Result<Vec<String>, String> {
-        let state_store = self.get_or_open_state_store(agent_id, session_id)?;
+        let state_store = self.get_or_open_state_store(agent_id, session_id).await?;
 
         let commit = state_store
             .get_state_commit(state_hash)?
@@ -661,8 +704,32 @@ mod tests {
         }
     }
 
-    #[test]
-    fn handles_put_and_get() {
+    async fn drain_get(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &KvWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(worker.service, Operation::Get)
+            .await
+            .expect("get request should be available");
+        worker.process_get_request(key, msg, ack).await;
+    }
+
+    async fn drain_put(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &KvWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(worker.service, Operation::Put)
+            .await
+            .expect("put request should be available");
+        worker.process_put_request(key, msg, ack).await;
+    }
+
+    async fn drain_list(queue: &Arc<dyn MessageQueue + Send + Sync>, worker: &KvWorker) {
+        let (key, msg, ack) = queue
+            .receive_request(worker.service, Operation::List)
+            .await
+            .expect("list request should be available");
+        worker.process_list_request(key, msg, ack).await;
+    }
+
+    #[tokio::test]
+    async fn handles_put_and_get() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -671,7 +738,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -698,8 +765,8 @@ mod tests {
         );
         let put_msg = make_request_msg(serde_json::to_vec(&put_payload).unwrap(), None);
 
-        queue.send_request(put_key, put_msg).unwrap();
-        assert!(handler.tick());
+        queue.send_request(put_key, put_msg).await.unwrap();
+        drain_put(&queue, &handler).await;
         let (_key, response, ack) = queue
             .receive_response(
                 &submission,
@@ -708,9 +775,10 @@ mod tests {
                 Operation::Put,
                 Sequence::first(),
             )
+            .await
             .unwrap();
         assert_eq!(response.payload.as_slice(), b"ok");
-        ack().unwrap();
+        ack().await.unwrap();
 
         // Get request
         let get_payload = serde_json::json!({"path": "/hello.txt"});
@@ -724,8 +792,8 @@ mod tests {
         );
         let get_msg = make_request_msg(serde_json::to_vec(&get_payload).unwrap(), None);
 
-        queue.send_request(get_key, get_msg).unwrap();
-        assert!(handler.tick());
+        queue.send_request(get_key, get_msg).await.unwrap();
+        drain_get(&queue, &handler).await;
         let (_key, response, ack) = queue
             .receive_response(
                 &submission,
@@ -734,13 +802,14 @@ mod tests {
                 Operation::Get,
                 Sequence::from(2),
             )
+            .await
             .unwrap();
         assert_eq!(response.payload.as_slice(), b"hello world");
-        ack().unwrap();
+        ack().await.unwrap();
     }
 
-    #[test]
-    fn versioned_put_returns_state_hash() {
+    #[tokio::test]
+    async fn versioned_put_returns_state_hash() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -749,7 +818,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -778,8 +847,8 @@ mod tests {
             Some(String::new()), // root state via envelope
         );
 
-        queue.send_request(put_key, put_msg).unwrap();
-        assert!(handler.tick());
+        queue.send_request(put_key, put_msg).await.unwrap();
+        drain_put(&queue, &handler).await;
 
         let (_key, response, ack) = queue
             .receive_response(
@@ -789,8 +858,9 @@ mod tests {
                 Operation::Put,
                 Sequence::first(),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
 
         // Response should be JSON with a state field
         let resp: serde_json::Value = serde_json::from_slice(response.payload.as_slice()).unwrap();
@@ -801,9 +871,9 @@ mod tests {
         assert_eq!(response.state, Some(state.to_string()));
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
-    fn versioned_put_chains_state() {
+    async fn versioned_put_chains_state() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -812,7 +882,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -835,8 +905,8 @@ mod tests {
             Sequence::first(),
         );
         let msg1 = make_request_msg(serde_json::to_vec(&put1).unwrap(), Some(String::new()));
-        queue.send_request(key1, msg1).unwrap();
-        handler.tick();
+        queue.send_request(key1, msg1).await.unwrap();
+        drain_put(&queue, &handler).await;
         let (_key, resp1, ack) = queue
             .receive_response(
                 &submission,
@@ -845,8 +915,9 @@ mod tests {
                 Operation::Put,
                 Sequence::first(),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
         let hash1 = state1["state"].as_str().unwrap().to_string();
 
@@ -864,8 +935,8 @@ mod tests {
             serde_json::to_vec(&put2).unwrap(),
             Some(hash1.clone()), // chain from previous state via envelope
         );
-        queue.send_request(key2, msg2).unwrap();
-        handler.tick();
+        queue.send_request(key2, msg2).await.unwrap();
+        drain_put(&queue, &handler).await;
         let (_key, resp2, ack) = queue
             .receive_response(
                 &submission,
@@ -874,8 +945,9 @@ mod tests {
                 Operation::Put,
                 Sequence::from(2),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
         let hash2 = state2["state"].as_str().unwrap().to_string();
 
@@ -896,8 +968,8 @@ mod tests {
             serde_json::to_vec(&get).unwrap(),
             Some(hash2.clone()), // state via envelope
         );
-        queue.send_request(get_key, get_msg).unwrap();
-        handler.tick();
+        queue.send_request(get_key, get_msg).await.unwrap();
+        drain_get(&queue, &handler).await;
         let (_key, resp, ack) = queue
             .receive_response(
                 &submission,
@@ -906,14 +978,15 @@ mod tests {
                 Operation::Get,
                 Sequence::from(3),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
         assert_eq!(resp.payload.as_slice(), b"aaa");
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::too_many_lines)]
-    fn versioned_list_reflects_state_snapshot() {
+    async fn versioned_list_reflects_state_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -922,7 +995,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -946,8 +1019,8 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/a.txt", "content": "aaa"})).unwrap(),
             Some(String::new()),
         );
-        queue.send_request(key1, msg1).unwrap();
-        handler.tick();
+        queue.send_request(key1, msg1).await.unwrap();
+        drain_put(&queue, &handler).await;
         let (_key, resp1, ack) = queue
             .receive_response(
                 &submission,
@@ -956,8 +1029,9 @@ mod tests {
                 Operation::Put,
                 Sequence::first(),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
         let state1: serde_json::Value = serde_json::from_slice(resp1.payload.as_slice()).unwrap();
         let hash1 = state1["state"].as_str().unwrap().to_string();
 
@@ -974,8 +1048,8 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/b.txt", "content": "bbb"})).unwrap(),
             Some(hash1.clone()),
         );
-        queue.send_request(key2, msg2).unwrap();
-        handler.tick();
+        queue.send_request(key2, msg2).await.unwrap();
+        drain_put(&queue, &handler).await;
         let (_key, resp2, ack) = queue
             .receive_response(
                 &submission,
@@ -984,8 +1058,9 @@ mod tests {
                 Operation::Put,
                 Sequence::from(2),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
         let state2: serde_json::Value = serde_json::from_slice(resp2.payload.as_slice()).unwrap();
         let hash2 = state2["state"].as_str().unwrap().to_string();
 
@@ -1002,8 +1077,8 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/"})).unwrap(),
             Some(hash2),
         );
-        queue.send_request(list_key2, list_msg2).unwrap();
-        handler.tick();
+        queue.send_request(list_key2, list_msg2).await.unwrap();
+        drain_list(&queue, &handler).await;
         let (_key, resp, ack) = queue
             .receive_response(
                 &submission,
@@ -1012,8 +1087,9 @@ mod tests {
                 Operation::List,
                 Sequence::from(3),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
         assert_eq!(files, vec!["/a.txt", "/b.txt"]);
 
@@ -1030,8 +1106,8 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"path": "/"})).unwrap(),
             Some(hash1),
         );
-        queue.send_request(list_key1, list_msg1).unwrap();
-        handler.tick();
+        queue.send_request(list_key1, list_msg1).await.unwrap();
+        drain_list(&queue, &handler).await;
         let (_key, resp, ack) = queue
             .receive_response(
                 &submission,
@@ -1040,14 +1116,15 @@ mod tests {
                 Operation::List,
                 Sequence::from(4),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
         let files: Vec<String> = serde_json::from_slice(resp.payload.as_slice()).unwrap();
         assert_eq!(files, vec!["/a.txt"]);
     }
 
-    #[test]
-    fn kv_get_response_echoes_state() {
+    #[tokio::test]
+    async fn kv_get_response_echoes_state() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("objects.db");
 
@@ -1056,7 +1133,7 @@ mod tests {
         registry.register_runtime(vlinder_core::domain::RuntimeType::Container);
         registry.register_object_storage(ObjectStorageType::Sqlite);
         let agent = test_agent_with_object_storage(&db_path);
-        registry.register_agent(agent).unwrap();
+        registry.register_agent(agent).await.unwrap();
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let handler = KvWorker::new(
             Arc::clone(&queue),
@@ -1078,8 +1155,8 @@ mod tests {
             Sequence::first(),
         );
         let put_msg = make_request_msg(serde_json::to_vec(&put_payload).unwrap(), None);
-        queue.send_request(put_key, put_msg).unwrap();
-        handler.tick();
+        queue.send_request(put_key, put_msg).await.unwrap();
+        drain_put(&queue, &handler).await;
         let (_key, _resp, ack) = queue
             .receive_response(
                 &submission,
@@ -1088,8 +1165,9 @@ mod tests {
                 Operation::Put,
                 Sequence::first(),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
 
         // Get with state in envelope — should echo it back
         let get_payload = serde_json::json!({"path": "/hello.txt"});
@@ -1105,8 +1183,8 @@ mod tests {
             serde_json::to_vec(&get_payload).unwrap(),
             Some("hash123".to_string()),
         );
-        queue.send_request(get_key, get_msg).unwrap();
-        handler.tick();
+        queue.send_request(get_key, get_msg).await.unwrap();
+        drain_get(&queue, &handler).await;
         let (_key, response, ack) = queue
             .receive_response(
                 &submission,
@@ -1115,8 +1193,9 @@ mod tests {
                 Operation::Get,
                 Sequence::from(2),
             )
+            .await
             .unwrap();
-        ack().unwrap();
+        ack().await.unwrap();
 
         assert_eq!(
             response.state,

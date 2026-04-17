@@ -3,19 +3,19 @@
 use vlinder_core::domain::{ModelCatalog, Provider};
 use vlinder_ollama::OllamaCatalog;
 
-#[test]
+#[tokio::test]
 #[ignore = "requires running Ollama server"]
-fn lists_models_from_ollama() {
+async fn lists_models_from_ollama() {
     let catalog = OllamaCatalog::new("http://localhost:11434");
-    let models = catalog.list();
+    let models = catalog.list().await;
     assert!(models.is_ok());
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "requires running Ollama server"]
-fn resolves_model_from_ollama() {
+async fn resolves_model_from_ollama() {
     let catalog = OllamaCatalog::new("http://localhost:11434");
-    let model = catalog.resolve("phi3");
+    let model = catalog.resolve("phi3").await;
     assert!(model.is_ok());
     let model = model.unwrap();
     assert_eq!(model.provider, Provider::Ollama);

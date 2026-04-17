@@ -7,15 +7,18 @@ publish = false
 [features]
 default = ["routing", "worker"]
 routing = []
-worker = ["dep:ureq"]
+worker = []
 
 [dependencies]
 vlinder-core = { path = "../vlinder-core" }
 async-openai = { version = "0.32", default-features = false, features = ["chat-completion-types"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ureq = { version = "3", features = ["json"], optional = true }
+reqwest = { version = "0.12", features = ["json"] }
+async-trait = "0.1"
 http = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-util = "0.7"
 tracing = "0.1"
 
 [lints]

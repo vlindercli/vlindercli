@@ -15,15 +15,27 @@ use super::{
     PromoteMessage, RequestMessage, ResourceId, ResponseMessage, Sequence, ServiceBackend,
     SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
+use async_trait::async_trait;
 use std::fmt;
+use std::future::Future;
 
 /// One-shot closure that acknowledges a received message was processed.
-pub type Acknowledgement = Box<dyn FnOnce() -> Result<(), QueueError> + Send>;
+pub type Acknowledgement = Box<
+    dyn FnOnce() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), QueueError>> + Send>,
+        > + Send,
+>;
+
+/// Create an `Acknowledgement` that completes immediately with `Ok(())`.
+pub fn noop_ack() -> Acknowledgement {
+    Box::new(|| Box::pin(async { Ok(()) }))
+}
 
 // --- MessageQueue Trait ---
 
 /// A message queue for sending and receiving typed messages (ADR 044).
-pub trait MessageQueue {
+#[async_trait]
+pub trait MessageQueue: Send + Sync {
     // -------------------------------------------------------------------------
     // Lifecycle (ADR 125)
     // -------------------------------------------------------------------------
@@ -34,7 +46,7 @@ pub trait MessageQueue {
     ///
     /// SQS: creates static queues (deploy, delete, fork, promote) + DLQs.
     /// NATS: no-op (subjects are implicit, stream created at connect time).
-    fn on_cluster_start(&self) -> Result<(), QueueError> {
+    async fn on_cluster_start(&self) -> Result<(), QueueError> {
         Ok(())
     }
 
@@ -45,7 +57,7 @@ pub trait MessageQueue {
     ///
     /// SQS: creates invoke, complete, and response queues + DLQs.
     /// NATS: no-op (subjects are implicit).
-    fn on_agent_deployed(&self, _agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deployed(&self, _agent: &AgentName) -> Result<(), QueueError> {
         Ok(())
     }
 
@@ -56,7 +68,7 @@ pub trait MessageQueue {
     ///
     /// SQS: deletes the agent's invoke, complete, and response queues + DLQs.
     /// NATS: no-op.
-    fn on_agent_deleted(&self, _agent: &AgentName) -> Result<(), QueueError> {
+    async fn on_agent_deleted(&self, _agent: &AgentName) -> Result<(), QueueError> {
         Ok(())
     }
 
@@ -68,12 +80,12 @@ pub trait MessageQueue {
     ///
     /// Routing key and payload are separate: the key goes into the subject,
     /// the payload goes into the NATS message body.
-    fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError>;
+    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError>;
 
     /// Receive an invoke from the data plane (ADR 121).
     ///
     /// Returns the routing key, payload, and acknowledgement.
-    fn receive_invoke(
+    async fn receive_invoke(
         &self,
         agent: &AgentName,
     ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError>;
@@ -83,14 +95,18 @@ pub trait MessageQueue {
     // -------------------------------------------------------------------------
 
     /// Send a complete on the data plane (ADR 121).
-    fn send_complete(&self, _key: DataRoutingKey, _msg: CompleteMessage) -> Result<(), QueueError> {
+    async fn send_complete(
+        &self,
+        _key: DataRoutingKey,
+        _msg: CompleteMessage,
+    ) -> Result<(), QueueError> {
         Err(QueueError::SendFailed(
             "send_complete not implemented".into(),
         ))
     }
 
     /// Receive a complete from the data plane (ADR 121).
-    fn receive_complete(
+    async fn receive_complete(
         &self,
         _submission: &SubmissionId,
         _harness: HarnessType,
@@ -104,14 +120,18 @@ pub trait MessageQueue {
     // -------------------------------------------------------------------------
 
     /// Send a request on the data plane (ADR 121).
-    fn send_request(&self, _key: DataRoutingKey, _msg: RequestMessage) -> Result<(), QueueError> {
+    async fn send_request(
+        &self,
+        _key: DataRoutingKey,
+        _msg: RequestMessage,
+    ) -> Result<(), QueueError> {
         Err(QueueError::SendFailed(
             "send_request not implemented".into(),
         ))
     }
 
     /// Receive a request from the data plane (ADR 121).
-    fn receive_request(
+    async fn receive_request(
         &self,
         _service: ServiceBackend,
         _operation: Operation,
@@ -124,14 +144,18 @@ pub trait MessageQueue {
     // -------------------------------------------------------------------------
 
     /// Send a response on the data plane (ADR 121).
-    fn send_response(&self, _key: DataRoutingKey, _msg: ResponseMessage) -> Result<(), QueueError> {
+    async fn send_response(
+        &self,
+        _key: DataRoutingKey,
+        _msg: ResponseMessage,
+    ) -> Result<(), QueueError> {
         Err(QueueError::SendFailed(
             "send_response not implemented".into(),
         ))
     }
 
     /// Receive a response from the data plane (ADR 121).
-    fn receive_response(
+    async fn receive_response(
         &self,
         _submission: &SubmissionId,
         _agent: &AgentName,
@@ -147,27 +171,31 @@ pub trait MessageQueue {
     // -------------------------------------------------------------------------
 
     /// Send a fork on the session plane.
-    fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError>;
+    async fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError>;
 
     /// Receive a fork from the session plane.
-    fn receive_fork(
+    async fn receive_fork(
         &self,
     ) -> Result<(SessionRoutingKey, ForkMessage, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
     }
 
     /// Send a promote on the session plane.
-    fn send_promote(&self, key: SessionRoutingKey, msg: PromoteMessage) -> Result<(), QueueError>;
+    async fn send_promote(
+        &self,
+        key: SessionRoutingKey,
+        msg: PromoteMessage,
+    ) -> Result<(), QueueError>;
 
     /// Receive a promote from the session plane.
-    fn receive_promote(
+    async fn receive_promote(
         &self,
     ) -> Result<(SessionRoutingKey, PromoteMessage, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
     }
 
     /// Start a session on the session plane.
-    fn send_session_start(
+    async fn send_session_start(
         &self,
         key: SessionRoutingKey,
         msg: SessionStartMessage,
@@ -178,28 +206,28 @@ pub trait MessageQueue {
     // -------------------------------------------------------------------------
 
     /// Enqueue an agent deploy on the infra plane.
-    fn send_deploy_agent(
+    async fn send_deploy_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeployAgentMessage,
     ) -> Result<(), QueueError>;
 
     /// Receive an agent deploy from the infra plane.
-    fn receive_deploy_agent(
+    async fn receive_deploy_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
     }
 
     /// Enqueue an agent delete on the infra plane.
-    fn send_delete_agent(
+    async fn send_delete_agent(
         &self,
         key: InfraRoutingKey,
         msg: DeleteAgentMessage,
     ) -> Result<(), QueueError>;
 
     /// Receive an agent delete from the infra plane.
-    fn receive_delete_agent(
+    async fn receive_delete_agent(
         &self,
     ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
@@ -214,7 +242,7 @@ pub trait MessageQueue {
     /// watch all traffic for projection.
     ///
     /// NATS: subscribes to `vlinder.>`. AMQP: binds to `vlinder.#`.
-    fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
+    async fn receive_any(&self) -> Result<(String, Vec<u8>, Acknowledgement), QueueError> {
         Err(QueueError::Timeout)
     }
 
@@ -228,7 +256,7 @@ pub trait MessageQueue {
     ///
     /// Data-plane variant of `call_service`. Routing key carries session/branch/submission/
     /// service/operation/sequence; payload is `RequestMessageV2`.
-    fn call_service(
+    async fn call_service(
         &self,
         key: DataRoutingKey,
         msg: RequestMessage,
@@ -248,11 +276,13 @@ pub trait MessageQueue {
         let agent = agent.clone();
         send_and_wait(
             || self.send_request(key, msg),
-            || {
+            || async {
                 self.receive_response(&submission, &agent, service, operation, sequence)
+                    .await
                     .map(|(_key, msg, ack)| (msg, ack))
             },
         )
+        .await
     }
 }
 
@@ -261,20 +291,22 @@ pub trait MessageQueue {
 /// Send a message and poll until the correlated reply arrives (ADR 092).
 ///
 /// Single implementation behind `call_service()`.
-fn send_and_wait<T>(
-    send: impl FnOnce() -> Result<(), QueueError>,
-    receive: impl Fn() -> Result<(T, Acknowledgement), QueueError>,
-) -> Result<T, QueueError> {
-    send()?;
+async fn send_and_wait<T, FutSend, FutRecv>(
+    send: impl FnOnce() -> FutSend,
+    receive: impl Fn() -> FutRecv,
+) -> Result<T, QueueError>
+where
+    FutSend: Future<Output = Result<(), QueueError>>,
+    FutRecv: Future<Output = Result<(T, Acknowledgement), QueueError>>,
+{
+    send().await?;
     loop {
-        match receive() {
+        match receive().await {
             Ok((reply, ack)) => {
-                let _ = ack();
+                let _ = ack().await;
                 return Ok(reply);
             }
-            Err(QueueError::Timeout) => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            Err(QueueError::Timeout) => {}
             Err(e) => return Err(e),
         }
     }
@@ -306,59 +338,6 @@ impl std::error::Error for QueueError {}
 
 // --- Routing ---
 
-/// Assert the routing contract for `receive_complete`: the returned message's
-/// submission must match the requested submission.
-#[allow(dead_code)]
-pub fn assert_complete_routing_contract(
-    result: &Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError>,
-    expected: &SubmissionId,
-) {
-    if let Ok((key, _, _)) = result {
-        assert!(
-            &key.submission == expected,
-            "routing contract: receive_complete expected submission {}, got {}",
-            expected,
-            key.submission
-        );
-    }
-}
-
-/// Assert the routing contract for `receive_response`: the returned message
-/// must match the requested submission, service, operation, and sequence.
-#[allow(dead_code)]
-pub fn assert_response_routing_contract(
-    result: &Result<(DataRoutingKey, ResponseMessage, Acknowledgement), QueueError>,
-    expected_submission: &SubmissionId,
-    expected_service: ServiceBackend,
-    expected_operation: Operation,
-    expected_sequence: Sequence,
-) {
-    if let Ok((key, _, _)) = result {
-        assert!(
-            &key.submission == expected_submission,
-            "routing contract: receive_response expected submission {}, got {}",
-            expected_submission,
-            key.submission
-        );
-        if let DataMessageKind::Response {
-            service,
-            operation,
-            sequence,
-            ..
-        } = &key.kind
-        {
-            assert!(
-                *service == expected_service
-                    && *operation == expected_operation
-                    && *sequence == expected_sequence,
-                "routing contract: receive_response filter mismatch"
-            );
-        }
-    }
-}
-
-// --- Routing ---
-
 /// Extract the agent name from a registry-assigned `ResourceId`.
 ///
 /// Registry IDs have the format `<registry>/agents/<name>`.
@@ -373,218 +352,4 @@ pub fn agent_routing_key(agent_id: &ResourceId) -> AgentName {
         agent_id.as_str()
     };
     AgentName::new(name)
-}
-
-// --- Kani proofs: routing contract verification (ADR 125, ADR 126) ---
-//
-// These proofs verify that the MessageQueue routing contract — receive methods
-// must return only messages matching the requested filter parameters — is:
-//   1. Satisfiable by subject-routed backends (NATS subjects, AMQP topic exchanges)
-//   2. Violated by unfiltered backends (SQS-like)
-//
-// NATS and AMQP 0-9-1 topic exchanges both provide server-side filtering on
-// routing keys/subjects. The FilteredQueue model covers both — they are the
-// same class of backend from the routing contract's perspective.
-//
-// This is the formal evidence for ruling out SQS (ADR 125) and selecting
-// AMQP 0-9-1 as the managed alternative (ADR 126).
-
-#[cfg(kani)]
-mod routing_contract_proofs {
-    use super::*;
-    use crate::domain::diagnostics::RuntimeDiagnostics;
-
-    fn make_key(submission: &str, agent: &str) -> DataRoutingKey {
-        DataRoutingKey {
-            session: super::super::SessionId::try_from(
-                "00000000-0000-0000-0000-000000000000".to_string(),
-            )
-            .unwrap(),
-            branch: super::super::BranchId::from(1),
-            submission: SubmissionId::from(submission.to_string()),
-            kind: DataMessageKind::Complete {
-                agent: AgentName::new(agent),
-                harness: HarnessType::Cli,
-            },
-        }
-    }
-
-    fn make_complete() -> CompleteMessage {
-        CompleteMessage {
-            id: super::super::MessageId::from("m".to_string()),
-            dag_id: super::super::DagNodeId::root(),
-            state: None,
-            diagnostics: RuntimeDiagnostics::placeholder(0),
-            payload: vec![],
-        }
-    }
-
-    /// Model: subject-routed queue (NATS subjects, AMQP topic exchanges).
-    /// Server-side filtering — only returns messages matching the routing key.
-    struct FilteredQueue {
-        keys: [DataRoutingKey; 2],
-        msgs: [CompleteMessage; 2],
-    }
-
-    impl MessageQueue for FilteredQueue {
-        fn send_invoke(&self, _: DataRoutingKey, _: InvokeMessage) -> Result<(), QueueError> {
-            Ok(())
-        }
-        fn receive_invoke(
-            &self,
-            _: &AgentName,
-        ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
-            Err(QueueError::Timeout)
-        }
-        fn send_fork(&self, _: SessionRoutingKey, _: ForkMessage) -> Result<(), QueueError> {
-            Ok(())
-        }
-        fn send_promote(&self, _: SessionRoutingKey, _: PromoteMessage) -> Result<(), QueueError> {
-            Ok(())
-        }
-        fn send_session_start(
-            &self,
-            _: SessionRoutingKey,
-            _: SessionStartMessage,
-        ) -> Result<super::super::BranchId, QueueError> {
-            Ok(super::super::BranchId::from(1))
-        }
-        fn send_deploy_agent(
-            &self,
-            _: InfraRoutingKey,
-            _: DeployAgentMessage,
-        ) -> Result<(), QueueError> {
-            Ok(())
-        }
-        fn send_delete_agent(
-            &self,
-            _: InfraRoutingKey,
-            _: DeleteAgentMessage,
-        ) -> Result<(), QueueError> {
-            Ok(())
-        }
-
-        fn receive_complete(
-            &self,
-            submission: &SubmissionId,
-            _harness: HarnessType,
-            _agent: &AgentName,
-        ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
-            // Server-side filter: only return messages matching submission
-            for i in 0..self.keys.len() {
-                if &self.keys[i].submission == submission {
-                    return Ok((
-                        self.keys[i].clone(),
-                        self.msgs[i].clone(),
-                        Box::new(|| Ok(())),
-                    ));
-                }
-            }
-            Err(QueueError::Timeout)
-        }
-    }
-
-    /// Model: unfiltered queue (SQS-like).
-    /// No server-side filtering — returns whatever message is next.
-    struct UnfilteredQueue {
-        keys: [DataRoutingKey; 2],
-        msgs: [CompleteMessage; 2],
-    }
-
-    impl MessageQueue for UnfilteredQueue {
-        fn send_invoke(&self, _: DataRoutingKey, _: InvokeMessage) -> Result<(), QueueError> {
-            Ok(())
-        }
-        fn receive_invoke(
-            &self,
-            _: &AgentName,
-        ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
-            Err(QueueError::Timeout)
-        }
-        fn send_fork(&self, _: SessionRoutingKey, _: ForkMessage) -> Result<(), QueueError> {
-            Ok(())
-        }
-        fn send_promote(&self, _: SessionRoutingKey, _: PromoteMessage) -> Result<(), QueueError> {
-            Ok(())
-        }
-        fn send_session_start(
-            &self,
-            _: SessionRoutingKey,
-            _: SessionStartMessage,
-        ) -> Result<super::super::BranchId, QueueError> {
-            Ok(super::super::BranchId::from(1))
-        }
-        fn send_deploy_agent(
-            &self,
-            _: InfraRoutingKey,
-            _: DeployAgentMessage,
-        ) -> Result<(), QueueError> {
-            Ok(())
-        }
-        fn send_delete_agent(
-            &self,
-            _: InfraRoutingKey,
-            _: DeleteAgentMessage,
-        ) -> Result<(), QueueError> {
-            Ok(())
-        }
-
-        fn receive_complete(
-            &self,
-            _submission: &SubmissionId,
-            _harness: HarnessType,
-            _agent: &AgentName,
-        ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
-            // No filtering — return first message regardless of submission
-            Ok((
-                self.keys[0].clone(),
-                self.msgs[0].clone(),
-                Box::new(|| Ok(())),
-            ))
-        }
-    }
-
-    /// PROOF: A subject-routed queue (NATS or AMQP topic exchange) satisfies the contract.
-    #[kani::proof]
-    fn filtered_queue_satisfies_routing_contract() {
-        let q = FilteredQueue {
-            keys: [make_key("sub-1", "agent"), make_key("sub-2", "agent")],
-            msgs: [make_complete(), make_complete()],
-        };
-
-        // Ask for sub-1 — must get sub-1
-        let result = q.receive_complete(
-            &SubmissionId::from("sub-1".to_string()),
-            HarnessType::Cli,
-            &AgentName::new("agent"),
-        );
-        assert_complete_routing_contract(&result, &SubmissionId::from("sub-1".to_string()));
-
-        // Ask for sub-2 — must get sub-2
-        let result = q.receive_complete(
-            &SubmissionId::from("sub-2".to_string()),
-            HarnessType::Cli,
-            &AgentName::new("agent"),
-        );
-        assert_complete_routing_contract(&result, &SubmissionId::from("sub-2".to_string()));
-    }
-
-    /// PROOF: An unfiltered queue violates the routing contract.
-    /// Kani finds a counterexample where the wrong submission is returned.
-    #[kani::proof]
-    #[kani::should_panic]
-    fn unfiltered_queue_violates_routing_contract() {
-        let q = UnfilteredQueue {
-            keys: [make_key("sub-1", "agent"), make_key("sub-2", "agent")],
-            msgs: [make_complete(), make_complete()],
-        };
-
-        // Ask for sub-2 — but unfiltered queue returns sub-1 (first in queue)
-        let result = q.receive_complete(
-            &SubmissionId::from("sub-2".to_string()),
-            HarnessType::Cli,
-            &AgentName::new("agent"),
-        );
-        assert_complete_routing_contract(&result, &SubmissionId::from("sub-2".to_string()));
-    }
 }

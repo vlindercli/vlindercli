@@ -41,31 +41,31 @@ pub enum SessionCommand {
     },
 }
 
-pub fn execute(cmd: SessionCommand) {
+pub async fn execute(cmd: SessionCommand) {
     match cmd {
-        SessionCommand::List { agent } => list(&agent),
-        SessionCommand::Get { session_id } => get(&session_id),
+        SessionCommand::List { agent } => list(&agent).await,
+        SessionCommand::Get { session_id } => get(&session_id).await,
         SessionCommand::Fork {
             session_id,
             from,
             branch,
-        } => fork(&session_id, &from, &branch),
-        SessionCommand::Promote { session_id, branch } => promote(&session_id, &branch),
+        } => fork(&session_id, &from, &branch).await,
+        SessionCommand::Promote { session_id, branch } => promote(&session_id, &branch).await,
     }
 }
 
-fn require_dag_store(config: &CliConfig) -> Box<dyn DagStore> {
-    open_dag_store(config).unwrap_or_else(|| {
+async fn require_dag_store(config: &CliConfig) -> Box<dyn DagStore> {
+    open_dag_store(config).await.unwrap_or_else(|| {
         eprintln!("Cannot connect to state service. Is the daemon running?");
         std::process::exit(1);
     })
 }
 
-fn list(agent_name: &str) {
+async fn list(agent_name: &str) {
     let config = CliConfig::load();
-    let store = require_dag_store(&config);
+    let store = require_dag_store(&config).await;
 
-    let sessions = store.list_sessions().unwrap_or_else(|e| {
+    let sessions = store.list_sessions().await.unwrap_or_else(|e| {
         eprintln!("Failed to list sessions: {e}");
         std::process::exit(1);
     });
@@ -87,14 +87,15 @@ fn list(agent_name: &str) {
     for s in &filtered {
         let name = store
             .get_session(&s.session_id)
+            .await
             .ok()
             .flatten()
             .map(|sess| sess.name)
             .unwrap_or_default();
         let branch_count = store
             .get_branches_for_session(&s.session_id)
-            .map(|b| b.len())
-            .unwrap_or(0);
+            .await
+            .map_or(0, |b| b.len());
         println!(
             "{:<28} {:<40} {:<24} {:>8}",
             name,
@@ -105,15 +106,18 @@ fn list(agent_name: &str) {
     }
 }
 
-fn get(session_id_or_name: &str) {
+async fn get(session_id_or_name: &str) {
     let config = CliConfig::load();
-    let store = require_dag_store(&config);
+    let store = require_dag_store(&config).await;
 
-    let session_id = resolve_session_id(&*store, session_id_or_name);
-    let nodes = store.get_session_nodes(&session_id).unwrap_or_else(|e| {
-        eprintln!("Failed to query session: {e}");
-        std::process::exit(1);
-    });
+    let session_id = resolve_session_id(&*store, session_id_or_name).await;
+    let nodes = store
+        .get_session_nodes(&session_id)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to query session: {e}");
+            std::process::exit(1);
+        });
 
     if nodes.is_empty() {
         println!("No messages found for session {session_id}");
@@ -143,7 +147,7 @@ fn get(session_id_or_name: &str) {
             let (from, to, operation, checkpoint) = if node.message_type()
                 == vlinder_core::domain::MessageType::Invoke
             {
-                if let Ok(Some((key, _msg))) = store.get_invoke_node(&node.id) {
+                if let Ok(Some((key, _msg))) = store.get_invoke_node(&node.id).await {
                     let vlinder_core::domain::DataMessageKind::Invoke { harness, agent, .. } =
                         &key.kind
                     else {
@@ -188,14 +192,15 @@ fn get(session_id_or_name: &str) {
     }
 }
 
-fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
+async fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
     let config = CliConfig::load();
-    let store = require_dag_store(&config);
-    let session_id = resolve_session_id(&*store, session_id_or_name);
+    let store = require_dag_store(&config).await;
+    let session_id = resolve_session_id(&*store, session_id_or_name).await;
 
     // Verify the node exists and belongs to this session
     let node = store
         .get_node_by_prefix(from_hash)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to look up node: {e}");
             std::process::exit(1);
@@ -216,14 +221,16 @@ fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
     }
 
     // Derive agent name from the session's Invoke message
-    let agent_name = find_agent_name(&*store, &session_id).unwrap_or_else(|| {
-        eprintln!("Cannot determine agent name for session {session_id}");
-        std::process::exit(1);
-    });
+    let agent_name = find_agent_name(&*store, &session_id)
+        .await
+        .unwrap_or_else(|| {
+            eprintln!("Cannot determine agent name for session {session_id}");
+            std::process::exit(1);
+        });
 
     // Send ForkMessage through the harness/queue (CQRS: both SQL and git react)
     // Fork creates a branch within the existing session — no new session needed.
-    let harness = connect_harness(&config);
+    let harness = connect_harness(&config).await;
     let timeline = BranchId::from(1);
 
     let params = ForkParams {
@@ -234,6 +241,7 @@ fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
 
     harness
         .fork_timeline(params, session_id, timeline)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to fork timeline: {e}");
             std::process::exit(1);
@@ -246,14 +254,15 @@ fn fork(session_id_or_name: &str, from_hash: &str, branch_name: &str) {
     );
 }
 
-fn promote(session_id_or_name: &str, branch_name: &str) {
+async fn promote(session_id_or_name: &str, branch_name: &str) {
     let config = CliConfig::load();
-    let store = require_dag_store(&config);
-    let session_id = resolve_session_id(&*store, session_id_or_name);
+    let store = require_dag_store(&config).await;
+    let session_id = resolve_session_id(&*store, session_id_or_name).await;
 
     // Verify the branch exists and belongs to this session
     let branch = store
         .get_branch_by_name(branch_name)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to look up branch: {e}");
             std::process::exit(1);
@@ -272,19 +281,21 @@ fn promote(session_id_or_name: &str, branch_name: &str) {
     }
 
     // Derive agent name from the session's Invoke message
-    let agent_name = find_agent_name(&*store, &session_id).unwrap_or_else(|| {
-        eprintln!("Cannot determine agent name for session {session_id}");
-        std::process::exit(1);
-    });
+    let agent_name = find_agent_name(&*store, &session_id)
+        .await
+        .unwrap_or_else(|| {
+            eprintln!("Cannot determine agent name for session {session_id}");
+            std::process::exit(1);
+        });
 
-    let harness = connect_harness(&config);
+    let harness = connect_harness(&config).await;
 
     let params = PromoteParams {
         agent_name: AgentName::new(agent_name),
     };
-
     harness
         .promote_timeline(params, session_id, branch.id)
+        .await
         .unwrap_or_else(|e| {
             eprintln!("Failed to promote timeline: {e}");
             std::process::exit(1);
@@ -332,13 +343,13 @@ fn causal_sort(nodes: &[vlinder_core::domain::DagNode]) -> Vec<vlinder_core::dom
 }
 
 /// Resolve a user-provided string (UUID or petname) to a `SessionId`.
-fn resolve_session_id(store: &dyn DagStore, id_or_name: &str) -> SessionId {
+async fn resolve_session_id(store: &dyn DagStore, id_or_name: &str) -> SessionId {
     // If it's a valid UUID, use it directly
     if let Ok(session_id) = SessionId::try_from(id_or_name.to_string()) {
         return session_id;
     }
     // Try by petname
-    if let Some(session) = store.get_session_by_name(id_or_name).ok().flatten() {
+    if let Some(session) = store.get_session_by_name(id_or_name).await.ok().flatten() {
         return session.id;
     }
     eprintln!("Session '{id_or_name}' not found");
@@ -346,19 +357,17 @@ fn resolve_session_id(store: &dyn DagStore, id_or_name: &str) -> SessionId {
 }
 
 /// Find the agent name from the Invoke message in a session.
-fn find_agent_name(store: &dyn DagStore, session_id: &SessionId) -> Option<String> {
-    let nodes = store.get_session_nodes(session_id).ok()?;
-    nodes
+async fn find_agent_name(store: &dyn DagStore, session_id: &SessionId) -> Option<String> {
+    let nodes = store.get_session_nodes(session_id).await.ok()?;
+    let n = nodes
         .iter()
-        .find(|n| n.message_type() == MessageType::Invoke)
-        .and_then(|n| {
-            if let Ok(Some((key, _))) = store.get_invoke_node(&n.id) {
-                let vlinder_core::domain::DataMessageKind::Invoke { agent, .. } = &key.kind else {
-                    return None;
-                };
-                Some(agent.to_string())
-            } else {
-                None
-            }
-        })
+        .find(|n| n.message_type() == MessageType::Invoke)?;
+    if let Ok(Some((key, _))) = store.get_invoke_node(&n.id).await {
+        let vlinder_core::domain::DataMessageKind::Invoke { agent, .. } = &key.kind else {
+            return None;
+        };
+        Some(agent.to_string())
+    } else {
+        None
+    }
 }

@@ -39,15 +39,7 @@ impl SecretStoreService for SecretServer {
 
     async fn put(&self, request: Request<PutRequest>) -> Result<Response<PutResponse>, Status> {
         let req = request.into_inner();
-        let store = Arc::clone(&self.store);
-        let name = req.name;
-        let value = req.value;
-
-        let result = tokio::task::spawn_blocking(move || store.put(&name, &value))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        match result {
+        match self.store.put(&req.name, &req.value).await {
             Ok(()) => Ok(Response::new(PutResponse {
                 success: true,
                 error: None,
@@ -61,14 +53,7 @@ impl SecretStoreService for SecretServer {
 
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
         let req = request.into_inner();
-        let store = Arc::clone(&self.store);
-        let name = req.name;
-
-        let result = tokio::task::spawn_blocking(move || store.get(&name))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        match result {
+        match self.store.get(&req.name).await {
             Ok(value) => Ok(Response::new(GetResponse {
                 value,
                 found: true,
@@ -94,14 +79,7 @@ impl SecretStoreService for SecretServer {
         request: Request<ExistsRequest>,
     ) -> Result<Response<ExistsResponse>, Status> {
         let req = request.into_inner();
-        let store = Arc::clone(&self.store);
-        let name = req.name;
-
-        let result = tokio::task::spawn_blocking(move || store.exists(&name))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        match result {
+        match self.store.exists(&req.name).await {
             Ok(exists) => Ok(Response::new(ExistsResponse {
                 exists,
                 error: None,
@@ -118,14 +96,7 @@ impl SecretStoreService for SecretServer {
         request: Request<DeleteRequest>,
     ) -> Result<Response<DeleteResponse>, Status> {
         let req = request.into_inner();
-        let store = Arc::clone(&self.store);
-        let name = req.name;
-
-        let result = tokio::task::spawn_blocking(move || store.delete(&name))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        match result {
+        match self.store.delete(&req.name).await {
             Ok(()) => Ok(Response::new(DeleteResponse {
                 success: true,
                 error: None,

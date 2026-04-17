@@ -60,6 +60,7 @@ impl StateService for StateServiceServer {
         let node = self
             .store
             .get_node(&DagNodeId::from(req.hash))
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
 
@@ -77,6 +78,7 @@ impl StateService for StateServiceServer {
             .get_session_nodes(
                 &SessionId::try_from(req.session_id).map_err(Status::invalid_argument)?,
             )
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)
@@ -94,6 +96,7 @@ impl StateService for StateServiceServer {
         let nodes = self
             .store
             .get_children(&DagNodeId::from(req.parent_hash))
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)
@@ -119,6 +122,7 @@ impl StateService for StateServiceServer {
                 &SessionId::try_from(req.session_id).map_err(Status::invalid_argument)?,
                 fork_point.as_ref(),
             )
+            .await
             .map_err(Status::internal)?;
         Ok(Response::new(CreateBranchResponse { id: id.as_i64() }))
     }
@@ -131,6 +135,7 @@ impl StateService for StateServiceServer {
         let branch = self
             .store
             .get_branch_by_name(&req.name)
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
         Ok(Response::new(GetBranchResponse { branch }))
@@ -144,6 +149,7 @@ impl StateService for StateServiceServer {
         let branch = self
             .store
             .get_branch(vlinder_core::domain::BranchId::from(req.id))
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
         Ok(Response::new(GetBranchResponse { branch }))
@@ -160,6 +166,7 @@ impl StateService for StateServiceServer {
         let sessions = self
             .store
             .list_sessions()
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)
@@ -175,6 +182,7 @@ impl StateService for StateServiceServer {
         let nodes = self
             .store
             .get_nodes_by_submission(&req.submission_id)
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)
@@ -190,6 +198,7 @@ impl StateService for StateServiceServer {
         let node = self
             .store
             .get_node_by_prefix(&req.prefix)
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
         Ok(Response::new(GetNodeResponse { node }))
@@ -205,6 +214,7 @@ impl StateService for StateServiceServer {
             .get_branches_for_session(
                 &SessionId::try_from(req.session_id).map_err(Status::invalid_argument)?,
             )
+            .await
             .map_err(Status::internal)?
             .into_iter()
             .map(std::convert::Into::into)
@@ -230,10 +240,14 @@ impl StateService for StateServiceServer {
             &session_proto.agent_name,
             vlinder_core::domain::BranchId::from(session_proto.default_branch),
         );
-        match self.store.create_session(&vlinder_core::domain::Session {
-            name: session_proto.name,
-            ..session
-        }) {
+        match self
+            .store
+            .create_session(&vlinder_core::domain::Session {
+                name: session_proto.name,
+                ..session
+            })
+            .await
+        {
             Ok(()) => Ok(Response::new(CreateSessionResponse {
                 success: true,
                 error: None,
@@ -254,6 +268,7 @@ impl StateService for StateServiceServer {
         let session = self
             .store
             .get_session(&session_id)
+            .await
             .map_err(Status::internal)?;
         Ok(Response::new(GetSessionResponse {
             session: session.map(session_to_proto),
@@ -268,6 +283,7 @@ impl StateService for StateServiceServer {
         let session = self
             .store
             .get_session_by_name(&req.name)
+            .await
             .map_err(Status::internal)?;
         Ok(Response::new(GetSessionResponse {
             session: session.map(session_to_proto),
@@ -283,6 +299,7 @@ impl StateService for StateServiceServer {
         let result = self
             .store
             .get_invoke_node(&dag_hash)
+            .await
             .map_err(Status::internal)?;
 
         let node = result.map(|(key, msg)| {
@@ -326,6 +343,7 @@ impl StateService for StateServiceServer {
         let result = self
             .store
             .get_complete_node(&dag_hash)
+            .await
             .map_err(Status::internal)?;
 
         let node = result.map(|msg| CompleteNodeProto {
@@ -348,6 +366,7 @@ impl StateService for StateServiceServer {
         let result = self
             .store
             .get_request_node(&dag_hash)
+            .await
             .map_err(Status::internal)?;
 
         let node = result.map(|msg| RequestNodeProto {
@@ -371,6 +390,7 @@ impl StateService for StateServiceServer {
         let result = self
             .store
             .get_response_node(&dag_hash)
+            .await
             .map_err(Status::internal)?;
 
         let node = result.map(|msg| ResponseNodeProto {
@@ -441,6 +461,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .insert_invoke_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+            .await
         {
             Ok(()) => Ok(Response::new(InsertInvokeNodeResponse {
                 success: true,
@@ -487,18 +508,22 @@ impl StateService for StateServiceServer {
             payload: req.payload,
         };
 
-        match self.store.insert_complete_node(
-            &dag_id,
-            &parent_id,
-            created_at,
-            &snapshot,
-            &session,
-            &submission,
-            branch,
-            &agent,
-            harness,
-            &msg,
-        ) {
+        match self
+            .store
+            .insert_complete_node(
+                &dag_id,
+                &parent_id,
+                created_at,
+                &snapshot,
+                &session,
+                &submission,
+                branch,
+                &agent,
+                harness,
+                &msg,
+            )
+            .await
+        {
             Ok(()) => Ok(Response::new(InsertCompleteNodeResponse {
                 success: true,
                 error: None,
@@ -554,20 +579,24 @@ impl StateService for StateServiceServer {
             checkpoint: req.checkpoint,
         };
 
-        match self.store.insert_request_node(
-            &dag_id,
-            &parent_id,
-            created_at,
-            &snapshot,
-            &session,
-            &submission,
-            branch,
-            &agent,
-            service,
-            operation,
-            sequence,
-            &msg,
-        ) {
+        match self
+            .store
+            .insert_request_node(
+                &dag_id,
+                &parent_id,
+                created_at,
+                &snapshot,
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence,
+                &msg,
+            )
+            .await
+        {
             Ok(()) => Ok(Response::new(InsertRequestNodeResponse {
                 success: true,
                 error: None,
@@ -626,20 +655,24 @@ impl StateService for StateServiceServer {
             checkpoint: req.checkpoint,
         };
 
-        match self.store.insert_response_node(
-            &dag_id,
-            &parent_id,
-            created_at,
-            &snapshot,
-            &session,
-            &submission,
-            branch,
-            &agent,
-            service,
-            operation,
-            sequence,
-            &msg,
-        ) {
+        match self
+            .store
+            .insert_response_node(
+                &dag_id,
+                &parent_id,
+                created_at,
+                &snapshot,
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence,
+                &msg,
+            )
+            .await
+        {
             Ok(()) => Ok(Response::new(InsertResponseNodeResponse {
                 success: true,
                 error: None,
@@ -684,6 +717,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .insert_fork_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+            .await
         {
             Ok(()) => Ok(Response::new(InsertForkNodeResponse {
                 success: true,
@@ -728,6 +762,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .insert_promote_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+            .await
         {
             Ok(()) => Ok(Response::new(InsertPromoteNodeResponse {
                 success: true,
@@ -756,6 +791,7 @@ impl StateService for StateServiceServer {
                 vlinder_core::domain::BranchId::from(req.branch_id),
                 message_type,
             )
+            .await
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
         Ok(Response::new(LatestNodeOnBranchResponse { node }))
@@ -773,6 +809,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .rename_branch(vlinder_core::domain::BranchId::from(req.id), &req.new_name)
+            .await
         {
             Ok(()) => Ok(Response::new(RenameBranchResponse {
                 success: true,
@@ -797,6 +834,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .seal_branch(vlinder_core::domain::BranchId::from(req.id), broken_at)
+            .await
         {
             Ok(()) => Ok(Response::new(SealBranchResponse {
                 success: true,
@@ -819,10 +857,14 @@ impl StateService for StateServiceServer {
     ) -> Result<Response<UpdateSessionDefaultBranchResponse>, Status> {
         let req = request.into_inner();
         let session_id = SessionId::try_from(req.session_id).map_err(Status::invalid_argument)?;
-        match self.store.update_session_default_branch(
-            &session_id,
-            vlinder_core::domain::BranchId::from(req.branch_id),
-        ) {
+        match self
+            .store
+            .update_session_default_branch(
+                &session_id,
+                vlinder_core::domain::BranchId::from(req.branch_id),
+            )
+            .await
+        {
             Ok(()) => Ok(Response::new(UpdateSessionDefaultBranchResponse {
                 success: true,
                 error: None,
@@ -866,6 +908,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .insert_deploy_agent_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+            .await
         {
             Ok(()) => Ok(Response::new(InsertDeployAgentNodeResponse {
                 success: true,
@@ -906,6 +949,7 @@ impl StateService for StateServiceServer {
         match self
             .store
             .insert_delete_agent_node(&dag_id, &parent_id, created_at, &snapshot, &key, &msg)
+            .await
         {
             Ok(()) => Ok(Response::new(InsertDeleteAgentNodeResponse {
                 success: true,

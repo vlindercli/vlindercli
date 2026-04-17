@@ -70,7 +70,7 @@ pub use message::{
     ResponseMessage, Sequence, SequenceCounter, SessionId, SessionStartMessage, StateHash,
     SubmissionId, PROTOCOL_VERSION,
 };
-pub use message_queue::{agent_routing_key, Acknowledgement, MessageQueue, QueueError};
+pub use message_queue::{agent_routing_key, noop_ack, Acknowledgement, MessageQueue, QueueError};
 pub use routing_key::{
     AgentName, DataMessageKind, DataRoutingKey, EmbeddingBackendType, InferenceBackendType,
     InfraMessageKind, InfraRoutingKey, ServiceBackend, SessionMessageKind, SessionRoutingKey,

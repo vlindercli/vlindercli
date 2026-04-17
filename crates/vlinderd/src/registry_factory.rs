@@ -7,11 +7,10 @@ use std::sync::Arc;
 use crate::config::{Config, RegistryBackend};
 use vlinder_core::domain::Registry;
 
-/// Create a registry client from configuration.
-///
-/// Returns `GrpcRegistryClient` in production. In test builds, `Memory`
-/// backend returns an `InMemoryRegistry` (no network required).
-pub fn from_config(config: &Config) -> Result<Arc<dyn Registry>, Box<dyn std::error::Error>> {
+/// Create a registry client from configuration, callable from within a Tokio runtime.
+pub async fn from_config_async(
+    config: &Config,
+) -> Result<Arc<dyn Registry>, Box<dyn std::error::Error>> {
     match config.distributed.registry_backend {
         RegistryBackend::Grpc => {
             use vlinder_sql_registry::registry_service::GrpcRegistryClient;
@@ -22,7 +21,7 @@ pub fn from_config(config: &Config) -> Result<Arc<dyn Registry>, Box<dyn std::er
                 format!("http://{}", config.distributed.registry_addr)
             };
 
-            let client = GrpcRegistryClient::connect(&addr)?;
+            let client = GrpcRegistryClient::connect_async(&addr).await?;
             Ok(Arc::new(client))
         }
         #[cfg(any(test, feature = "test-support"))]

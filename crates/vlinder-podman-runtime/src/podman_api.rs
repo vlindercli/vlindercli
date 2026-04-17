@@ -1,17 +1,21 @@
 //! `PodmanApiClient` — Podman trait implementation using the libpod REST API.
 //!
 //! Primary implementation. Talks to Podman's REST API over a Unix socket.
-//! Uses ureq with a Unix transport adapter for HTTP-over-socket.
+//! Uses hyper 1.x with a Unix socket connector for HTTP-over-socket.
 
 use std::collections::HashMap;
 use std::path::Path;
 
+use async_trait::async_trait;
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::{Method, Request};
 use serde::{Deserialize, Serialize};
 
 use vlinder_core::domain::{ContainerId, ImageDigest, ImageRef, PodId};
 
 use crate::podman_client::{PodmanClient, PodmanError, RunTarget};
-use crate::unix_transport::unix_agent;
+use crate::unix_transport::{unix_client, UnixConnector};
 
 const API_BASE: &str = "http://localhost/v5.0.0/libpod";
 
@@ -20,44 +24,56 @@ const API_BASE: &str = "http://localhost/v5.0.0/libpod";
 /// Talks to the libpod REST API over a Unix socket. The socket path is
 /// resolved by `resolve_socket()` in `podman.rs` (ADR 077).
 pub struct PodmanApiClient {
-    agent: ureq::Agent,
+    client: hyper_util::client::legacy::Client<UnixConnector, Full<Bytes>>,
 }
 
 impl PodmanApiClient {
     pub fn new(socket_path: &Path) -> Self {
         Self {
-            agent: unix_agent(socket_path),
+            client: unix_client(socket_path),
         }
     }
 }
 
 // ── Podman trait implementation ──────────────────────────────────────
 
+#[async_trait]
 impl PodmanClient for PodmanApiClient {
-    fn engine_version(&self) -> Option<semver::Version> {
-        let url = "http://localhost/version";
-        let mut resp = self.agent.get(url).call().ok()?;
+    async fn engine_version(&self) -> Option<semver::Version> {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("http://localhost/version")
+            .body(Full::new(Bytes::new()))
+            .ok()?;
+        let resp = self.client.request(req).await.ok()?;
         if resp.status().as_u16() != 200 {
             return None;
         }
-        let body: VersionResponse = resp.body_mut().read_json().ok()?;
+        let bytes = resp.into_body().collect().await.ok()?.to_bytes();
+        let body: VersionResponse = serde_json::from_slice(&bytes).ok()?;
         semver::Version::parse(&body.version).ok()
     }
 
-    fn image_digest(&self, image_ref: &ImageRef) -> Option<ImageDigest> {
+    async fn image_digest(&self, image_ref: &ImageRef) -> Option<ImageDigest> {
         let encoded = url_encode(image_ref.as_str());
         let url = format!("{API_BASE}/images/{encoded}/json");
-        let mut resp = self.agent.get(&url).call().ok()?;
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(url)
+            .body(Full::new(Bytes::new()))
+            .ok()?;
+        let resp = self.client.request(req).await.ok()?;
         if resp.status().as_u16() != 200 {
             return None;
         }
-        let body: ImageInspect = resp.body_mut().read_json().ok()?;
+        let bytes = resp.into_body().collect().await.ok()?.to_bytes();
+        let body: ImageInspect = serde_json::from_slice(&bytes).ok()?;
         ImageDigest::parse(body.digest).ok()
     }
 
     // ── Pod operations ────────────────────────────────────────────────
 
-    fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError> {
+    async fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError> {
         let url = format!("{API_BASE}/pods/create");
         let hostadd = if host_aliases.is_empty() {
             None
@@ -68,30 +84,48 @@ impl PodmanClient for PodmanApiClient {
             name: name.to_string(),
             hostadd,
         };
+        let json_bytes = serde_json::to_vec(&spec)
+            .map_err(|e| PodmanError::Run(format!("pod create failed: {e}")))?;
 
-        let mut resp = self
-            .agent
-            .post(&url)
-            .send_json(&spec)
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(json_bytes)))
+            .map_err(|e| PodmanError::Run(e.to_string()))?;
+
+        let resp = self
+            .client
+            .request(req)
+            .await
             .map_err(|e| PodmanError::Run(format!("pod create failed: {e}")))?;
 
         let status = resp.status().as_u16();
         if status != 200 && status != 201 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
+            let bytes = resp
+                .into_body()
+                .collect()
+                .await
+                .map(http_body_util::Collected::to_bytes)
+                .unwrap_or_default();
+            let body = String::from_utf8_lossy(&bytes).into_owned();
             return Err(PodmanError::Run(format!(
-                "pod create HTTP {status}: {body}",
+                "pod create HTTP {status}: {body}"
             )));
         }
 
-        let created: PodCreateResponse = resp
-            .body_mut()
-            .read_json()
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| PodmanError::Run(e.to_string()))?
+            .to_bytes();
+        let created: PodCreateResponse = serde_json::from_slice(&bytes)
             .map_err(|e| PodmanError::Run(format!("failed to parse pod create response: {e}")))?;
-
         Ok(PodId::new(created.id))
     }
 
-    fn container_in_pod(
+    async fn container_in_pod(
         &self,
         image: RunTarget<'_>,
         pod_id: &PodId,
@@ -102,7 +136,6 @@ impl PodmanClient for PodmanApiClient {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-
         let mounts: Vec<MountSpec> = volumes
             .iter()
             .map(|(vol_name, container_path)| MountSpec {
@@ -113,7 +146,6 @@ impl PodmanClient for PodmanApiClient {
                 options: vec!["ro".to_string()],
             })
             .collect();
-
         let spec = PodContainerCreateSpec {
             image: image.as_str().to_string(),
             pod: pod_id.as_str().to_string(),
@@ -126,28 +158,49 @@ impl PodmanClient for PodmanApiClient {
         };
 
         let url = format!("{API_BASE}/containers/create");
-        let mut resp = self
-            .agent
-            .post(&url)
-            .send_json(&spec)
+        let json_bytes = serde_json::to_vec(&spec)
+            .map_err(|e| PodmanError::Run(format!("container create in pod failed: {e}")))?;
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(json_bytes)))
+            .map_err(|e| PodmanError::Run(e.to_string()))?;
+
+        let resp = self
+            .client
+            .request(req)
+            .await
             .map_err(|e| PodmanError::Run(format!("container create in pod failed: {e}")))?;
 
         let status = resp.status().as_u16();
         if status != 201 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
+            let bytes = resp
+                .into_body()
+                .collect()
+                .await
+                .map(http_body_util::Collected::to_bytes)
+                .unwrap_or_default();
+            let body = String::from_utf8_lossy(&bytes).into_owned();
             return Err(PodmanError::Run(format!(
-                "container create in pod HTTP {status}: {body}",
+                "container create in pod HTTP {status}: {body}"
             )));
         }
 
-        let created: ContainerCreateResponse = resp.body_mut().read_json().map_err(|e| {
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| PodmanError::Run(e.to_string()))?
+            .to_bytes();
+        let created: ContainerCreateResponse = serde_json::from_slice(&bytes).map_err(|e| {
             PodmanError::Run(format!("failed to parse container create response: {e}"))
         })?;
-
         Ok(ContainerId::new(created.id))
     }
 
-    fn volume_create(
+    async fn volume_create(
         &self,
         name: &str,
         driver: &str,
@@ -157,7 +210,6 @@ impl PodmanClient for PodmanApiClient {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-
         let spec = VolumeCreateSpec {
             name: name.to_string(),
             driver: driver.to_string(),
@@ -169,65 +221,107 @@ impl PodmanClient for PodmanApiClient {
         };
 
         let url = format!("{API_BASE}/volumes/create");
-        let mut resp = self
-            .agent
-            .post(&url)
-            .send_json(&spec)
+        let json_bytes = serde_json::to_vec(&spec)
+            .map_err(|e| PodmanError::Run(format!("volume create failed: {e}")))?;
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(json_bytes)))
+            .map_err(|e| PodmanError::Run(e.to_string()))?;
+
+        let resp = self
+            .client
+            .request(req)
+            .await
             .map_err(|e| PodmanError::Run(format!("volume create failed: {e}")))?;
 
         let status = resp.status().as_u16();
         if status != 201 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
+            let bytes = resp
+                .into_body()
+                .collect()
+                .await
+                .map(http_body_util::Collected::to_bytes)
+                .unwrap_or_default();
+            let body = String::from_utf8_lossy(&bytes).into_owned();
             return Err(PodmanError::Run(format!(
-                "volume create HTTP {status}: {body}",
+                "volume create HTTP {status}: {body}"
             )));
         }
 
         Ok(())
     }
 
-    fn volume_rm(&self, name: &str) {
+    async fn volume_rm(&self, name: &str) {
         let url = format!("{API_BASE}/volumes/{name}?force=true");
-        let _ = self.agent.delete(&url).call();
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri(url)
+            .body(Full::new(Bytes::new()))
+            .expect("valid delete request");
+        self.client.request(req).await.ok();
     }
 
-    fn is_pod_live(&self, pod_id: &PodId) -> bool {
+    async fn is_pod_live(&self, pod_id: &PodId) -> bool {
         let url = format!("{API_BASE}/pods/{}/json", pod_id.as_str());
-        self.agent
-            .get(&url)
-            .call()
-            .ok()
-            .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
-            .and_then(|v| v.get("State")?.as_str().map(String::from))
-            .is_some_and(|state| state == "Running")
+        let inner = async {
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(url)
+                .body(Full::new(Bytes::new()))
+                .ok()?;
+            let resp = self.client.request(req).await.ok()?;
+            let bytes = resp.into_body().collect().await.ok()?.to_bytes();
+            let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            v.get("State")?.as_str().map(|s| s == "Running")
+        };
+        inner.await.unwrap_or(false)
     }
 
-    fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {
+    async fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {
         let url = format!("{API_BASE}/pods/{}/start", pod_id.as_str());
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(url)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| PodmanError::Run(e.to_string()))?;
+
         let resp = self
-            .agent
-            .post(&url)
-            .send("")
+            .client
+            .request(req)
+            .await
             .map_err(|e| PodmanError::Run(format!("pod start failed: {e}")))?;
 
         let status = resp.status().as_u16();
         if status != 200 && status != 204 && status != 304 {
             return Err(PodmanError::Run(format!("pod start HTTP {status}")));
         }
-
         Ok(())
     }
 
-    fn pod_stop_and_remove(&self, pod_id: &PodId, timeout_secs: u32) {
+    async fn pod_stop_and_remove(&self, pod_id: &PodId, timeout_secs: u32) {
         let id = pod_id.as_str();
 
         // Stop — fire and forget
-        let url = format!("{API_BASE}/pods/{id}/stop?t={timeout_secs}");
-        let _ = self.agent.post(&url).send("");
+        let stop_url = format!("{API_BASE}/pods/{id}/stop?t={timeout_secs}");
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(stop_url)
+            .body(Full::new(Bytes::new()))
+            .expect("valid stop request");
+        self.client.request(req).await.ok();
 
         // Remove with force — fire and forget
-        let url = format!("{API_BASE}/pods/{id}?force=true");
-        let _ = self.agent.delete(&url).call();
+        let rm_url = format!("{API_BASE}/pods/{id}?force=true");
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .uri(rm_url)
+            .body(Full::new(Bytes::new()))
+            .expect("valid delete request");
+        self.client.request(req).await.ok();
     }
 }
 

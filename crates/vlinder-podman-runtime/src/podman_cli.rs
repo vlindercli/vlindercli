@@ -3,7 +3,8 @@
 //! Fallback implementation that shells out to the `podman` binary.
 //! Used when no Podman socket is available (ADR 077).
 
-use std::process::Command;
+use async_trait::async_trait;
+use tokio::process::Command;
 
 use vlinder_core::domain::{ContainerId, ImageDigest, ImageRef, PodId};
 
@@ -12,11 +13,13 @@ use crate::podman_client::{PodmanClient, PodmanError, RunTarget};
 /// Fallback implementation that shells out to the `podman` CLI.
 pub struct PodmanCliClient;
 
+#[async_trait]
 impl PodmanClient for PodmanCliClient {
-    fn engine_version(&self) -> Option<semver::Version> {
+    async fn engine_version(&self) -> Option<semver::Version> {
         Command::new("podman")
             .args(["version", "--format", "{{.Client.Version}}"])
             .output()
+            .await
             .ok()
             .filter(|o| o.status.success())
             .and_then(|o| {
@@ -25,7 +28,7 @@ impl PodmanClient for PodmanCliClient {
             })
     }
 
-    fn image_digest(&self, image_ref: &ImageRef) -> Option<ImageDigest> {
+    async fn image_digest(&self, image_ref: &ImageRef) -> Option<ImageDigest> {
         Command::new("podman")
             .args([
                 "image",
@@ -35,6 +38,7 @@ impl PodmanClient for PodmanCliClient {
                 "{{.Digest}}",
             ])
             .output()
+            .await
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -44,7 +48,7 @@ impl PodmanClient for PodmanCliClient {
 
     // ── Pod operations ────────────────────────────────────────────────
 
-    fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError> {
+    async fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError> {
         let mut args = vec!["pod", "create", "--name", name];
         let add_host_args: Vec<String> = host_aliases
             .iter()
@@ -59,6 +63,7 @@ impl PodmanClient for PodmanCliClient {
         let output = Command::new("podman")
             .args(&args)
             .output()
+            .await
             .map_err(|e| PodmanError::Run(format!("failed to spawn podman: {e}")))?;
 
         if !output.status.success() {
@@ -72,7 +77,7 @@ impl PodmanClient for PodmanCliClient {
         Ok(PodId::new(raw))
     }
 
-    fn container_in_pod(
+    async fn container_in_pod(
         &self,
         image: RunTarget<'_>,
         pod_id: &PodId,
@@ -100,6 +105,7 @@ impl PodmanClient for PodmanCliClient {
         let output = Command::new("podman")
             .args(&args)
             .output()
+            .await
             .map_err(|e| PodmanError::Run(format!("failed to spawn podman: {e}")))?;
 
         if !output.status.success() {
@@ -113,7 +119,7 @@ impl PodmanClient for PodmanCliClient {
         Ok(ContainerId::new(raw))
     }
 
-    fn volume_create(
+    async fn volume_create(
         &self,
         name: &str,
         driver: &str,
@@ -136,6 +142,7 @@ impl PodmanClient for PodmanCliClient {
         let output = Command::new("podman")
             .args(&args)
             .output()
+            .await
             .map_err(|e| PodmanError::Run(format!("failed to spawn podman: {e}")))?;
 
         if !output.status.success() {
@@ -148,25 +155,28 @@ impl PodmanClient for PodmanCliClient {
         Ok(())
     }
 
-    fn volume_rm(&self, name: &str) {
+    async fn volume_rm(&self, name: &str) {
         let _ = Command::new("podman")
             .args(["volume", "rm", "-f", name])
-            .output();
+            .output()
+            .await;
     }
 
-    fn is_pod_live(&self, pod_id: &PodId) -> bool {
+    async fn is_pod_live(&self, pod_id: &PodId) -> bool {
         Command::new("podman")
             .args(["pod", "inspect", pod_id.as_str(), "--format", "{{.State}}"])
             .output()
+            .await
             .is_ok_and(|o| {
                 o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "Running"
             })
     }
 
-    fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {
+    async fn pod_start(&self, pod_id: &PodId) -> Result<(), PodmanError> {
         let output = Command::new("podman")
             .args(["pod", "start", pod_id.as_str()])
             .output()
+            .await
             .map_err(|e| PodmanError::Run(format!("failed to spawn podman: {e}")))?;
 
         if !output.status.success() {
@@ -179,15 +189,17 @@ impl PodmanClient for PodmanCliClient {
         Ok(())
     }
 
-    fn pod_stop_and_remove(&self, pod_id: &PodId, timeout_secs: u32) {
+    async fn pod_stop_and_remove(&self, pod_id: &PodId, timeout_secs: u32) {
         let timeout = timeout_secs.to_string();
         let id = pod_id.as_str();
         let _ = Command::new("podman")
             .args(["pod", "stop", "-t", &timeout, id])
-            .output();
+            .output()
+            .await;
         let _ = Command::new("podman")
             .args(["pod", "rm", "-f", id])
-            .output();
+            .output()
+            .await;
     }
 }
 
