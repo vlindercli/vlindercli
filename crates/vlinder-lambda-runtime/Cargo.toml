@@ -14,6 +14,7 @@ aws-sdk-iam = "1"
 aws-smithy-types = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio-util = "0.7"
 
 [lints]
 workspace = true

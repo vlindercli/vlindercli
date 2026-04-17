@@ -5180,6 +5180,7 @@ dependencies = [
  "aws-smithy-types",
  "serde_json",
  "tokio",
+ "tokio-util",
  "tracing",
  "vlinder-core",
 ]

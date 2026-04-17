@@ -653,12 +653,14 @@ pub async fn run_agent_lambda_worker(config: &Config, shutdown: CancellationToke
         "Lambda agent worker ready"
     );
 
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
         tokio::select! {
-            _ = runtime.tick() => {}
+            _ = interval.tick() => { runtime.tick().await; }
             () = shutdown.cancelled() => break,
         }
     }
+    runtime.shutdown().await;
 }
 
 pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: CancellationToken) {
