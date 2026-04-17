@@ -273,7 +273,7 @@ pub trait Registry: Send + Sync {
             )
         })?;
         let registered = self.get_model(model_name).await.ok_or_else(|| {
-            format!("model '{model}' (registry name: '{model_name}') not found in registry",)
+            format!("model '{model}' (registry name: '{model_name}') not found in registry")
         })?;
         Ok(match registered.provider {
             Provider::Ollama => "ollama".to_string(),

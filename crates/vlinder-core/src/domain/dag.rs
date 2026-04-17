@@ -767,7 +767,7 @@ impl DagStore for InMemoryDagStore {
             .filter(|n| *n.session_id() == *session_id)
             .cloned()
             .collect();
-        result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        result.sort_by_key(|a| a.created_at);
         Ok(result)
     }
 
@@ -824,7 +824,7 @@ impl DagStore for InMemoryDagStore {
         let mut summaries: Vec<SessionSummary> = sessions
             .into_iter()
             .map(|(session_id, mut nodes)| {
-                nodes.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                nodes.sort_by_key(|a| a.created_at);
                 // Agent name is not available from DagNode alone; typed tables
                 // or external lookup would be needed.  In-memory store returns
                 // an empty string for now (typed node queries fill this).
@@ -850,7 +850,7 @@ impl DagStore for InMemoryDagStore {
             })
             .collect();
 
-        summaries.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        summaries.sort_by_key(|s| std::cmp::Reverse(s.started_at));
         Ok(summaries)
     }
 
@@ -861,7 +861,7 @@ impl DagStore for InMemoryDagStore {
             .filter(|n| n.submission_id().as_str() == submission_id)
             .cloned()
             .collect();
-        result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        result.sort_by_key(|a| a.created_at);
         Ok(result)
     }
 
