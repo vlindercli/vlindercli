@@ -11,7 +11,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  SCCACHE_GHA_ENABLED: "true"
+  # Repo-local .cargo/config.toml sets rustc-wrapper = "sccache" for dev
+  # ergonomics. Override to empty in CI — sccache on ubuntu-latest either
+  # isn't installed or hits the retired GHAC v1 cache endpoint. This env
+  # var takes precedence over the config file.
+  CARGO_BUILD_RUSTC_WRAPPER: ""
 
 jobs:
   lint:
@@ -22,7 +26,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: mozilla-actions/sccache-action@v0.0.5
       - uses: Swatinem/rust-cache@v2
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -37,7 +40,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.5
       - uses: Swatinem/rust-cache@v2
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -50,7 +52,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.5
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
@@ -63,7 +64,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.5
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -75,7 +75,24 @@ jobs:
         # RUSTSEC-2026-0097: rand 0.10.0 unsound with custom logger using rand::rng().
         # Transitive dep via lapin → amq-protocol → tcp-stream → p12-keystore.
         # Flagged 2026-04-09; waiting on lapin to bump amq-protocol.
-        run: cargo audit --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0097
+        #
+        # RUSTSEC-2026-0098 / RUSTSEC-2026-0099: rustls-webpki name-constraint
+        # bypasses (URI + wildcard). Affect 0.101.7, 0.102.8, 0.103.10; pulled
+        # in via multiple rustls versions from AWS SDK and other TLS stacks.
+        # Patched versions exist upstream but we can't upgrade cleanly until
+        # all transitive consumers bump.
+        #
+        # RUSTSEC-2025-0119: number_prefix unmaintained. Transitive via indicatif.
+        # RUSTSEC-2025-0134: rustls-pemfile unmaintained (migration to rustls-pki-types).
+        # Both are warnings, not vulnerabilities; ignore until upstream migrates.
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2026-0049 \
+            --ignore RUSTSEC-2026-0097 \
+            --ignore RUSTSEC-2026-0098 \
+            --ignore RUSTSEC-2026-0099 \
+            --ignore RUSTSEC-2025-0119 \
+            --ignore RUSTSEC-2025-0134
       - name: Check advisories via cargo-deny
         run: cargo install cargo-deny --locked && cargo deny check advisories
 
@@ -85,7 +102,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.5
       - uses: Swatinem/rust-cache@v2
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler

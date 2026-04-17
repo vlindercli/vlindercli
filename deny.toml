@@ -22,6 +22,28 @@ reason = "Transitive dep from AWS SDK's rustls 0.21 — can't upgrade until aws-
 id = "RUSTSEC-2026-0097"
 reason = "Transitive dep via lapin; waiting on lapin to bump amq-protocol's rand dependency"
 
+# rustls-webpki name-constraint bypass (URI names).
+# Affects 0.101.7, 0.102.8, 0.103.10 across multiple transitive paths.
+[[advisories.ignore]]
+id = "RUSTSEC-2026-0098"
+reason = "rustls-webpki URI name-constraint bypass; pulled in via multiple rustls versions we don't directly control"
+
+# rustls-webpki name-constraint bypass (wildcard certs).
+# Same crate as -0098, different advisory.
+[[advisories.ignore]]
+id = "RUSTSEC-2026-0099"
+reason = "rustls-webpki wildcard name-constraint bypass; pulled in via multiple rustls versions we don't directly control"
+
+# number_prefix unmaintained. Transitive via indicatif. Warning, not a vulnerability.
+[[advisories.ignore]]
+id = "RUSTSEC-2025-0119"
+reason = "number_prefix crate unmaintained; transitive via indicatif, waiting on indicatif to drop it"
+
+# rustls-pemfile unmaintained (superseded by rustls-pki-types). Warning.
+[[advisories.ignore]]
+id = "RUSTSEC-2025-0134"
+reason = "rustls-pemfile unmaintained; transitive via tonic/async-nats, waiting on those crates to migrate"
+
 [licenses]
 # Allow only permissive licenses
 allow = [
