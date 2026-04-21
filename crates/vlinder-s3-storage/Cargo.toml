@@ -6,11 +6,13 @@ publish = false
 
 [dependencies]
 aws-sdk-s3 = "1"
+aws-config = "1"
 walkdir = "2"
 vlinder-core = { path = "../vlinder-core" }
 anyhow = "1"
 tokio = { version = "1", features = ["fs", "io-util", "rt"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tracing = "0.1"
 
 [lints]
