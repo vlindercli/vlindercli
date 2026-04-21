@@ -1,0 +1,17 @@
+[package]
+name = "vlinder-s3-storage"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+aws-sdk-s3 = "1"
+walkdir = "2"
+vlinder-core = { path = "../vlinder-core" }
+anyhow = "1"
+tokio = { version = "1", features = ["fs", "io-util", "rt"] }
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+
+[lints]
+workspace = true
