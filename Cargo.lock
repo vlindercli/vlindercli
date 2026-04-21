@@ -5456,6 +5456,7 @@ dependencies = [
  "vlinder-amqp",
  "vlinder-core",
  "vlinder-provider-server",
+ "vlinder-s3-storage",
 ]
 
 [[package]]
