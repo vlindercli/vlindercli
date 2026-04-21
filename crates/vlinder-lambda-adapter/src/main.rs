@@ -31,6 +31,9 @@ use vlinder_provider_server::factory;
 use adapter::build_lambda_diagnostics;
 use config::AdapterConfig;
 
+use std::path::PathBuf;
+use vlinder_s3_storage::{checkout, commit, create_client, S3Config};
+
 #[tokio::main]
 async fn main() {
     // Install rustls crypto provider before any TLS connection (AMQPS).
@@ -109,6 +112,7 @@ async fn main() {
 }
 
 /// Receive invokes from the Lambda Runtime API, dispatch to agent, send complete.
+#[allow(clippy::too_many_lines)]
 async fn dispatch_loop(
     function_name: &str,
     agent_port: u16,
@@ -124,23 +128,102 @@ async fn dispatch_loop(
                     continue;
                 };
 
-                match shared::dispatch_invoke(queue, registry, agent_port, &key, &invoke).await {
-                    Ok(result) => {
-                        let region = std::env::var("AWS_REGION")
-                            .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-                            .unwrap_or_else(|_| "unknown".to_string());
-                        let diagnostics =
-                            build_lambda_diagnostics(function_name, &region, result.duration_ms);
-                        shared::send_complete(
-                            queue.as_ref(),
-                            &key,
-                            agent,
-                            result.output,
-                            result.state,
-                            diagnostics,
+                let invoke_result = async {
+                    // Look up agent info to get object_storage configuration.
+                    let agent_info = registry
+                        .get_agent_by_name(agent.as_str())
+                        .await
+                        .ok_or_else(|| {
+                            format!("registry lookup for agent '{agent}' failed: agent not found")
+                        })?;
+
+                    // Determine if this agent uses S3 object storage.
+                    let s3_config = agent_info
+                        .object_storage
+                        .as_ref()
+                        .and_then(|uri| {
+                            if uri.scheme() == Some("s3") {
+                                Some(
+                                    S3Config::from_resource_id(uri)
+                                        .map_err(|e| format!("invalid S3 URI: {e}")),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                        .transpose()?;
+
+                    let session_id = key.session.to_string();
+                    let storage_root = PathBuf::from("/tmp/vlinder");
+
+                    // Perform checkout if S3 storage is configured.
+                    if let Some(config) = &s3_config {
+                        let client = create_client()
+                            .await
+                            .map_err(|e| format!("failed to create S3 client: {e}"))?;
+                        checkout(
+                            &client,
+                            config,
+                            &session_id,
+                            invoke.state.as_deref(),
+                            &storage_root,
                         )
-                        .await;
+                        .await
+                        .map_err(|e| format!("checkout failed: {e}"))?;
                     }
+
+                    // Dispatch the invocation as usual.
+                    let dispatch_result =
+                        shared::dispatch_invoke(queue, registry, agent_port, &key, &invoke).await;
+
+                    match dispatch_result {
+                        Ok(result) => {
+                            // If S3 storage is configured, commit the workspace and use the new version ID as state.
+                            let final_state = if let Some(config) = &s3_config {
+                                let client = create_client().await.map_err(|e| {
+                                    format!("failed to create S3 client for commit: {e}")
+                                })?;
+                                match commit(&client, config, &session_id, &storage_root).await {
+                                    Ok(new_version_id) => {
+                                        // Clean up temp directory after successful commit.
+                                        let _ = tokio::fs::remove_dir_all(&storage_root).await;
+                                        Some(new_version_id)
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "S3 commit failed");
+                                        return Err(format!("commit failed: {e}"));
+                                    }
+                                }
+                            } else {
+                                result.state
+                            };
+
+                            let region = std::env::var("AWS_REGION")
+                                .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+                                .unwrap_or_else(|_| "unknown".to_string());
+                            let diagnostics = build_lambda_diagnostics(
+                                function_name,
+                                &region,
+                                result.duration_ms,
+                            );
+                            shared::send_complete(
+                                queue.as_ref(),
+                                &key,
+                                agent,
+                                result.output,
+                                final_state,
+                                diagnostics,
+                            )
+                            .await;
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                .await;
+
+                match invoke_result {
+                    Ok(()) => {}
                     Err(e) => {
                         tracing::error!(error = %e, "Dispatch failed");
                         shared::send_complete(
