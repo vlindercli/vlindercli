@@ -64,13 +64,13 @@ pub fn build_hosts(agent: &Agent) -> Vec<ProviderHost> {
 
     #[cfg(feature = "sqlite-kv")]
     {
-        let has_object_storage = agent
+        let needs_sqlite_kv = agent
             .object_storage
             .as_ref()
             .and_then(|uri| ObjectStorageType::from_scheme(uri.scheme()))
-            .is_some();
+            .is_some_and(|t| t == ObjectStorageType::Sqlite);
 
-        if has_object_storage {
+        if needs_sqlite_kv {
             hosts.push(vlinder_sqlite_kv::provider_host());
         }
     }
