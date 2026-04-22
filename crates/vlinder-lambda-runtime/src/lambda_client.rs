@@ -206,6 +206,12 @@ impl LambdaClient for AwsLambdaClient {
         };
 
         // Attach inline policy for KMS decrypt (idempotent — overwrites if exists).
+        tracing::debug!(
+            role = role_name,
+            policy_name = "vlinder-lambda-permissions",
+            policy_len = LAMBDA_PERMISSIONS_POLICY.len(),
+            "Attaching inline IAM policy"
+        );
         self.iam
             .put_role_policy()
             .role_name(role_name)

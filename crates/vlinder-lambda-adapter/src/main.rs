@@ -208,6 +208,14 @@ async fn dispatch_loop(
                         })
                         .transpose()?;
 
+                    if let Some(ref config) = &s3_config {
+                        tracing::debug!(
+                            bucket = %config.bucket,
+                            prefix = %config.prefix,
+                            "S3 storage configured"
+                        );
+                    }
+
                     let session_id = key.session.to_string();
                     let storage_root = PathBuf::from("/tmp/vlinder");
 
@@ -216,6 +224,12 @@ async fn dispatch_loop(
                         let client = create_client()
                             .await
                             .map_err(|e| format!("failed to create S3 client: {e}"))?;
+                        tracing::debug!(
+                            session_id = %session_id,
+                            parent_state = invoke.state.as_deref().unwrap_or(""),
+                            storage_root = %storage_root.display(),
+                            "Starting S3 checkout"
+                        );
                         checkout(
                             &client,
                             config,
@@ -224,9 +238,16 @@ async fn dispatch_loop(
                             &storage_root,
                         )
                         .await
-                        .map_err(|e| format!("checkout failed: {e}"))?;
+                        .map_err(|e| {
+                            tracing::error!(
+                                error = %e,
+                                session_id = %session_id,
+                                parent_state = invoke.state.as_deref().unwrap_or(""),
+                                "S3 checkout failed"
+                            );
+                            format!("checkout failed: {e}")
+                        })?;
                     }
-
                     // Dispatch the invocation as usual.
                     let dispatch_result =
                         shared::dispatch_invoke(&queue, registry, agent_port, &key, &invoke).await;
@@ -238,6 +259,11 @@ async fn dispatch_loop(
                                 let client = create_client().await.map_err(|e| {
                                     format!("failed to create S3 client for commit: {e}")
                                 })?;
+                                tracing::debug!(
+                                    session_id = %session_id,
+                                    storage_root = %storage_root.display(),
+                                    "Starting S3 commit"
+                                );
                                 match commit(&client, config, &session_id, &storage_root).await {
                                     Ok(new_version_id) => {
                                         // Clean up temp directory after successful commit.

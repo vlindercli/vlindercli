@@ -576,6 +576,7 @@ pub async fn run_registry_worker(config: &Config, shutdown: CancellationToken) {
         registry.register_runtime(RuntimeType::Lambda);
     }
     registry.register_object_storage(ObjectStorageType::Sqlite);
+    registry.register_object_storage(ObjectStorageType::S3);
     registry.register_vector_storage(VectorStorageType::SqliteVec);
 
     let registry: Arc<dyn vlinder_core::domain::Registry> = Arc::new(registry);
