@@ -223,12 +223,14 @@ async fn dispatch_loop(
                     if let Some(config) = &s3_config {
                         let client = create_client()
                             .await
-                            .map_err(|e| format!("failed to create S3 client: {e}"))?;
-                        tracing::debug!(
+                            .map_err(|e| format!("failed to create S3 client: {e:#}"))?;
+                        tracing::info!(
                             session_id = %session_id,
                             parent_state = invoke.state.as_deref().unwrap_or(""),
                             storage_root = %storage_root.display(),
-                            "Starting S3 checkout"
+                            bucket = %config.bucket,
+                            prefix = %config.prefix,
+                            "[s3.diag] adapter: starting S3 checkout"
                         );
                         checkout(
                             &client,
@@ -240,12 +242,13 @@ async fn dispatch_loop(
                         .await
                         .map_err(|e| {
                             tracing::error!(
-                                error = %e,
+                                error_alt = %format!("{e:#}"),
+                                error_debug = ?e,
                                 session_id = %session_id,
                                 parent_state = invoke.state.as_deref().unwrap_or(""),
-                                "S3 checkout failed"
+                                "[s3.diag] adapter: S3 checkout failed (full chain in error_alt)"
                             );
-                            format!("checkout failed: {e}")
+                            format!("checkout failed: {e:#}")
                         })?;
                     }
                     // Dispatch the invocation as usual.
@@ -257,12 +260,14 @@ async fn dispatch_loop(
                             // If S3 storage is configured, commit the workspace and use the new version ID as state.
                             let final_state = if let Some(config) = &s3_config {
                                 let client = create_client().await.map_err(|e| {
-                                    format!("failed to create S3 client for commit: {e}")
+                                    format!("failed to create S3 client for commit: {e:#}")
                                 })?;
-                                tracing::debug!(
+                                tracing::info!(
                                     session_id = %session_id,
                                     storage_root = %storage_root.display(),
-                                    "Starting S3 commit"
+                                    bucket = %config.bucket,
+                                    prefix = %config.prefix,
+                                    "[s3.diag] adapter: starting S3 commit"
                                 );
                                 match commit(&client, config, &session_id, &storage_root).await {
                                     Ok(new_version_id) => {
@@ -271,8 +276,12 @@ async fn dispatch_loop(
                                         Some(new_version_id)
                                     }
                                     Err(e) => {
-                                        tracing::error!(error = %e, "S3 commit failed");
-                                        return Err(format!("commit failed: {e}"));
+                                        tracing::error!(
+                                            error_alt = %format!("{e:#}"),
+                                            error_debug = ?e,
+                                            "[s3.diag] adapter: S3 commit failed (full chain in error_alt)"
+                                        );
+                                        return Err(format!("commit failed: {e:#}"));
                                     }
                                 }
                             } else {

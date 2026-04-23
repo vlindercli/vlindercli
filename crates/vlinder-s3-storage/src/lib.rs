@@ -4,8 +4,25 @@ use anyhow::{Context, Result};
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::{operation::RequestId, Client};
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::path::{Component, Path};
 use walkdir::WalkDir;
+
+/// Walk `std::error::Error::source()` and join every layer with `": "`.
+///
+/// AWS SDK errors (`SdkError::DispatchFailure`, etc.) have almost nothing in
+/// their top-level `Display` — the interesting bits live in the source chain.
+/// Use this whenever we want the *real* reason a call failed to surface in
+/// logs and in the error message the adapter propagates back.
+fn format_error_chain<E: StdError + ?Sized>(err: &E) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut cur: Option<&dyn StdError> = err.source();
+    while let Some(e) = cur {
+        parts.push(e.to_string());
+        cur = e.source();
+    }
+    parts.join(": ")
+}
 
 /// S3 storage configuration derived from a `ResourceId`.
 #[derive(Debug)]
@@ -72,12 +89,12 @@ async fn download_version(
     version_id: &str,
     local_path: &Path,
 ) -> Result<()> {
-    tracing::debug!(
+    tracing::info!(
         bucket = %bucket,
         key = %key,
         version_id = %version_id,
         local_path = %local_path.display(),
-        "Downloading S3 object version"
+        "[s3.diag] get_object: start"
     );
     let parent = local_path.parent().context("file has no parent")?;
     tokio::fs::create_dir_all(parent).await?;
@@ -90,14 +107,17 @@ async fn download_version(
         .send()
         .await
         .map_err(|e| {
+            let chain = format_error_chain(&e);
             tracing::error!(
-                error = %e,
+                error_chain = %chain,
+                error_debug = ?e,
                 bucket = %bucket,
                 key = %key,
                 version_id = %version_id,
-                "S3 get_object failed"
+                request_id = e.request_id().unwrap_or(""),
+                "[s3.diag] get_object FAILED — full error chain above"
             );
-            e
+            anyhow::anyhow!("get_object failed (bucket={bucket}, key={key}): {chain}")
         })?;
     let mut stream = resp.body.into_async_read();
     tokio::io::copy(&mut stream, &mut file).await.map_err(|e| {
@@ -120,24 +140,33 @@ async fn upload_file(
     key: &str,
     local_path: &Path,
 ) -> Result<String> {
-    tracing::debug!(
+    let file_size = tokio::fs::metadata(local_path).await.map_or(0, |m| m.len());
+    tracing::info!(
         bucket = %bucket,
         key = %key,
         local_path = %local_path.display(),
-        "Uploading file to S3"
+        file_size = file_size,
+        "[s3.diag] put_object: start (read file into ByteStream)"
     );
     let body = aws_sdk_s3::primitives::ByteStream::from_path(local_path)
         .await
         .map_err(|e| {
+            let chain = format_error_chain(&e);
             tracing::error!(
-                error = %e,
+                error_chain = %chain,
+                error_debug = ?e,
                 bucket = %bucket,
                 key = %key,
                 local_path = %local_path.display(),
-                "Failed to read file for upload"
+                "[s3.diag] ByteStream::from_path FAILED — local file problem before any network call"
             );
-            e
+            anyhow::anyhow!("ByteStream::from_path failed ({}): {chain}", local_path.display())
         })?;
+    tracing::info!(
+        bucket = %bucket,
+        key = %key,
+        "[s3.diag] put_object: sending request"
+    );
     let resp = client
         .put_object()
         .bucket(bucket)
@@ -146,33 +175,41 @@ async fn upload_file(
         .send()
         .await
         .map_err(|e| {
+            let chain = format_error_chain(&e);
+            // Classify the error. DispatchFailure = never left the client
+            // (DNS/TCP/TLS/credential‑IO). Service = S3 returned an HTTP
+            // error (AccessDenied, NoSuchBucket, PermanentRedirect).
+            // Timeout = request sent but took too long.
+            let kind = match &e {
+                aws_sdk_s3::error::SdkError::DispatchFailure(_) => "DispatchFailure",
+                aws_sdk_s3::error::SdkError::TimeoutError(_) => "TimeoutError",
+                aws_sdk_s3::error::SdkError::ResponseError(_) => "ResponseError",
+                aws_sdk_s3::error::SdkError::ServiceError(_) => "ServiceError",
+                aws_sdk_s3::error::SdkError::ConstructionFailure(_) => "ConstructionFailure",
+                _ => "Other",
+            };
             tracing::error!(
-                error = %e,
+                error_chain = %chain,
+                error_debug = ?e,
+                sdk_error_kind = kind,
                 bucket = %bucket,
                 key = %key,
                 request_id = e.request_id().unwrap_or(""),
-                "S3 put_object failed"
+                "[s3.diag] put_object FAILED — see error_chain for underlying cause"
             );
-            e
+            anyhow::anyhow!("put_object failed (bucket={bucket}, key={key}, kind={kind}): {chain}")
         })?;
     let version_id = resp
         .version_id()
-        .context("S3 versioning not enabled on bucket")
-        .map_err(|e| {
-            tracing::error!(
-                error = %e,
-                bucket = %bucket,
-                key = %key,
-                "S3 versioning not enabled on bucket"
-            );
-            e
-        })?
+        .context(format!(
+            "put_object returned no VersionId — S3 versioning not enabled on bucket '{bucket}'"
+        ))?
         .to_string();
-    tracing::debug!(
+    tracing::info!(
         bucket = %bucket,
         key = %key,
         version_id = %version_id,
-        "File uploaded successfully"
+        "[s3.diag] put_object: success"
     );
     Ok(version_id)
 }
@@ -211,10 +248,10 @@ pub async fn checkout(
 
     // Download manifest at the given version.
     let manifest_key = config.manifest_key(session_id);
-    tracing::debug!(
+    tracing::info!(
         manifest_key = %manifest_key,
         version_id = %version_id,
-        "Downloading manifest"
+        "[s3.diag] manifest get_object: start"
     );
     let manifest_bytes = client
         .get_object()
@@ -224,14 +261,29 @@ pub async fn checkout(
         .send()
         .await
         .map_err(|e| {
+            let chain = format_error_chain(&e);
+            let kind = match &e {
+                aws_sdk_s3::error::SdkError::DispatchFailure(_) => "DispatchFailure",
+                aws_sdk_s3::error::SdkError::TimeoutError(_) => "TimeoutError",
+                aws_sdk_s3::error::SdkError::ResponseError(_) => "ResponseError",
+                aws_sdk_s3::error::SdkError::ServiceError(_) => "ServiceError",
+                aws_sdk_s3::error::SdkError::ConstructionFailure(_) => "ConstructionFailure",
+                _ => "Other",
+            };
             tracing::error!(
-                error = %e,
+                error_chain = %chain,
+                error_debug = ?e,
+                sdk_error_kind = kind,
                 bucket = %config.bucket,
                 key = %manifest_key,
                 version_id = %version_id,
-                "Failed to download manifest"
+                request_id = e.request_id().unwrap_or(""),
+                "[s3.diag] manifest get_object FAILED"
             );
-            e
+            anyhow::anyhow!(
+                "manifest get_object failed (bucket={}, key={manifest_key}, kind={kind}): {chain}",
+                config.bucket
+            )
         })?;
     let manifest_bytes = manifest_bytes
         .body
@@ -365,6 +417,11 @@ pub async fn commit(
         );
         e
     })?;
+    tracing::info!(
+        manifest_key = %manifest_key,
+        manifest_size = manifest_bytes.len(),
+        "[s3.diag] manifest put_object: sending"
+    );
     let resp = client
         .put_object()
         .bucket(&config.bucket)
@@ -373,14 +430,28 @@ pub async fn commit(
         .send()
         .await
         .map_err(|e| {
+            let chain = format_error_chain(&e);
+            let kind = match &e {
+                aws_sdk_s3::error::SdkError::DispatchFailure(_) => "DispatchFailure",
+                aws_sdk_s3::error::SdkError::TimeoutError(_) => "TimeoutError",
+                aws_sdk_s3::error::SdkError::ResponseError(_) => "ResponseError",
+                aws_sdk_s3::error::SdkError::ServiceError(_) => "ServiceError",
+                aws_sdk_s3::error::SdkError::ConstructionFailure(_) => "ConstructionFailure",
+                _ => "Other",
+            };
             tracing::error!(
-                error = %e,
+                error_chain = %chain,
+                error_debug = ?e,
+                sdk_error_kind = kind,
                 bucket = %config.bucket,
                 key = %manifest_key,
                 request_id = e.request_id().unwrap_or(""),
-                "Failed to upload manifest"
+                "[s3.diag] manifest put_object FAILED — check VPC egress + S3 endpoint + bucket region"
             );
-            e
+            anyhow::anyhow!(
+                "manifest put_object failed (bucket={}, key={manifest_key}, kind={kind}): {chain}",
+                config.bucket
+            )
         })?;
     let version_id = resp
         .version_id()
@@ -407,11 +478,25 @@ pub async fn commit(
 
 /// Build an S3 client using default AWS credentials (Lambda execution role).
 pub async fn create_client() -> Result<Client> {
+    let env_region = std::env::var("AWS_REGION").unwrap_or_else(|_| "<unset>".to_string());
+    let env_default_region =
+        std::env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| "<unset>".to_string());
+    let has_access_key = std::env::var("AWS_ACCESS_KEY_ID").is_ok();
+    let has_session_token = std::env::var("AWS_SESSION_TOKEN").is_ok();
+    tracing::info!(
+        env_aws_region = %env_region,
+        env_aws_default_region = %env_default_region,
+        has_aws_access_key_id = has_access_key,
+        has_aws_session_token = has_session_token,
+        "[s3.diag] create_client: loading default AWS config"
+    );
     let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-    let region = config.region().map_or("unknown", |r| r.as_ref());
-    tracing::debug!(
-        region = %region,
-        "Creating S3 client"
+    let region = config
+        .region()
+        .map_or("<none>".to_string(), |r| r.as_ref().to_string());
+    tracing::info!(
+        resolved_region = %region,
+        "[s3.diag] create_client: S3 client ready (resolved region)"
     );
     Ok(Client::new(&config))
 }
