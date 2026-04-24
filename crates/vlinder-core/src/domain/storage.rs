@@ -19,6 +19,8 @@ pub enum ObjectStorageType {
     Sqlite,
     /// In-memory storage (for testing).
     InMemory,
+    /// S3-backed storage (versioned via S3 object versioning).
+    S3,
 }
 
 impl ObjectStorageType {
@@ -27,6 +29,7 @@ impl ObjectStorageType {
         match self {
             ObjectStorageType::Sqlite => "sqlite",
             ObjectStorageType::InMemory => "memory",
+            ObjectStorageType::S3 => "s3",
         }
     }
 
@@ -35,6 +38,7 @@ impl ObjectStorageType {
         match scheme {
             Some("sqlite") => Some(ObjectStorageType::Sqlite),
             Some("memory") => Some(ObjectStorageType::InMemory),
+            Some("s3") => Some(ObjectStorageType::S3),
             _ => None,
         }
     }

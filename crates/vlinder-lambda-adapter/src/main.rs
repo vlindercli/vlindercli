@@ -29,6 +29,9 @@ use vlinder_provider_server::factory;
 use adapter::build_lambda_diagnostics;
 use config::AdapterConfig;
 
+use std::path::PathBuf;
+use vlinder_s3_storage::{checkout, commit, create_client, S3Config};
+
 #[tokio::main]
 async fn main() {
     // Install rustls crypto provider before any TLS connection (AMQPS).
@@ -152,6 +155,7 @@ async fn send_error_result(
 }
 
 /// Receive invokes from the Lambda Runtime API, dispatch to agent, send complete.
+#[allow(clippy::too_many_lines)]
 async fn dispatch_loop(
     function_name: &str,
     agent_port: u16,
@@ -180,11 +184,110 @@ async fn dispatch_loop(
                         "Per-invocation queue connection established"
                     );
 
+                    // Look up agent info to get object_storage configuration.
+                    let agent_info = registry
+                        .get_agent_by_name(agent.as_str())
+                        .await
+                        .ok_or_else(|| {
+                            format!("registry lookup for agent '{agent}' failed: agent not found")
+                        })?;
+
+                    // Determine if this agent uses S3 object storage.
+                    let s3_config = agent_info
+                        .object_storage
+                        .as_ref()
+                        .and_then(|uri| {
+                            if uri.scheme() == Some("s3") {
+                                Some(
+                                    S3Config::from_resource_id(uri)
+                                        .map_err(|e| format!("invalid S3 URI: {e}")),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                        .transpose()?;
+
+                    if let Some(ref config) = &s3_config {
+                        tracing::debug!(
+                            bucket = %config.bucket,
+                            prefix = %config.prefix,
+                            "S3 storage configured"
+                        );
+                    }
+
+                    let session_id = key.session.to_string();
+                    let storage_root = PathBuf::from("/tmp/vlinder");
+
+                    // Perform checkout if S3 storage is configured.
+                    if let Some(config) = &s3_config {
+                        let client = create_client()
+                            .await
+                            .map_err(|e| format!("failed to create S3 client: {e:#}"))?;
+                        tracing::info!(
+                            session_id = %session_id,
+                            parent_state = invoke.state.as_deref().unwrap_or(""),
+                            storage_root = %storage_root.display(),
+                            bucket = %config.bucket,
+                            prefix = %config.prefix,
+                            "[s3.diag] adapter: starting S3 checkout"
+                        );
+                        checkout(
+                            &client,
+                            config,
+                            &session_id,
+                            invoke.state.as_deref(),
+                            &storage_root,
+                        )
+                        .await
+                        .map_err(|e| {
+                            tracing::error!(
+                                error_alt = %format!("{e:#}"),
+                                error_debug = ?e,
+                                session_id = %session_id,
+                                parent_state = invoke.state.as_deref().unwrap_or(""),
+                                "[s3.diag] adapter: S3 checkout failed (full chain in error_alt)"
+                            );
+                            format!("checkout failed: {e:#}")
+                        })?;
+                    }
+                    // Dispatch the invocation as usual.
                     let dispatch_result =
                         shared::dispatch_invoke(&queue, registry, agent_port, &key, &invoke).await;
 
                     match dispatch_result {
                         Ok(result) => {
+                            // If S3 storage is configured, commit the workspace and use the new version ID as state.
+                            let final_state = if let Some(config) = &s3_config {
+                                let client = create_client().await.map_err(|e| {
+                                    format!("failed to create S3 client for commit: {e:#}")
+                                })?;
+                                tracing::info!(
+                                    session_id = %session_id,
+                                    storage_root = %storage_root.display(),
+                                    bucket = %config.bucket,
+                                    prefix = %config.prefix,
+                                    "[s3.diag] adapter: starting S3 commit"
+                                );
+                                match commit(&client, config, &session_id, &storage_root).await {
+                                    Ok(new_version_id) => {
+                                        // Clean up temp directory after successful commit.
+                                        let _ = tokio::fs::remove_dir_all(&storage_root).await;
+                                        Some(new_version_id)
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            error_alt = %format!("{e:#}"),
+                                            error_debug = ?e,
+                                            "[s3.diag] adapter: S3 commit failed (full chain in error_alt)"
+                                        );
+                                        return Err(format!("commit failed: {e:#}"));
+                                    }
+                                }
+                            } else {
+                                result.state
+                            };
+
                             let region = std::env::var("AWS_REGION")
                                 .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
                                 .unwrap_or_else(|_| "unknown".to_string());
@@ -198,7 +301,7 @@ async fn dispatch_loop(
                                 &key,
                                 agent,
                                 result.output,
-                                result.state,
+                                final_state,
                                 diagnostics,
                             )
                             .await;
