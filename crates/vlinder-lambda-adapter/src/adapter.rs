@@ -153,6 +153,14 @@ mod tests {
     }
 
     #[test]
+    fn lambda_invoke_receiver_new_sets_runtime_api() {
+        use crate::lambda_invoke_receiver::LambdaInvokeReceiver;
+
+        let receiver = LambdaInvokeReceiver::new("127.0.0.1:9001");
+        assert_eq!(receiver.runtime_api(), "127.0.0.1:9001");
+    }
+
+    #[test]
     fn complete_with_no_state() {
         let diag = build_lambda_diagnostics("fn", "us-east-1", 50);
 

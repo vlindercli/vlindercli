@@ -18,12 +18,10 @@
 
 mod adapter;
 mod config;
-mod lambda_runtime_queue;
+mod lambda_invoke_receiver;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use vlinder_core::domain::{MessageQueue, QueueError};
 
 use vlinder_provider_server::dispatch as shared;
 use vlinder_provider_server::factory;
@@ -60,23 +58,6 @@ async fn main() {
 
     register_extension(&config.runtime_api);
 
-    let queue = match &config.queue {
-        config::QueueBackendConfig::Nats { url } => {
-            let nats_config = factory::resolve_nats_config(config.secret_url.as_deref(), url).await;
-            factory::connect_async(&factory::QueueConfig::Nats(nats_config)).await
-        }
-        config::QueueBackendConfig::Amqp { url } => {
-            let amqp_config = vlinder_amqp::AmqpConfig { url: url.clone() };
-            factory::connect_async(&factory::QueueConfig::Amqp(amqp_config)).await
-        }
-    };
-    let queue = match queue {
-        Ok(q) => q,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to connect to queue");
-            std::process::exit(1);
-        }
-    };
     let store = match factory::connect_state_async(&config.state_url).await {
         Ok(s) => s,
         Err(e) => {
@@ -84,7 +65,6 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let queue = factory::with_recording(queue, store);
 
     let registry = match factory::connect_registry_async(&config.registry_url).await {
         Ok(r) => r,
@@ -100,65 +80,147 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let lambda_queue: Arc<dyn MessageQueue + Send + Sync> = Arc::new(
-        lambda_runtime_queue::LambdaRuntimeQueue::new(queue, &config.runtime_api),
-    );
+    let invoke_receiver = lambda_invoke_receiver::LambdaInvokeReceiver::new(&config.runtime_api);
 
     tracing::info!(event = "adapter.started", agent = %config.agent, "Entering dispatch loop");
-    dispatch_loop(&config.agent, config.agent_port, &lambda_queue, &registry).await;
+    dispatch_loop(
+        &config.agent,
+        config.agent_port,
+        &invoke_receiver,
+        &config.queue,
+        config.secret_url.as_deref(),
+        &store,
+        &registry,
+    )
+    .await;
+}
+
+/// Create a fresh per-invocation queue connection.
+///
+/// Connects to the configured backend (AMQP or NATS), wraps it with
+/// DAG recording, and returns the queue. For NATS, resolves credentials
+/// from the secret store when `secret_url` is provided.
+async fn create_invocation_queue(
+    queue_backend: &config::QueueBackendConfig,
+    secret_url: Option<&str>,
+    store: &Arc<dyn vlinder_core::domain::DagStore>,
+) -> Result<Arc<dyn vlinder_core::domain::MessageQueue + Send + Sync>, String> {
+    match queue_backend {
+        config::QueueBackendConfig::Amqp { url } => {
+            let amqp_config = vlinder_amqp::AmqpConfig { url: url.clone() };
+            let q = factory::connect_async(&factory::QueueConfig::Amqp(amqp_config))
+                .await
+                .map_err(|e| format!("failed to connect to AMQP: {e}"))?;
+            Ok(factory::with_recording(q, store.clone()))
+        }
+        config::QueueBackendConfig::Nats { url } => {
+            let nats_config = factory::resolve_nats_config(secret_url, url).await;
+            let q = factory::connect_async(&factory::QueueConfig::Nats(nats_config))
+                .await
+                .map_err(|e| format!("failed to connect to NATS: {e}"))?;
+            Ok(factory::with_recording(q, store.clone()))
+        }
+    }
+}
+
+/// Attempt to report a dispatch error back via a fresh queue connection.
+async fn send_error_result(
+    queue_backend: &config::QueueBackendConfig,
+    secret_url: Option<&str>,
+    store: &Arc<dyn vlinder_core::domain::DagStore>,
+    key: &vlinder_core::domain::DataRoutingKey,
+    agent: &vlinder_core::domain::AgentName,
+    error: String,
+) {
+    let error_queue = create_invocation_queue(queue_backend, secret_url, store).await;
+    match error_queue {
+        Ok(eq) => {
+            shared::send_complete(
+                eq.as_ref(),
+                key,
+                agent,
+                format!("[error] {error}").into_bytes(),
+                None,
+                vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
+            )
+            .await;
+        }
+        Err(qe) => {
+            tracing::error!(error = %qe, "Failed to create error-path queue");
+        }
+    }
 }
 
 /// Receive invokes from the Lambda Runtime API, dispatch to agent, send complete.
 async fn dispatch_loop(
     function_name: &str,
     agent_port: u16,
-    queue: &Arc<dyn MessageQueue + Send + Sync>,
+    invoke_receiver: &lambda_invoke_receiver::LambdaInvokeReceiver,
+    queue_backend: &config::QueueBackendConfig,
+    secret_url: Option<&str>,
+    store: &Arc<dyn vlinder_core::domain::DagStore>,
     registry: &Arc<dyn vlinder_core::domain::Registry>,
 ) {
     let agent_id = vlinder_core::domain::AgentName::new(function_name);
     loop {
-        match queue.receive_invoke(&agent_id).await {
+        match invoke_receiver.receive_invoke(&agent_id) {
             Ok((key, invoke, ack)) => {
                 let vlinder_core::domain::DataMessageKind::Invoke { ref agent, .. } = key.kind
                 else {
                     continue;
                 };
 
-                match shared::dispatch_invoke(queue, registry, agent_port, &key, &invoke).await {
-                    Ok(result) => {
-                        let region = std::env::var("AWS_REGION")
-                            .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-                            .unwrap_or_else(|_| "unknown".to_string());
-                        let diagnostics =
-                            build_lambda_diagnostics(function_name, &region, result.duration_ms);
-                        shared::send_complete(
-                            queue.as_ref(),
-                            &key,
-                            agent,
-                            result.output,
-                            result.state,
-                            diagnostics,
-                        )
-                        .await;
+                let invoke_result = async {
+                    let start = std::time::Instant::now();
+                    let queue = create_invocation_queue(queue_backend, secret_url, store).await?;
+                    tracing::info!(
+                        event = "amqp.connect_per_invoke",
+                        duration_ms =
+                            u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        "Per-invocation queue connection established"
+                    );
+
+                    let dispatch_result =
+                        shared::dispatch_invoke(&queue, registry, agent_port, &key, &invoke).await;
+
+                    match dispatch_result {
+                        Ok(result) => {
+                            let region = std::env::var("AWS_REGION")
+                                .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+                                .unwrap_or_else(|_| "unknown".to_string());
+                            let diagnostics = build_lambda_diagnostics(
+                                function_name,
+                                &region,
+                                result.duration_ms,
+                            );
+                            shared::send_complete(
+                                queue.as_ref(),
+                                &key,
+                                agent,
+                                result.output,
+                                result.state,
+                                diagnostics,
+                            )
+                            .await;
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
                     }
+                }
+                .await;
+
+                match invoke_result {
+                    Ok(()) => {}
                     Err(e) => {
                         tracing::error!(error = %e, "Dispatch failed");
-                        shared::send_complete(
-                            queue.as_ref(),
-                            &key,
-                            agent,
-                            format!("[error] {e}").into_bytes(),
-                            None,
-                            vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
-                        )
-                        .await;
+                        send_error_result(queue_backend, secret_url, store, &key, agent, e.clone())
+                            .await;
                     }
                 }
                 if let Err(e) = ack().await {
                     tracing::error!(error = %e, "Failed to ack invocation");
                 }
             }
-            Err(QueueError::Timeout) => {}
             Err(e) => {
                 tracing::error!(error = %e, "receive_invoke failed");
                 std::process::exit(1);
