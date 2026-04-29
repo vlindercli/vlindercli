@@ -10,8 +10,8 @@ use chrono::{DateTime, Utc};
 
 use vlinder_core::domain::{
     AgentName, BranchId, CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey, HarnessType,
-    InvokeDiagnostics, InvokeMessage, MessageId, RuntimeDiagnostics, RuntimeType, SessionId,
-    SubmissionId,
+    InvokeDiagnostics, InvokeMessage, Message, MessageId, RuntimeDiagnostics, RuntimeType,
+    SessionId, SubmissionId,
 };
 use vlinder_git_dag::GitDagWorker;
 
@@ -114,7 +114,10 @@ pub fn make_invoke(
             harness_version: "0.1.0".to_string(),
         },
         dag_parent: DagNodeId::root(),
-        payload: payload.to_vec(),
+        history: vec![],
+        current_input: vec![Message::User {
+            content: String::from_utf8_lossy(payload).to_string(),
+        }],
     };
     let created_at = DateTime::from_timestamp(epoch_secs, 0).unwrap();
     (key, msg, created_at)

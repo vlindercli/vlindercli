@@ -743,7 +743,8 @@ impl DagWorker for GitDagWorker {
             self.insert_field(&mut tb, "protocol_version", "v1")?;
             self.insert_field(&mut tb, "created_at", &created_at_str)?;
 
-            let payload_oid = self.write_blob(&invoke.payload)?;
+            let payload_bytes = serde_json::to_vec(invoke).unwrap_or_default();
+            let payload_oid = self.write_blob(&payload_bytes)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
                 .map_err(|e| format!("insert payload failed: {e}"))?;
 
@@ -759,7 +760,7 @@ impl DagWorker for GitDagWorker {
             // Compute canonical hash
             let diagnostics_json = serde_json::to_vec(&invoke.diagnostics).unwrap_or_default();
             let canonical_hash = hash_dag_node(
-                &invoke.payload,
+                &payload_bytes,
                 &canonical_parent,
                 &MessageType::Invoke,
                 &diagnostics_json,
@@ -1126,8 +1127,8 @@ mod tests {
     use vlinder_core::domain::{
         Agent, AgentName, BranchId, CompleteMessage, ContainerId, DagNodeId, DataMessageKind,
         DataRoutingKey, ForkMessage, HarnessType, InMemoryRegistry, InMemorySecretStore,
-        InvokeDiagnostics, InvokeMessage, MessageId, RuntimeDiagnostics, RuntimeInfo, RuntimeType,
-        SecretStore, SessionId, SessionRoutingKey, SubmissionId,
+        InvokeDiagnostics, InvokeMessage, Message, MessageId, RuntimeDiagnostics, RuntimeInfo,
+        RuntimeType, SecretStore, SessionId, SessionRoutingKey, SubmissionId,
     };
 
     fn test_agent_id() -> AgentName {
@@ -1736,6 +1737,7 @@ mod tests {
         payload: &[u8],
         epoch_secs: i64,
     ) -> (DataRoutingKey, InvokeMessage, DateTime<Utc>) {
+        let content = String::from_utf8_lossy(payload).to_string();
         let key = DataRoutingKey {
             session: SessionId::try_from(SESSION.to_string()).unwrap(),
             branch: BranchId::from(1),
@@ -1754,7 +1756,8 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: payload.to_vec(),
+            history: vec![],
+            current_input: vec![Message::User { content }],
         };
         let created_at = DateTime::from_timestamp(epoch_secs, 0).unwrap();
         (key, msg, created_at)
@@ -1807,7 +1810,11 @@ mod tests {
         assert_eq!(show("harness"), "cli");
         assert_eq!(show("runtime"), "container");
         assert_eq!(show("agent_id"), "support-agent");
-        assert_eq!(show("payload"), "payload data");
+        // Payload now contains the full serialized InvokeMessage JSON
+        // (history + current_input replaced the old flat text payload)
+        let payload_json = show("payload");
+        let parsed: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
+        assert_eq!(parsed["current_input"][0]["content"], "payload data");
         assert_eq!(show("protocol_version"), "v1");
         assert!(!show("hash").is_empty());
     }

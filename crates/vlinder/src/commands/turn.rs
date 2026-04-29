@@ -1,5 +1,7 @@
 use clap::Subcommand;
 
+use vlinder_core::domain::Message;
+
 use crate::config::CliConfig;
 
 use super::connect::open_dag_store;
@@ -55,7 +57,7 @@ async fn get(submission_id: &str) {
                         None::<String>,
                         None::<String>,
                         msg.state.clone(),
-                        msg.payload,
+                        format_current_input(&msg.current_input).into_bytes(),
                     )
                 } else {
                     continue;
@@ -101,4 +103,16 @@ async fn get(submission_id: &str) {
         }
         println!();
     }
+}
+
+/// Format the `current_input` messages for display in the CLI.
+fn format_current_input(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .map(|m| match m {
+            Message::User { content } => format!("User: {content}"),
+            Message::Agent { content } => format!("Agent: {content}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

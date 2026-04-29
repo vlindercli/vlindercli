@@ -301,7 +301,10 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello".to_vec(),
+            history: vec![],
+            current_input: vec![crate::domain::Message::User {
+                content: "hello".to_string(),
+            }],
         };
         let original_id = msg.id.clone();
 
@@ -319,7 +322,13 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(received.payload, b"hello");
+        // Verify the received message's current_input
+        assert_eq!(received.current_input.len(), 1);
+        if let crate::domain::Message::User { content } = &received.current_input[0] {
+            assert_eq!(content, "hello");
+        } else {
+            panic!("expected User message");
+        }
 
         ack().await.unwrap();
     }
@@ -349,7 +358,10 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"input".to_vec(),
+            history: vec![],
+            current_input: vec![crate::domain::Message::User {
+                content: "input".to_string(),
+            }],
         };
 
         queue.send_invoke(key, msg).await.unwrap();
@@ -390,7 +402,10 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: crate::domain::DagNodeId::root(),
-            payload: b"hello".to_vec(),
+            history: vec![],
+            current_input: vec![crate::domain::Message::User {
+                content: "hello".to_string(),
+            }],
         }
     }
 
@@ -434,7 +449,10 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: crate::domain::DagNodeId::root(),
-            payload: b"first".to_vec(),
+            history: vec![],
+            current_input: vec![crate::domain::Message::User {
+                content: "first".to_string(),
+            }],
         };
         let msg2 = InvokeMessage {
             id: crate::domain::MessageId::from("msg-second".to_string()),
@@ -444,7 +462,10 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: crate::domain::DagNodeId::root(),
-            payload: b"second".to_vec(),
+            history: vec![],
+            current_input: vec![crate::domain::Message::User {
+                content: "second".to_string(),
+            }],
         };
 
         queue.send_invoke(key.clone(), msg1.clone()).await.unwrap();

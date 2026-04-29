@@ -760,7 +760,10 @@ mod tests {
                 harness_version: "test".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello lambda".to_vec(),
+            history: vec![],
+            current_input: vec![vlinder_core::domain::Message::User {
+                content: "hello lambda".to_string(),
+            }],
         };
         queue.send_invoke(key, msg).await.unwrap();
 
@@ -821,7 +824,10 @@ mod tests {
                 harness_version: "test".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello".to_vec(),
+            history: vec![],
+            current_input: vec![vlinder_core::domain::Message::User {
+                content: "hello".to_string(),
+            }],
         };
         queue.send_invoke(key, msg).await.unwrap();
 

@@ -204,7 +204,7 @@ impl DagStore for GrpcStateClient {
             message_id: msg.id.to_string(),
             state: msg.state.clone(),
             diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
-            payload: msg.payload.clone(),
+            payload: serde_json::to_vec(msg).unwrap_or_default(),
             dag_parent: msg.dag_parent.to_string(),
             dag_hash: dag_id.to_string(),
         };
@@ -702,14 +702,16 @@ impl DagStore for GrpcStateClient {
                             harness_version: String::new(),
                         }
                     });
-                let msg = vlinder_core::domain::InvokeMessage {
-                    id: vlinder_core::domain::MessageId::from(n.message_id),
-                    dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
-                    state: n.state,
-                    diagnostics,
-                    dag_parent: vlinder_core::domain::DagNodeId::from(n.dag_parent),
-                    payload: n.payload,
-                };
+                let msg: vlinder_core::domain::InvokeMessage = serde_json::from_slice(&n.payload)
+                    .unwrap_or_else(|_| vlinder_core::domain::InvokeMessage {
+                        id: vlinder_core::domain::MessageId::from(n.message_id.clone()),
+                        dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash.clone()),
+                        state: n.state.clone(),
+                        diagnostics,
+                        dag_parent: vlinder_core::domain::DagNodeId::from(n.dag_parent.clone()),
+                        history: vec![],
+                        current_input: vec![],
+                    });
                 Ok(Some((key, msg)))
             }
             None => Ok(None),

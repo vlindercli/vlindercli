@@ -243,7 +243,15 @@ async fn render_session(
                 .await
                 .ok()
                 .flatten()
-                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
+                .map(|(_, msg)| {
+                    msg.current_input
+                        .last()
+                        .map(|m| match m {
+                            vlinder_core::domain::Message::User { content }
+                            | vlinder_core::domain::Message::Agent { content } => content.clone(),
+                        })
+                        .unwrap_or_default()
+                })
                 .unwrap_or_default();
             let _ = writeln!(
                 messages,
@@ -284,7 +292,15 @@ async fn render_node(
                 .await
                 .ok()
                 .flatten()
-                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
+                .map(|(_, msg)| {
+                    msg.current_input
+                        .last()
+                        .map(|m| match m {
+                            vlinder_core::domain::Message::User { content }
+                            | vlinder_core::domain::Message::Agent { content } => content.clone(),
+                        })
+                        .unwrap_or_default()
+                })
                 .unwrap_or_default();
             let ts = node.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
             let _ = writeln!(
@@ -436,7 +452,10 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"summarize this article".to_vec(),
+            history: vec![],
+            current_input: vec![vlinder_core::domain::Message::User {
+                content: "summarize this article".to_string(),
+            }],
         };
         store
             .insert_invoke_node(

@@ -43,7 +43,7 @@ mod tests {
     use super::*;
     use vlinder_core::domain::{
         AgentName, BranchId, DagNodeId, DataMessageKind, DataRoutingKey, HarnessType,
-        InvokeDiagnostics, InvokeMessage, MessageId, RuntimeType, SessionId, SubmissionId,
+        InvokeDiagnostics, InvokeMessage, Message, MessageId, RuntimeType, SessionId, SubmissionId,
     };
 
     /// Build a test `LambdaInvokePayload` and serialize it to JSON, simulating
@@ -69,7 +69,10 @@ mod tests {
                     harness_version: "0.1.0".to_string(),
                 },
                 dag_parent: DagNodeId::root(),
-                payload: payload.to_vec(),
+                history: vec![],
+                current_input: vec![Message::User {
+                    content: String::from_utf8_lossy(payload).to_string(),
+                }],
             },
         };
         serde_json::to_vec(&invoke).unwrap()
@@ -85,7 +88,13 @@ mod tests {
         };
         assert_eq!(agent.as_str(), "echo-lambda");
         assert_eq!(*runtime, RuntimeType::Lambda);
-        assert_eq!(inv.msg.payload, b"hello from lambda");
+        // Verify the current_input carries the user message
+        assert_eq!(inv.msg.current_input.len(), 1);
+        if let Message::User { content } = &inv.msg.current_input[0] {
+            assert_eq!(content, "hello from lambda");
+        } else {
+            panic!("expected User message");
+        }
         assert_eq!(inv.msg.state, Some("state-abc".to_string()));
         assert_eq!(inv.msg.diagnostics.harness_version, "0.1.0");
     }
@@ -104,18 +113,28 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_invoke_preserves_empty_payload() {
+    fn deserialize_invoke_preserves_empty_input() {
         let json = make_invoke_json(b"");
         let inv = deserialize_invoke(&json).unwrap();
-        assert!(inv.msg.payload.is_empty());
+        assert_eq!(inv.msg.current_input.len(), 1);
+        if let Message::User { content } = &inv.msg.current_input[0] {
+            assert!(content.is_empty());
+        } else {
+            panic!("expected User message");
+        }
     }
 
     #[test]
-    fn deserialize_invoke_preserves_binary_payload() {
-        let binary: Vec<u8> = (0..=255).collect();
-        let json = make_invoke_json(&binary);
+    fn deserialize_invoke_preserves_utf8_input() {
+        let text = "Hello, world! Üñïcödé 中文 🎉";
+        let json = make_invoke_json(text.as_bytes());
         let inv = deserialize_invoke(&json).unwrap();
-        assert_eq!(inv.msg.payload, binary);
+        assert_eq!(inv.msg.current_input.len(), 1);
+        if let Message::User { content } = &inv.msg.current_input[0] {
+            assert_eq!(content, text);
+        } else {
+            panic!("expected User message");
+        }
     }
 
     #[test]

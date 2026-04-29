@@ -75,8 +75,9 @@ impl RecordingQueue {
             .unwrap_or_else(Snapshot::empty);
 
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
+        let payload_json = serde_json::to_vec(msg).unwrap_or_default();
         let id = hash_dag_node(
-            &msg.payload,
+            &payload_json,
             &parent_id,
             &MessageType::Invoke,
             &diagnostics_json,
@@ -775,7 +776,7 @@ mod tests {
     use super::*;
     use crate::domain::{
         AgentName, BranchId, DagNode, DataMessageKind, DataRoutingKey, HarnessType,
-        InMemoryDagStore, InvokeDiagnostics, InvokeMessage, MessageId, MessageType,
+        InMemoryDagStore, InvokeDiagnostics, InvokeMessage, Message, MessageId, MessageType,
         RuntimeDiagnostics, RuntimeType, SessionId, SubmissionId,
     };
     use crate::queue::InMemoryQueue;
@@ -826,7 +827,10 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello".to_vec(),
+            history: vec![],
+            current_input: vec![Message::User {
+                content: "hello".to_string(),
+            }],
         };
         (key, msg)
     }
@@ -896,11 +900,15 @@ mod tests {
 
         let (mut key1, mut msg1) = test_invoke();
         key1.session = ses_aaa.clone();
-        msg1.payload = b"hello-aaa".to_vec();
+        msg1.current_input = vec![Message::User {
+            content: "hello-aaa".to_string(),
+        }];
 
         let (mut key2, mut msg2) = test_invoke();
         key2.session = ses_bbb.clone();
-        msg2.payload = b"hello-bbb".to_vec();
+        msg2.current_input = vec![Message::User {
+            content: "hello-bbb".to_string(),
+        }];
 
         queue.send_invoke(key1, msg1).await.unwrap();
         queue.send_invoke(key2, msg2).await.unwrap();
@@ -1061,7 +1069,9 @@ mod tests {
 
         // Send a second invoke (same session) — normally chains off first
         let (key2, mut msg2) = test_invoke();
-        msg2.payload = b"second".to_vec();
+        msg2.current_input = vec![Message::User {
+            content: "second".to_string(),
+        }];
         queue.send_invoke(key2, msg2).await.unwrap();
 
         let nodes = store.get_session_nodes(&sid).await.unwrap();
@@ -1071,7 +1081,9 @@ mod tests {
         // Send a third invoke with explicit dag_parent pointing to first node,
         // bypassing the chain cache (which would point to second node)
         let (key3, mut msg3) = test_invoke();
-        msg3.payload = b"forked".to_vec();
+        msg3.current_input = vec![Message::User {
+            content: "forked".to_string(),
+        }];
         msg3.dag_parent = first_id.clone();
         queue.send_invoke(key3, msg3).await.unwrap();
 

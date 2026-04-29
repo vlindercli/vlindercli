@@ -340,7 +340,7 @@ impl DagStore for SqliteDagStore {
                 message_id: msg.id.as_str(),
                 state: msg.state.as_deref(),
                 diagnostics: &diagnostics_json,
-                payload: &msg.payload,
+                payload: &serde_json::to_vec(msg).unwrap_or_default(),
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert invoke_nodes failed: {e}"))?;
@@ -783,14 +783,16 @@ impl DagStore for SqliteDagStore {
                     }
                 });
 
-            let msg = vlinder_core::domain::InvokeMessage {
-                id: vlinder_core::domain::MessageId::from(inv.message_id),
-                dag_id: dag_hash.clone(),
-                state: inv.state,
-                diagnostics,
-                dag_parent: parent_hash.map_or_else(DagNodeId::root, DagNodeId::from),
-                payload: inv.payload,
-            };
+            let msg: vlinder_core::domain::InvokeMessage = serde_json::from_slice(&inv.payload)
+                .unwrap_or_else(|_| vlinder_core::domain::InvokeMessage {
+                    id: vlinder_core::domain::MessageId::from(inv.message_id.clone()),
+                    dag_id: dag_hash.clone(),
+                    state: inv.state.clone(),
+                    diagnostics,
+                    dag_parent: parent_hash.map_or_else(DagNodeId::root, DagNodeId::from),
+                    history: vec![],
+                    current_input: vec![],
+                });
 
             (key, msg)
         });

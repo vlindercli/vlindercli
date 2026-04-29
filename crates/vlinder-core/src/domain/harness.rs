@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use crate::domain::{
     AgentName, BranchId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, ForkMessage,
-    HarnessType, InvokeDiagnostics, InvokeMessage, JobId, JobStatus, MessageId, MessageQueue,
-    MessageType, PromoteMessage, Registry, ResourceId, SessionId, SessionMessageKind,
+    HarnessType, InvokeDiagnostics, InvokeMessage, JobId, JobStatus, Message, MessageId,
+    MessageQueue, MessageType, PromoteMessage, Registry, ResourceId, SessionId, SessionMessageKind,
     SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
 use async_trait::async_trait;
@@ -89,23 +89,6 @@ pub struct PromoteParams {
     pub agent_name: AgentName,
 }
 
-/// Build an enriched payload from DAG-derived history.
-///
-/// Each invoke payload already contains the full conversation history up to
-/// that point, so we only need the last invoke + last complete to reconstruct.
-fn build_payload(
-    last_invoke_payload: Option<&str>,
-    last_complete_payload: Option<&str>,
-    current_input: &str,
-) -> String {
-    match (last_invoke_payload, last_complete_payload) {
-        (Some(invoke), Some(complete)) => {
-            format!("{invoke}\nAgent: {complete}\nUser: {current_input}")
-        }
-        _ => format!("User: {current_input}"),
-    }
-}
-
 // ============================================================================
 // CoreHarness — canonical implementation
 // ============================================================================
@@ -140,6 +123,88 @@ impl CoreHarness {
         }
     }
 
+    /// Look up the agent and resolve its runtime.
+    async fn resolve_agent_and_runtime(
+        &self,
+        agent_id: &ResourceId,
+    ) -> Result<(crate::domain::Agent, crate::domain::RuntimeType), String> {
+        let agent = self
+            .registry
+            .get_agent(agent_id)
+            .await
+            .ok_or_else(|| format!("agent not deployed: {agent_id}"))?;
+        let runtime = self
+            .registry
+            .select_runtime(&agent)
+            .ok_or_else(|| format!("no runtime available for agent: {agent_id}"))?;
+        Ok((agent, runtime))
+    }
+
+    /// Build the conversation history and current input from DAG state.
+    ///
+    /// On the first invocation, history is empty and `current_input` is a single
+    /// user message. On follow-up invocations, prior history is carried forward
+    /// and the last agent response is appended.
+    async fn build_conversation_input(
+        &self,
+        timeline: BranchId,
+        input: &str,
+        initial_state: Option<&str>,
+    ) -> Result<(Vec<Message>, Vec<Message>, Option<String>), String> {
+        let last_invoke_node = self
+            .store
+            .latest_node_on_branch(timeline, Some(MessageType::Invoke))
+            .await
+            .unwrap_or(None);
+        let last_complete_node = self
+            .store
+            .latest_node_on_branch(timeline, Some(MessageType::Complete))
+            .await
+            .unwrap_or(None);
+        let last_complete = match last_complete_node {
+            Some(n) => self.store.get_complete_node(&n.id).await.ok().flatten(),
+            None => None,
+        };
+
+        let last_state = last_complete
+            .as_ref()
+            .and_then(|m| m.state.as_ref().map(std::string::ToString::to_string))
+            .or_else(|| initial_state.map(std::string::ToString::to_string));
+
+        let (history, current_input) =
+            if let (Some(invoke_node), Some(complete)) = (last_invoke_node, last_complete) {
+                let last_invoke = self
+                    .store
+                    .get_invoke_node(&invoke_node.id)
+                    .await
+                    .ok()
+                    .flatten();
+                let (mut new_history, prev_current_input) = match last_invoke {
+                    Some((_, invoke_msg)) => (invoke_msg.history, invoke_msg.current_input),
+                    None => (vec![], vec![]),
+                };
+                new_history.extend(prev_current_input);
+                new_history.push(Message::Agent {
+                    content: String::from_utf8_lossy(&complete.payload).to_string(),
+                });
+                (
+                    new_history,
+                    vec![Message::User {
+                        content: input.to_string(),
+                    }],
+                )
+            } else {
+                (
+                    vec![],
+                    vec![Message::User {
+                        content: input.to_string(),
+                    }],
+                )
+            };
+
+        Ok((history, current_input, last_state))
+    }
+
     /// Build an invoke from session state and register a job.
     ///
     /// Returns the routing key, payload message, and job ID.
@@ -161,54 +226,12 @@ impl CoreHarness {
             );
         }
 
-        let agent = self
-            .registry
-            .get_agent(agent_id)
-            .await
-            .ok_or_else(|| format!("agent not deployed: {agent_id}"))?;
-        let runtime = self
-            .registry
-            .select_runtime(&agent)
-            .ok_or_else(|| format!("no runtime available for agent: {agent_id}"))?;
+        let (_, runtime) = self.resolve_agent_and_runtime(agent_id).await?;
+        let (history, current_input, last_state) = self
+            .build_conversation_input(timeline, input, initial_state)
+            .await?;
 
-        let last_invoke_node = self
-            .store
-            .latest_node_on_branch(timeline, Some(MessageType::Invoke))
-            .await
-            .unwrap_or(None);
-        let last_invoke_payload = match last_invoke_node {
-            Some(n) => self
-                .store
-                .get_invoke_node(&n.id)
-                .await
-                .ok()
-                .flatten()
-                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string()),
-            None => None,
-        };
-        let last_complete_node = self
-            .store
-            .latest_node_on_branch(timeline, Some(MessageType::Complete))
-            .await
-            .unwrap_or(None);
-        let last_complete = match last_complete_node {
-            Some(n) => self.store.get_complete_node(&n.id).await.ok().flatten(),
-            None => None,
-        };
-        let last_complete_payload = last_complete
-            .as_ref()
-            .map(|m| String::from_utf8_lossy(&m.payload).to_string());
-        let enriched_payload = build_payload(
-            last_invoke_payload.as_deref(),
-            last_complete_payload.as_deref(),
-            input,
-        );
         let submission = SubmissionId::new();
-        let last_state = last_complete
-            .as_ref()
-            .and_then(|m| m.state.as_ref().map(std::string::ToString::to_string))
-            .or_else(|| initial_state.map(std::string::ToString::to_string));
-
         let job_id = self
             .registry
             .create_job(submission.clone(), agent_id.clone(), input.to_string())
@@ -233,7 +256,8 @@ impl CoreHarness {
                 harness_version: env!("CARGO_PKG_VERSION").to_string(),
             },
             dag_parent: dag_parent.clone(),
-            payload: enriched_payload.as_bytes().to_vec(),
+            history,
+            current_input,
         };
 
         Ok((key, msg, job_id))
