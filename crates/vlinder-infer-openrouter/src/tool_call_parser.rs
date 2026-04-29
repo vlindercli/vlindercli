@@ -301,4 +301,76 @@ mod tests {
             "{\"arg\":1}"
         );
     }
+    #[test]
+    fn parse_response_with_multiple_tool_calls() {
+        let payload = json!({
+            "id": "cmpl-multi",
+            "object": "chat.completion",
+            "created": 1_234_567_890,
+            "model": "gpt-3.5-turbo",
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            },
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "delegate_agent",
+                                    "arguments": "{\"agent\": \"worker-a\"}"
+                                }
+                            },
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {
+                                    "name": "delegate_agent",
+                                    "arguments": "{\"agent\": \"worker-b\"}"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ]
+        });
+        let parser = OpenAiToolCallParser;
+        let result = parser
+            .parse_response(&serde_json::to_vec(&payload).unwrap())
+            .unwrap();
+        assert_eq!(result.content, None);
+        let tcs = result.tool_calls.unwrap();
+        assert_eq!(tcs.len(), 2);
+        assert_eq!(tcs[0].id, "call_1");
+        assert_eq!(tcs[0].name, "delegate_agent");
+        assert_eq!(tcs[0].arguments, json!({"agent": "worker-a"}));
+        assert_eq!(tcs[1].id, "call_2");
+        assert_eq!(tcs[1].name, "delegate_agent");
+        assert_eq!(tcs[1].arguments, json!({"agent": "worker-b"}));
+    }
+
+    #[test]
+    fn parse_response_empty_choices() {
+        let payload = json!({
+            "id": "cmpl-empty",
+            "object": "chat.completion",
+            "created": 1_234_567_890,
+            "model": "gpt-3.5-turbo",
+            "choices": []
+        });
+        let parser = OpenAiToolCallParser;
+        let result = parser.parse_response(&serde_json::to_vec(&payload).unwrap());
+        assert!(
+            matches!(result, Err(ParseError::InvalidStructure(_))),
+            "empty choices should be InvalidStructure"
+        );
+    }
 }
