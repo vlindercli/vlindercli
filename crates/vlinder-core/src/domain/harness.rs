@@ -10,12 +10,13 @@
 use std::sync::Arc;
 
 use crate::domain::{
-    AgentName, BranchId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, ForkMessage,
-    HarnessType, InvokeDiagnostics, InvokeMessage, JobId, JobStatus, Message, MessageId,
-    MessageQueue, MessageType, PromoteMessage, Registry, ResourceId, SessionId, SessionMessageKind,
-    SessionRoutingKey, SessionStartMessage, SubmissionId,
+    AgentName, BranchId, CompleteMessage, DagNodeId, DagStore, DataMessageKind, DataRoutingKey,
+    ForkMessage, HarnessType, InvokeDiagnostics, InvokeMessage, JobId, JobStatus, Message,
+    MessageId, MessageQueue, MessageType, PromoteMessage, Registry, ResourceId, SessionId,
+    SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId, ToolResult,
 };
 use async_trait::async_trait;
+use serde_json::Value;
 
 /// Common harness operations shared across all harness types.
 #[async_trait]
@@ -263,6 +264,200 @@ impl CoreHarness {
 
         Ok((key, msg, job_id))
     }
+
+    /// Dispatch tool calls from an agent's response.
+    ///
+    /// For `delegate_agent` tool calls, recursively invokes the target agent.
+    /// For unknown tool names, returns a `ToolResult` with `is_error: true`.
+    async fn dispatch_tool_calls(
+        &self,
+        tool_calls: Vec<crate::domain::ToolCall>,
+        session_id: &SessionId,
+        timeline: BranchId,
+        sealed: bool,
+    ) -> Vec<crate::domain::ToolResult> {
+        let mut results = Vec::with_capacity(tool_calls.len());
+        for tc in &tool_calls {
+            let result = match tc.name.as_str() {
+                "delegate_agent" => {
+                    let agent_name = tc
+                        .arguments
+                        .get("agent")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let input = tc
+                        .arguments
+                        .get("input")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let agent_id = self
+                        .registry
+                        .get_agent_by_name(agent_name)
+                        .await
+                        .map_or_else(
+                            || ResourceId::from(format!("agent://{agent_name}")),
+                            |a| a.id,
+                        );
+                    match self
+                        .run_agent(
+                            &agent_id,
+                            input,
+                            session_id.clone(),
+                            timeline,
+                            sealed,
+                            None,
+                            DagNodeId::root(),
+                        )
+                        .await
+                    {
+                        Ok(output) => crate::domain::ToolResult {
+                            tool_call_id: tc.id.clone(),
+                            content: output,
+                            is_error: false,
+                        },
+                        Err(e) => crate::domain::ToolResult {
+                            tool_call_id: tc.id.clone(),
+                            content: e,
+                            is_error: true,
+                        },
+                    }
+                }
+                _ => crate::domain::ToolResult {
+                    tool_call_id: tc.id.clone(),
+                    content: format!("unknown tool: {}", tc.name),
+                    is_error: true,
+                },
+            };
+            results.push(result);
+        }
+        results
+    }
+
+    /// Build a re-invocation from in-memory conversation state (no DAG read).
+    ///
+    /// Called when the orchestration loop re-invokes the agent after
+    /// dispatching tool calls. Uses the conversation state accumulated
+    /// in the loop rather than reading from the `DagStore`.
+    #[allow(clippy::too_many_arguments)]
+    async fn build_reinvoke(
+        &self,
+        agent_id: &ResourceId,
+        session_id: &SessionId,
+        timeline: BranchId,
+        dag_parent: &DagNodeId,
+        state: Option<&str>,
+        history: Vec<Message>,
+        current_input: Vec<Message>,
+    ) -> Result<(DataRoutingKey, InvokeMessage, JobId), String> {
+        let (_, runtime) = self.resolve_agent_and_runtime(agent_id).await?;
+        let submission = SubmissionId::new();
+        let job_id = self
+            .registry
+            .create_job(
+                submission.clone(),
+                agent_id.clone(),
+                current_input
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::User { content } => Some(content.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+            .await;
+
+        let key = DataRoutingKey {
+            session: session_id.clone(),
+            branch: timeline,
+            submission,
+            kind: DataMessageKind::Invoke {
+                harness: self.harness_type(),
+                runtime,
+                agent: crate::domain::agent_routing_key(agent_id),
+            },
+        };
+
+        let msg = InvokeMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            state: state.map(std::string::ToString::to_string),
+            diagnostics: InvokeDiagnostics {
+                harness_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            dag_parent: dag_parent.clone(),
+            history,
+            current_input,
+        };
+
+        Ok((key, msg, job_id))
+    }
+
+    /// Send an invoke and await its completion, handling timeouts.
+    async fn send_and_await_complete(
+        &self,
+        key: DataRoutingKey,
+        msg: InvokeMessage,
+        job_id: &JobId,
+        agent_id: &ResourceId,
+    ) -> Result<CompleteMessage, String> {
+        self.registry
+            .update_job_status(job_id, JobStatus::Running)
+            .await;
+
+        let harness = self.harness_type();
+        let submission = key.submission.clone();
+        let agent = crate::domain::agent_routing_key(agent_id);
+        self.queue
+            .send_invoke(key, msg)
+            .await
+            .map_err(|e| format!("queue error: {e}"))?;
+
+        loop {
+            match self
+                .queue
+                .receive_complete(&submission, harness, &agent)
+                .await
+            {
+                Ok((_key, v2, ack)) => {
+                    let _ = ack().await;
+                    break Ok(v2);
+                }
+                Err(crate::domain::QueueError::Timeout) => {}
+                Err(e) => break Err(format!("queue error: {e}")),
+            }
+        }
+    }
+
+    /// Prepare the accumulated state for the next turn after tool‑call dispatch.
+    fn prepare_next_turn_state(
+        sent_history: Vec<Message>,
+        sent_current_input: Vec<Message>,
+        complete: CompleteMessage,
+        tool_results: Vec<ToolResult>,
+    ) -> (Vec<Message>, Vec<Message>, Option<String>, DagNodeId) {
+        let mut new_history = sent_history;
+        new_history.extend(sent_current_input);
+        new_history.push(Message::Agent {
+            content: complete.content,
+            tool_calls: complete.tool_calls,
+        });
+        let next_history = new_history;
+        let next_current_input = tool_results
+            .into_iter()
+            .map(|tr| Message::Tool {
+                tool_call_id: tr.tool_call_id,
+                content: tr.content,
+                is_error: tr.is_error,
+            })
+            .collect();
+        (
+            next_history,
+            next_current_input,
+            complete.state,
+            complete.dag_id,
+        )
+    }
 }
 
 #[async_trait]
@@ -304,59 +499,81 @@ impl Harness for CoreHarness {
         dag_parent: DagNodeId,
     ) -> Result<String, String> {
         // Outer loop to support multiple turns when agent returns tool_calls.
-        // Currently runs exactly once; will be extended in later branches.
-        #[allow(clippy::never_loop)]
+        // Accumulate conversation state across re-invocations.
+        let mut invoke_history: Vec<Message> = Vec::new();
+        let mut invoke_current_input: Vec<Message> = Vec::new();
+        let mut invoke_state: Option<String> = initial_state.clone();
+        let mut invoke_dag_parent: DagNodeId = dag_parent.clone();
+
         loop {
-            let (key, msg, job_id) = self
-                .build_invoke(
+            let (key, msg, job_id) = if invoke_history.is_empty() && invoke_current_input.is_empty()
+            {
+                // First invocation: use build_invoke (reads DAG for prior history)
+                self.build_invoke(
                     agent_id,
                     input,
                     &session_id,
                     timeline,
                     sealed,
-                    initial_state.as_deref(),
-                    &dag_parent,
+                    invoke_state.as_deref(),
+                    &invoke_dag_parent,
                 )
-                .await?;
-            self.registry
-                .update_job_status(&job_id, JobStatus::Running)
-                .await;
-
-            let harness = self.harness_type();
-            let submission = key.submission.clone();
-            let agent = crate::domain::agent_routing_key(agent_id);
-            self.queue
-                .send_invoke(key, msg)
-                .await
-                .map_err(|e| format!("queue error: {e}"))?;
-
-            let complete = loop {
-                match self
-                    .queue
-                    .receive_complete(&submission, harness, &agent)
-                    .await
-                {
-                    Ok((_key, v2, ack)) => {
-                        let _ = ack().await;
-                        break v2;
-                    }
-                    Err(crate::domain::QueueError::Timeout) => {}
-                    Err(e) => return Err(format!("queue error: {e}")),
-                }
+                .await?
+            } else {
+                // Re-invocation: use in-memory conversation state
+                self.build_reinvoke(
+                    agent_id,
+                    &session_id,
+                    timeline,
+                    &invoke_dag_parent,
+                    invoke_state.as_deref(),
+                    invoke_history,
+                    invoke_current_input,
+                )
+                .await?
             };
 
-            // TODO: when tool_calls field is added, check complete.tool_calls.
-            // If present, dispatch them, collect results, update session state,
-            // and continue the outer loop with a new invoke.
-            // For now, we always break after the first complete.
-            let result = complete
-                .content
-                .unwrap_or_else(|| String::from_utf8_lossy(&complete.payload).to_string());
+            // Save before msg is moved into send_invoke.
+            let sent_history = msg.history.clone();
+            let sent_current_input = msg.current_input.clone();
 
-            self.registry
-                .update_job_status(&job_id, JobStatus::Completed(result.clone()))
+            let complete = self
+                .send_and_await_complete(key, msg, &job_id, agent_id)
+                .await?;
+
+            if complete.tool_calls.is_none() {
+                let result = complete
+                    .content
+                    .unwrap_or_else(|| String::from_utf8_lossy(&complete.payload).to_string());
+                self.registry
+                    .update_job_status(&job_id, JobStatus::Completed(result.clone()))
+                    .await;
+                return Ok(result);
+            }
+
+            // Dispatch tool calls and collect results
+            let tool_results = self
+                .dispatch_tool_calls(
+                    complete.tool_calls.clone().unwrap(),
+                    &session_id,
+                    timeline,
+                    sealed,
+                )
                 .await;
-            return Ok(result);
+
+            // Prepare next turn state
+            let (next_history, next_current_input, next_state, next_dag_parent) =
+                Self::prepare_next_turn_state(
+                    sent_history,
+                    sent_current_input,
+                    complete,
+                    tool_results,
+                );
+
+            invoke_history = next_history;
+            invoke_current_input = next_current_input;
+            invoke_state = next_state;
+            invoke_dag_parent = next_dag_parent;
         }
     }
 
