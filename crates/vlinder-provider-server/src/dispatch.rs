@@ -154,18 +154,18 @@ pub async fn dispatch_invoke(
 
     // Parse the agent's response using the OpenAI‑compatible parser.
     let parsed = if cfg!(feature = "openrouter") {
-        OpenAiToolCallParser.parse_response(&output)
+        OpenAiToolCallParser
+            .parse_response(&output)
+            .unwrap_or_else(|_| ParsedResponse {
+                content: String::from_utf8(extract_openai_content(&output)).ok(),
+                tool_calls: None,
+            })
     } else {
-        // fallback to old extraction logic
-        Ok(ParsedResponse {
+        ParsedResponse {
             content: String::from_utf8(extract_openai_content(&output)).ok(),
             tool_calls: None,
-        })
+        }
     };
-    let parsed = parsed.unwrap_or(ParsedResponse {
-        content: None,
-        tool_calls: None,
-    });
 
     Ok(DispatchResult {
         output,
