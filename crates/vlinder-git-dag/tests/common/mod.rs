@@ -145,6 +145,8 @@ pub fn make_complete(
         dag_id: DagNodeId::root(),
         state,
         diagnostics: RuntimeDiagnostics::placeholder(100),
+        content: None,
+        tool_calls: None,
         payload: payload.to_vec(),
     };
     let created_at = DateTime::from_timestamp(epoch_secs, 0).unwrap();

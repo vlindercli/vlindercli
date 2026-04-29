@@ -508,6 +508,8 @@ impl StateService for StateServiceServer {
             dag_id: dag_id.clone(),
             state: req.state,
             diagnostics,
+            content: None,
+            tool_calls: None,
             payload: req.payload,
         };
 

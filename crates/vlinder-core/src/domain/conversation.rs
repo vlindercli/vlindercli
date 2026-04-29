@@ -21,5 +21,17 @@ pub enum Message {
     #[serde(rename = "user")]
     User { content: String },
     #[serde(rename = "agent")]
-    Agent { content: String },
+    Agent {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_calls: Option<Vec<crate::domain::ToolCall>>,
+    },
+    #[serde(rename = "tool")]
+    Tool {
+        tool_call_id: String,
+        content: String,
+        #[serde(default)]
+        is_error: bool,
+    },
 }

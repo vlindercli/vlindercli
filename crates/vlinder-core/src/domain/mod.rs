@@ -40,6 +40,9 @@ mod secret_store;
 mod service_type;
 pub mod session;
 mod storage;
+mod tool_call;
+mod tool_call_parser;
+mod tool_result;
 pub mod wire;
 pub mod workers;
 
@@ -57,6 +60,9 @@ pub use operation::Operation;
 pub use pod_id::PodId;
 pub use readiness::{derive_status, ReadinessCheck, ReadinessStatus};
 pub use service_type::ServiceType;
+pub use tool_call::ToolCall;
+pub use tool_call_parser::{ParseError, ParsedResponse, ToolCallParser};
+pub use tool_result::ToolResult;
 
 // ============================================================================
 // Message Queue (protocol types + trait)

@@ -11,34 +11,45 @@ use std::time::Instant;
 
 use vlinder_core::domain::{
     AgentName, CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey, InvokeMessage, Message,
-    MessageId, MessageQueue, Registry, RuntimeDiagnostics,
+    MessageId, MessageQueue, ParsedResponse, Registry, RuntimeDiagnostics, ToolCall,
+    ToolCallParser,
 };
 
 use crate::handler::InvokeHandler;
 use crate::hosts::build_hosts;
 use crate::provider_server::ProviderServer;
 
+#[cfg(feature = "openrouter")]
+use vlinder_infer_openrouter::OpenAiToolCallParser;
+
 /// Serialize a conversation (`history` + `current_input`) to `OpenAI` Chat Completions format.
 ///
 /// Maps domain `Message::Agent` → wire-format `"assistant"`,
 /// `Message::User` → `"user"`. Wraps in `{"messages": [...]}` and serializes as JSON.
 pub fn serialize_openai_conversation(messages: &[Message]) -> Vec<u8> {
-    let wire_messages: Vec<serde_json::Value> = messages
-        .iter()
-        .map(|m| match m {
-            Message::User { content } => serde_json::json!({
-                "role": "user",
-                "content": content,
-            }),
-            Message::Agent { content } => serde_json::json!({
-                "role": "assistant",
-                "content": content,
-            }),
-        })
-        .collect();
+    #[cfg(feature = "openrouter")]
+    {
+        OpenAiToolCallParser.serialize_conversation(messages)
+    }
+    #[cfg(not(feature = "openrouter"))]
+    {
+        let wire_messages: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| match m {
+                Message::User { content } => serde_json::json!({
+                    "role": "user",
+                    "content": content,
+                }),
+                Message::Agent { content, .. } => serde_json::json!({
+                    "role": "assistant",
+                    "content": content.unwrap_or_default(),
+                }),
+            })
+            .collect();
 
-    let body = serde_json::json!({"messages": wire_messages});
-    serde_json::to_vec(&body).unwrap_or_default()
+        let body = serde_json::json!({"messages": wire_messages});
+        serde_json::to_vec(&body).unwrap_or_default()
+    }
 }
 
 /// Extract text content from an `OpenAI` Chat Completions response.
@@ -63,6 +74,10 @@ pub fn extract_openai_content(raw: &[u8]) -> Vec<u8> {
 pub struct DispatchResult {
     /// Raw output from the agent.
     pub output: Vec<u8>,
+    /// Parsed text content from the agent's response.
+    pub content: Option<String>,
+    /// Parsed tool calls from the agent's response.
+    pub tool_calls: Option<Vec<ToolCall>>,
     /// Final KV state after the invocation.
     pub state: Option<String>,
     /// Wall-clock duration of the invocation in milliseconds.
@@ -137,12 +152,25 @@ pub async fn dispatch_invoke(
     let final_state = provider_server.final_state();
     let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    // Extract the assistant's text content from the OpenAI response.
-    // Falls back to raw bytes if the response isn't OpenAI JSON.
-    let output = extract_openai_content(&output);
+    // Parse the agent's response using the OpenAI‑compatible parser.
+    let parsed = if cfg!(feature = "openrouter") {
+        OpenAiToolCallParser.parse_response(&output)
+    } else {
+        // fallback to old extraction logic
+        Ok(ParsedResponse {
+            content: String::from_utf8(extract_openai_content(&output)).ok(),
+            tool_calls: None,
+        })
+    };
+    let parsed = parsed.unwrap_or(ParsedResponse {
+        content: None,
+        tool_calls: None,
+    });
 
     Ok(DispatchResult {
         output,
+        content: parsed.content,
+        tool_calls: parsed.tool_calls,
         state: final_state,
         duration_ms,
     })
@@ -154,6 +182,21 @@ pub async fn send_complete(
     key: &DataRoutingKey,
     agent: &AgentName,
     output: Vec<u8>,
+    state: Option<String>,
+    diagnostics: RuntimeDiagnostics,
+) {
+    send_complete_with_parsed(queue, key, agent, output, None, None, state, diagnostics).await;
+}
+
+/// Build and send a `CompleteMessage` with parsed content and tool calls.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_complete_with_parsed(
+    queue: &dyn MessageQueue,
+    key: &DataRoutingKey,
+    agent: &AgentName,
+    output: Vec<u8>,
+    content: Option<String>,
+    tool_calls: Option<Vec<ToolCall>>,
     state: Option<String>,
     diagnostics: RuntimeDiagnostics,
 ) {
@@ -172,6 +215,8 @@ pub async fn send_complete(
     let msg = CompleteMessage {
         id: MessageId::new(),
         dag_id: DagNodeId::root(),
+        content,
+        tool_calls,
         state,
         diagnostics,
         payload: output,

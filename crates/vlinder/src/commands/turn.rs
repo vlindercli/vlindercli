@@ -111,7 +111,17 @@ fn format_current_input(messages: &[Message]) -> String {
         .iter()
         .map(|m| match m {
             Message::User { content } => format!("User: {content}"),
-            Message::Agent { content } => format!("Agent: {content}"),
+            Message::Agent { content, .. } => {
+                format!("Agent: {}", content.as_deref().unwrap_or(""))
+            }
+            Message::Tool {
+                tool_call_id,
+                content,
+                is_error,
+            } => format!(
+                "Tool({tool_call_id}): {content}{}",
+                if *is_error { " [error]" } else { "" }
+            ),
         })
         .collect::<Vec<_>>()
         .join("\n")

@@ -1153,6 +1153,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
             payload: payload.to_vec(),
         }
     }
@@ -1289,6 +1291,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: Some("state-abc123".to_string()),
             diagnostics: RuntimeDiagnostics::placeholder(100),
+            content: None,
+            tool_calls: None,
             payload: b"answer".to_vec(),
         };
         let ts2 = DateTime::from_timestamp(1001, 0).unwrap();
@@ -1387,6 +1391,8 @@ mod tests {
                 duration_ms: 2300,
                 health: None,
             },
+            content: None,
+            tool_calls: None,
             payload: b"done".to_vec(),
         };
         let ts = DateTime::from_timestamp(1003, 0).unwrap();
@@ -1416,6 +1422,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: Some("abc123state".to_string()),
             diagnostics: RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
             payload: b"hello".to_vec(),
         };
         let ts = DateTime::from_timestamp(1000, 0).unwrap();
@@ -1443,6 +1451,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(100),
+            content: None,
+            tool_calls: None,
             payload: b"done".to_vec(),
         };
         let ts = DateTime::from_timestamp(1000, 0).unwrap();

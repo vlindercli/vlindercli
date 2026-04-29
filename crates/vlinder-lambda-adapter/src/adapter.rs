@@ -164,6 +164,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: Some("final-state-hash".to_string()),
             diagnostics: diag,
+            content: None,
+            tool_calls: None,
             payload: b"output bytes".to_vec(),
         };
 
@@ -188,6 +190,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: None,
             diagnostics: diag,
+            content: None,
+            tool_calls: None,
             payload: b"out".to_vec(),
         };
 

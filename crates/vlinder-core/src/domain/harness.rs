@@ -185,7 +185,8 @@ impl CoreHarness {
                 };
                 new_history.extend(prev_current_input);
                 new_history.push(Message::Agent {
-                    content: String::from_utf8_lossy(&complete.payload).to_string(),
+                    content: complete.content.clone(),
+                    tool_calls: complete.tool_calls.clone(),
                 });
                 (
                     new_history,

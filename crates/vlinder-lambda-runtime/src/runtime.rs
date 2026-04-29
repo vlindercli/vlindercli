@@ -318,6 +318,8 @@ impl LambdaRuntime {
                             dag_id: DagNodeId::root(),
                             state: None,
                             diagnostics: RuntimeDiagnostics::placeholder(0),
+                            content: None,
+                            tool_calls: None,
                             payload: format!("[error] Lambda invoke failed: {e}").into_bytes(),
                         };
                         let _ = queue.send_complete(complete_key, complete).await;

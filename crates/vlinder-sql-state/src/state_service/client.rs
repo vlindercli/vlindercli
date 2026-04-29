@@ -304,6 +304,8 @@ impl DagStore for GrpcStateClient {
                     dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
                     state: n.state,
                     diagnostics,
+                    content: None,
+                    tool_calls: None,
                     payload: n.payload,
                 }))
             }

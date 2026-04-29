@@ -247,8 +247,11 @@ async fn render_session(
                     msg.current_input
                         .last()
                         .map(|m| match m {
-                            vlinder_core::domain::Message::User { content }
-                            | vlinder_core::domain::Message::Agent { content } => content.clone(),
+                            vlinder_core::domain::Message::User { content } => content.clone(),
+                            vlinder_core::domain::Message::Agent { content, .. } => {
+                                content.clone().unwrap_or_default()
+                            }
+                            vlinder_core::domain::Message::Tool { .. } => String::new(),
                         })
                         .unwrap_or_default()
                 })
@@ -296,8 +299,11 @@ async fn render_node(
                     msg.current_input
                         .last()
                         .map(|m| match m {
-                            vlinder_core::domain::Message::User { content }
-                            | vlinder_core::domain::Message::Agent { content } => content.clone(),
+                            vlinder_core::domain::Message::User { content } => content.clone(),
+                            vlinder_core::domain::Message::Agent { content, .. } => {
+                                content.clone().unwrap_or_default()
+                            }
+                            vlinder_core::domain::Message::Tool { .. } => String::new(),
                         })
                         .unwrap_or_default()
                 })
@@ -476,6 +482,8 @@ mod tests {
             dag_id: complete_id.clone(),
             state: None,
             diagnostics: vlinder_core::domain::RuntimeDiagnostics::placeholder(100),
+            content: None,
+            tool_calls: None,
             payload: b"This article discusses several topics.".to_vec(),
         };
         store

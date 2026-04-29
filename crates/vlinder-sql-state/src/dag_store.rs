@@ -823,6 +823,8 @@ impl DagStore for SqliteDagStore {
                 dag_id: dag_hash.clone(),
                 state: r.state,
                 diagnostics,
+                content: None,
+                tool_calls: None,
                 payload: r.payload,
             }
         }))

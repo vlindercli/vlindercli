@@ -850,6 +850,8 @@ mod tests {
             dag_id: crate::domain::DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
             payload: b"done".to_vec(),
         };
         (key, msg)

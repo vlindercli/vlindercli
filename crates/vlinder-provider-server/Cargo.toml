@@ -18,8 +18,8 @@ vlinder-nats = { path = "../vlinder-nats", default-features = false, features = 
 vlinder-amqp = { path = "../vlinder-amqp", optional = true }
 vlinder-sql-registry = { path = "../vlinder-sql-registry", default-features = false, features = ["client"] }
 vlinder-sql-state = { path = "../vlinder-sql-state", default-features = false, features = ["client"] }
-vlinder-ollama = { path = "../vlinder-ollama", optional = true, default-features = false, features = ["routing"] }
-vlinder-infer-openrouter = { path = "../vlinder-infer-openrouter", optional = true, default-features = false, features = ["routing"] }
+vlinder-ollama = { path = "../vlinder-ollama", optional = true, default-features = false, features = ["routing", "toolcall"] }
+vlinder-infer-openrouter = { path = "../vlinder-infer-openrouter", optional = true, default-features = false, features = ["routing", "toolcall"] }
 vlinder-sqlite-vec = { path = "../vlinder-sqlite-vec", optional = true, default-features = false, features = ["routing"] }
 vlinder-sqlite-kv = { path = "../vlinder-sqlite-kv", optional = true, default-features = false, features = ["routing"] }
 axum = "0.7"
