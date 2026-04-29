@@ -302,48 +302,59 @@ impl Harness for CoreHarness {
         initial_state: Option<String>,
         dag_parent: DagNodeId,
     ) -> Result<String, String> {
-        let (key, msg, job_id) = self
-            .build_invoke(
-                agent_id,
-                input,
-                &session_id,
-                timeline,
-                sealed,
-                initial_state.as_deref(),
-                &dag_parent,
-            )
-            .await?;
-        self.registry
-            .update_job_status(&job_id, JobStatus::Running)
-            .await;
+        // Outer loop to support multiple turns when agent returns tool_calls.
+        // Currently runs exactly once; will be extended in later branches.
+        #[allow(clippy::never_loop)]
+        loop {
+            let (key, msg, job_id) = self
+                .build_invoke(
+                    agent_id,
+                    input,
+                    &session_id,
+                    timeline,
+                    sealed,
+                    initial_state.as_deref(),
+                    &dag_parent,
+                )
+                .await?;
+            self.registry
+                .update_job_status(&job_id, JobStatus::Running)
+                .await;
 
-        let harness = self.harness_type();
-        let submission = key.submission.clone();
-        let agent = crate::domain::agent_routing_key(agent_id);
-        self.queue
-            .send_invoke(key, msg)
-            .await
-            .map_err(|e| format!("queue error: {e}"))?;
-
-        let result = loop {
-            match self
-                .queue
-                .receive_complete(&submission, harness, &agent)
+            let harness = self.harness_type();
+            let submission = key.submission.clone();
+            let agent = crate::domain::agent_routing_key(agent_id);
+            self.queue
+                .send_invoke(key, msg)
                 .await
-            {
-                Ok((_key, v2, ack)) => {
-                    let _ = ack().await;
-                    break String::from_utf8_lossy(&v2.payload).to_string();
-                }
-                Err(crate::domain::QueueError::Timeout) => {}
-                Err(e) => return Err(format!("queue error: {e}")),
-            }
-        };
+                .map_err(|e| format!("queue error: {e}"))?;
 
-        self.registry
-            .update_job_status(&job_id, JobStatus::Completed(result.clone()))
-            .await;
-        Ok(result)
+            let complete = loop {
+                match self
+                    .queue
+                    .receive_complete(&submission, harness, &agent)
+                    .await
+                {
+                    Ok((_key, v2, ack)) => {
+                        let _ = ack().await;
+                        break v2;
+                    }
+                    Err(crate::domain::QueueError::Timeout) => {}
+                    Err(e) => return Err(format!("queue error: {e}")),
+                }
+            };
+
+            // TODO: when tool_calls field is added, check complete.tool_calls.
+            // If present, dispatch them, collect results, update session state,
+            // and continue the outer loop with a new invoke.
+            // For now, we always break after the first complete.
+            let result = String::from_utf8_lossy(&complete.payload).to_string();
+
+            self.registry
+                .update_job_status(&job_id, JobStatus::Completed(result.clone()))
+                .await;
+            return Ok(result);
+        }
     }
 
     async fn fork_timeline(
