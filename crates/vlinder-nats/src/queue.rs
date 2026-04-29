@@ -58,7 +58,7 @@ impl NatsQueue {
             name: "VLINDER".to_string(),
             subjects: vec!["vlinder.>".to_string()],
             retention: stream::RetentionPolicy::Limits,
-            max_age: Duration::from_hours(7 * 24),
+            max_age: Duration::from_hours(168),
             max_bytes: 100 * 1024 * 1024, // 100 MiB — required by NGS
             ..Default::default()
         };
