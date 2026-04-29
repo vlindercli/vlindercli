@@ -393,7 +393,7 @@ impl DagStore for SqliteDagStore {
                 message_id: msg.id.as_str(),
                 state: msg.state.as_deref(),
                 diagnostics: &diagnostics_json,
-                payload: &msg.payload,
+                payload: &serde_json::to_vec(msg).unwrap_or_default(),
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert complete_nodes failed: {e}"))?;
@@ -818,15 +818,17 @@ impl DagStore for SqliteDagStore {
             let diagnostics: vlinder_core::domain::RuntimeDiagnostics =
                 serde_json::from_slice(&r.diagnostics)
                     .unwrap_or_else(|_| vlinder_core::domain::RuntimeDiagnostics::placeholder(0));
-            vlinder_core::domain::CompleteMessage {
-                id: vlinder_core::domain::MessageId::from(r.message_id),
-                dag_id: dag_hash.clone(),
-                state: r.state,
-                diagnostics,
-                content: None,
-                tool_calls: None,
-                payload: r.payload,
-            }
+            serde_json::from_slice(&r.payload).unwrap_or_else(|_| {
+                vlinder_core::domain::CompleteMessage {
+                    id: vlinder_core::domain::MessageId::from(r.message_id),
+                    dag_id: dag_hash.clone(),
+                    state: r.state,
+                    diagnostics,
+                    content: None,
+                    tool_calls: None,
+                    payload: vec![],
+                }
+            })
         }))
     }
 

@@ -349,7 +349,9 @@ impl Harness for CoreHarness {
             // If present, dispatch them, collect results, update session state,
             // and continue the outer loop with a new invoke.
             // For now, we always break after the first complete.
-            let result = String::from_utf8_lossy(&complete.payload).to_string();
+            let result = complete
+                .content
+                .unwrap_or_else(|| String::from_utf8_lossy(&complete.payload).to_string());
 
             self.registry
                 .update_job_status(&job_id, JobStatus::Completed(result.clone()))

@@ -349,9 +349,9 @@ impl StateService for StateServiceServer {
 
         let node = result.map(|msg| CompleteNodeProto {
             message_id: msg.id.to_string(),
-            state: msg.state,
+            state: msg.state.clone(),
             diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
-            payload: msg.payload,
+            payload: serde_json::to_vec(&msg).unwrap_or_default(),
             dag_hash: msg.dag_id.to_string(),
         });
 
@@ -499,19 +499,20 @@ impl StateService for StateServiceServer {
         let harness: vlinder_core::domain::HarnessType =
             req.harness.parse().map_err(Status::invalid_argument)?;
 
-        let diagnostics: vlinder_core::domain::RuntimeDiagnostics =
-            serde_json::from_slice(&req.diagnostics)
-                .unwrap_or_else(|_| vlinder_core::domain::RuntimeDiagnostics::placeholder(0));
-
-        let msg = vlinder_core::domain::CompleteMessage {
-            id: vlinder_core::domain::MessageId::from(req.message_id),
-            dag_id: dag_id.clone(),
-            state: req.state,
-            diagnostics,
-            content: None,
-            tool_calls: None,
-            payload: req.payload,
-        };
+        let msg: vlinder_core::domain::CompleteMessage = serde_json::from_slice(&req.payload)
+            .unwrap_or_else(|_| {
+                let diagnostics = serde_json::from_slice(&req.diagnostics)
+                    .unwrap_or_else(|_| vlinder_core::domain::RuntimeDiagnostics::placeholder(0));
+                vlinder_core::domain::CompleteMessage {
+                    id: vlinder_core::domain::MessageId::from(req.message_id.clone()),
+                    dag_id: dag_id.clone(),
+                    state: req.state.clone(),
+                    diagnostics,
+                    content: None,
+                    tool_calls: None,
+                    payload: req.payload.clone(),
+                }
+            });
 
         match self
             .store

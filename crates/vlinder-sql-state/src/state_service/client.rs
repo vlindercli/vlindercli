@@ -262,7 +262,7 @@ impl DagStore for GrpcStateClient {
             message_id: msg.id.to_string(),
             state: msg.state.clone(),
             diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
-            payload: msg.payload.clone(),
+            payload: serde_json::to_vec(msg).unwrap_or_default(),
         };
 
         let mut client = self.client.clone();
@@ -299,15 +299,17 @@ impl DagStore for GrpcStateClient {
                     serde_json::from_slice(&n.diagnostics).unwrap_or_else(|_| {
                         vlinder_core::domain::RuntimeDiagnostics::placeholder(0)
                     });
-                Ok(Some(vlinder_core::domain::CompleteMessage {
-                    id: vlinder_core::domain::MessageId::from(n.message_id),
-                    dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
-                    state: n.state,
-                    diagnostics,
-                    content: None,
-                    tool_calls: None,
-                    payload: n.payload,
-                }))
+                Ok(Some(serde_json::from_slice(&n.payload).unwrap_or_else(
+                    |_| vlinder_core::domain::CompleteMessage {
+                        id: vlinder_core::domain::MessageId::from(n.message_id),
+                        dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
+                        state: n.state,
+                        diagnostics,
+                        content: None,
+                        tool_calls: None,
+                        payload: vec![],
+                    },
+                )))
             }
             None => Ok(None),
         }

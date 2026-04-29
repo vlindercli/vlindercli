@@ -145,7 +145,7 @@ pub fn make_complete(
         dag_id: DagNodeId::root(),
         state,
         diagnostics: RuntimeDiagnostics::placeholder(100),
-        content: None,
+        content: Some(String::from_utf8_lossy(payload).to_string()),
         tool_calls: None,
         payload: payload.to_vec(),
     };
