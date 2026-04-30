@@ -274,11 +274,70 @@ impl CoreHarness {
         Ok((key, msg, job_id))
     }
 
+    /// Dispatch a tool call via the V2 service path (harness‑mediated).
+    ///
+    /// Sends a `RequestV2` to the service worker and waits for a
+    /// `ResponseV2`. The service backend is currently hardcoded to
+    /// `Mcp("server-everything")`.
+    async fn dispatch_service_call(
+        &self,
+        tc: &crate::domain::ToolCall,
+        session_id: &SessionId,
+        timeline: BranchId,
+        submission: &SubmissionId,
+        agent_name: &AgentName,
+    ) -> crate::domain::ToolResult {
+        let service = ServiceBackendV2::Mcp("server-everything".to_string()); // hardcoded for now
+        let operation = ServiceOperation::new(&tc.name);
+        let sequence = self.next_service_sequence();
+
+        let key = SvcRoutingKey {
+            session: session_id.clone(),
+            branch: timeline,
+            submission: submission.clone(),
+            kind: SvcMessageKind::SvcRequest {
+                agent: agent_name.clone(),
+                service,
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+
+        let req = RequestV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: tc.id.clone(),
+            arguments: tc.arguments.clone(),
+        };
+
+        match self.queue.send_svc_request(key.clone(), req).await {
+            Ok(()) => match self.queue.receive_svc_response(&key).await {
+                Ok((_rkey, resp, ack)) => {
+                    let _ = ack().await;
+                    crate::domain::ToolResult {
+                        tool_call_id: tc.id.clone(),
+                        content: resp.content,
+                        is_error: resp.is_error,
+                    }
+                }
+                Err(e) => crate::domain::ToolResult {
+                    tool_call_id: tc.id.clone(),
+                    content: format!("svc_response receive error: {e}"),
+                    is_error: true,
+                },
+            },
+            Err(e) => crate::domain::ToolResult {
+                tool_call_id: tc.id.clone(),
+                content: format!("svc_request send error: {e}"),
+                is_error: true,
+            },
+        }
+    }
+
     /// Dispatch tool calls from an agent's response.
     ///
     /// For `delegate_agent` tool calls, recursively invokes the target agent.
     /// For unknown tool names, returns a `ToolResult` with `is_error: true`.
-    #[allow(clippy::too_many_lines)]
     async fn dispatch_tool_calls(
         &self,
         tool_calls: Vec<crate::domain::ToolCall>,
@@ -290,7 +349,6 @@ impl CoreHarness {
     ) -> Vec<crate::domain::ToolResult> {
         let mut results = Vec::with_capacity(tool_calls.len());
         for tc in &tool_calls {
-            #[allow(clippy::single_match_else)]
             let result = match tc.name.as_str() {
                 "delegate_agent" => {
                     let agent_name = tc
@@ -336,52 +394,8 @@ impl CoreHarness {
                     }
                 }
                 _ => {
-                    // V2 service dispatch: send RequestV2, wait for ResponseV2
-                    let service = ServiceBackendV2::Mcp("server-everything".to_string()); // hardcoded for now
-                    let operation = ServiceOperation::new(&tc.name);
-                    let sequence = self.next_service_sequence();
-
-                    let key = SvcRoutingKey {
-                        session: session_id.clone(),
-                        branch: timeline,
-                        submission: submission.clone(),
-                        kind: SvcMessageKind::SvcRequest {
-                            agent: agent_name.clone(),
-                            service,
-                            operation: operation.clone(),
-                            sequence,
-                        },
-                    };
-
-                    let req = RequestV2 {
-                        id: MessageId::new(),
-                        dag_id: DagNodeId::root(),
-                        tool_call_id: tc.id.clone(),
-                        arguments: tc.arguments.clone(),
-                    };
-
-                    match self.queue.send_svc_request(key.clone(), req).await {
-                        Ok(()) => match self.queue.receive_svc_response(&key).await {
-                            Ok((_rkey, resp, ack)) => {
-                                let _ = ack().await;
-                                crate::domain::ToolResult {
-                                    tool_call_id: tc.id.clone(),
-                                    content: resp.content,
-                                    is_error: resp.is_error,
-                                }
-                            }
-                            Err(e) => crate::domain::ToolResult {
-                                tool_call_id: tc.id.clone(),
-                                content: format!("svc_response receive error: {e}"),
-                                is_error: true,
-                            },
-                        },
-                        Err(e) => crate::domain::ToolResult {
-                            tool_call_id: tc.id.clone(),
-                            content: format!("svc_request send error: {e}"),
-                            is_error: true,
-                        },
-                    }
+                    self.dispatch_service_call(tc, session_id, timeline, &submission, &agent_name)
+                        .await
                 }
             };
             results.push(result);
