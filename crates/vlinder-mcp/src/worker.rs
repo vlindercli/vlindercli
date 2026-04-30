@@ -1,8 +1,7 @@
 use anyhow::Result;
-#[allow(unused_imports)]
 use vlinder_core::domain::{
-    MessageId, MessageQueue, RequestV2, ResponseV2, ServiceBackendV2, ServiceOperation,
-    SvcMessageKind, SvcRoutingKey,
+    MessageId, MessageQueue, ResponseV2, ServiceBackendV2, ServiceOperation, SvcMessageKind,
+    SvcRoutingKey,
 };
 use vlinder_nats::NatsQueue;
 
@@ -15,16 +14,16 @@ fn mcp_server_package(key: &SvcRoutingKey) -> String {
             service: ServiceBackendV2::Mcp(p),
             ..
         } => p.as_str(),
-        _ => "unknown",
+        SvcMessageKind::SvcResponse { .. } => "unknown",
     };
     match provider {
         "server-everything" => "@modelcontextprotocol/server-everything".to_string(),
+        "unknown" => "unknown".to_string(),
         _ => format!("@modelcontextprotocol/server-{provider}"),
     }
 }
 
 /// Build response key from request key (swap `SvcRequest` → `SvcResponse`).
-#[allow(clippy::match_wildcard_for_single_variants)]
 fn response_key_from_request(req_key: &SvcRoutingKey) -> SvcRoutingKey {
     let kind = match &req_key.kind {
         SvcMessageKind::SvcRequest {
@@ -38,7 +37,7 @@ fn response_key_from_request(req_key: &SvcRoutingKey) -> SvcRoutingKey {
             operation: operation.clone(),
             sequence: *sequence,
         },
-        _ => req_key.kind.clone(),
+        SvcMessageKind::SvcResponse { .. } => req_key.kind.clone(),
     };
     SvcRoutingKey {
         session: req_key.session.clone(),
@@ -48,7 +47,6 @@ fn response_key_from_request(req_key: &SvcRoutingKey) -> SvcRoutingKey {
     }
 }
 
-#[allow(clippy::match_wildcard_for_single_variants)]
 pub async fn run_mcp_worker(queue: NatsQueue) -> Result<()> {
     loop {
         let (key, req, ack) = queue
@@ -61,7 +59,7 @@ pub async fn run_mcp_worker(queue: NatsQueue) -> Result<()> {
         let server_package = mcp_server_package(&key);
         let operation = match &key.kind {
             SvcMessageKind::SvcRequest { operation, .. } => operation.clone(),
-            _ => ServiceOperation::new("unknown"),
+            SvcMessageKind::SvcResponse { .. } => ServiceOperation::new("unknown"),
         };
 
         let result = call_mcp_tool(&server_package, &operation, req.arguments.clone()).await;
@@ -81,5 +79,100 @@ pub async fn run_mcp_worker(queue: NatsQueue) -> Result<()> {
         };
 
         queue.send_svc_response(response_key, resp).await?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vlinder_core::domain::{AgentName, BranchId, Sequence, SessionId, SubmissionId};
+
+    fn test_request_key(provider: &str, operation: &str) -> SvcRoutingKey {
+        SvcRoutingKey {
+            session: SessionId::new(),
+            branch: BranchId::from(1),
+            submission: SubmissionId::new(),
+            kind: SvcMessageKind::SvcRequest {
+                agent: AgentName::new("test_agent"),
+                service: ServiceBackendV2::Mcp(provider.to_string()),
+                operation: ServiceOperation::new(operation),
+                sequence: Sequence::first(),
+            },
+        }
+    }
+
+    #[test]
+    fn mcp_server_package_known_provider() {
+        let key = test_request_key("server-everything", "echo");
+        assert_eq!(
+            mcp_server_package(&key),
+            "@modelcontextprotocol/server-everything"
+        );
+    }
+
+    #[test]
+    fn mcp_server_package_unknown_provider() {
+        let key = test_request_key("brave", "search");
+        assert_eq!(
+            mcp_server_package(&key),
+            "@modelcontextprotocol/server-brave"
+        );
+    }
+
+    #[test]
+    fn mcp_server_package_response_key_returns_unknown() {
+        let key = SvcRoutingKey {
+            session: SessionId::new(),
+            branch: BranchId::from(1),
+            submission: SubmissionId::new(),
+            kind: SvcMessageKind::SvcResponse {
+                agent: AgentName::new("test_agent"),
+                service: ServiceBackendV2::Mcp("server-everything".to_string()),
+                operation: ServiceOperation::new("echo"),
+                sequence: Sequence::first(),
+            },
+        };
+        assert_eq!(mcp_server_package(&key), "unknown");
+    }
+
+    #[test]
+    fn response_key_from_request_swaps_kind() {
+        let req_key = test_request_key("jira", "get_issue");
+        let resp_key = response_key_from_request(&req_key);
+
+        assert_eq!(resp_key.session, req_key.session);
+        assert_eq!(resp_key.branch, req_key.branch);
+        assert_eq!(resp_key.submission, req_key.submission);
+
+        let SvcMessageKind::SvcResponse {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &resp_key.kind
+        else {
+            panic!("expected SvcResponse kind");
+        };
+        assert_eq!(agent.as_str(), "test_agent");
+        assert_eq!(service, &ServiceBackendV2::Mcp("jira".to_string()));
+        assert_eq!(operation.as_str(), "get_issue");
+        assert_eq!(*sequence, Sequence::first());
+    }
+
+    #[test]
+    fn response_key_from_response_key_is_noop() {
+        let key = SvcRoutingKey {
+            session: SessionId::new(),
+            branch: BranchId::from(1),
+            submission: SubmissionId::new(),
+            kind: SvcMessageKind::SvcResponse {
+                agent: AgentName::new("test_agent"),
+                service: ServiceBackendV2::Mcp("brave".to_string()),
+                operation: ServiceOperation::new("search"),
+                sequence: Sequence::first(),
+            },
+        };
+        let result = response_key_from_request(&key);
+        assert_eq!(result.kind, key.kind);
     }
 }
