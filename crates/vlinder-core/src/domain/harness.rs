@@ -12,8 +12,10 @@ use std::sync::Arc;
 use crate::domain::{
     AgentName, BranchId, CompleteMessage, DagNodeId, DagStore, DataMessageKind, DataRoutingKey,
     ForkMessage, HarnessType, InvokeDiagnostics, InvokeMessage, JobId, JobStatus, Message,
-    MessageId, MessageQueue, MessageType, PromoteMessage, Registry, ResourceId, SessionId,
-    SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId, ToolResult,
+    MessageId, MessageQueue, MessageType, PromoteMessage, Registry, RequestV2, ResourceId,
+    Sequence, SequenceCounter, ServiceBackendV2, ServiceOperation, SessionId, SessionMessageKind,
+    SessionRoutingKey, SessionStartMessage, SubmissionId, SvcMessageKind, SvcRoutingKey,
+    ToolResult,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -107,6 +109,7 @@ pub struct CoreHarness {
     queue: Arc<dyn MessageQueue + Send + Sync>,
     registry: Arc<dyn Registry>,
     store: Arc<dyn DagStore>,
+    service_sequence: SequenceCounter,
 }
 
 impl CoreHarness {
@@ -121,7 +124,13 @@ impl CoreHarness {
             queue,
             registry,
             store,
+            service_sequence: SequenceCounter::new(),
         }
+    }
+
+    /// Get the next sequence number for service calls.
+    fn next_service_sequence(&self) -> Sequence {
+        self.service_sequence.next()
     }
 
     /// Look up the agent and resolve its runtime.
@@ -269,15 +278,19 @@ impl CoreHarness {
     ///
     /// For `delegate_agent` tool calls, recursively invokes the target agent.
     /// For unknown tool names, returns a `ToolResult` with `is_error: true`.
+    #[allow(clippy::too_many_lines)]
     async fn dispatch_tool_calls(
         &self,
         tool_calls: Vec<crate::domain::ToolCall>,
         session_id: &SessionId,
         timeline: BranchId,
         sealed: bool,
+        submission: SubmissionId,
+        agent_name: AgentName,
     ) -> Vec<crate::domain::ToolResult> {
         let mut results = Vec::with_capacity(tool_calls.len());
         for tc in &tool_calls {
+            #[allow(clippy::single_match_else)]
             let result = match tc.name.as_str() {
                 "delegate_agent" => {
                     let agent_name = tc
@@ -322,11 +335,54 @@ impl CoreHarness {
                         },
                     }
                 }
-                _ => crate::domain::ToolResult {
-                    tool_call_id: tc.id.clone(),
-                    content: format!("unknown tool: {}", tc.name),
-                    is_error: true,
-                },
+                _ => {
+                    // V2 service dispatch: send RequestV2, wait for ResponseV2
+                    let service = ServiceBackendV2::Mcp("server-everything".to_string()); // hardcoded for now
+                    let operation = ServiceOperation::new(&tc.name);
+                    let sequence = self.next_service_sequence();
+
+                    let key = SvcRoutingKey {
+                        session: session_id.clone(),
+                        branch: timeline,
+                        submission: submission.clone(),
+                        kind: SvcMessageKind::SvcRequest {
+                            agent: agent_name.clone(),
+                            service,
+                            operation: operation.clone(),
+                            sequence,
+                        },
+                    };
+
+                    let req = RequestV2 {
+                        id: MessageId::new(),
+                        dag_id: DagNodeId::root(),
+                        tool_call_id: tc.id.clone(),
+                        arguments: tc.arguments.clone(),
+                    };
+
+                    match self.queue.send_svc_request(key.clone(), req).await {
+                        Ok(()) => match self.queue.receive_svc_response(&key).await {
+                            Ok((_rkey, resp, ack)) => {
+                                let _ = ack().await;
+                                crate::domain::ToolResult {
+                                    tool_call_id: tc.id.clone(),
+                                    content: resp.content,
+                                    is_error: resp.is_error,
+                                }
+                            }
+                            Err(e) => crate::domain::ToolResult {
+                                tool_call_id: tc.id.clone(),
+                                content: format!("svc_response receive error: {e}"),
+                                is_error: true,
+                            },
+                        },
+                        Err(e) => crate::domain::ToolResult {
+                            tool_call_id: tc.id.clone(),
+                            content: format!("svc_request send error: {e}"),
+                            is_error: true,
+                        },
+                    }
+                }
             };
             results.push(result);
         }
@@ -536,6 +592,8 @@ impl Harness for CoreHarness {
             // Save before msg is moved into send_invoke.
             let sent_history = msg.history.clone();
             let sent_current_input = msg.current_input.clone();
+            let saved_submission = key.submission.clone();
+            let saved_agent_name = crate::domain::agent_routing_key(agent_id);
 
             let complete = self
                 .send_and_await_complete(key, msg, &job_id, agent_id)
@@ -558,6 +616,8 @@ impl Harness for CoreHarness {
                     &session_id,
                     timeline,
                     sealed,
+                    saved_submission,
+                    saved_agent_name,
                 )
                 .await;
 
