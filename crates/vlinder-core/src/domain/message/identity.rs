@@ -42,6 +42,41 @@ impl From<String> for MessageId {
     }
 }
 
+// --- ToolCallId ---
+
+/// Unique identifier for a tool call within a turn.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ToolCallId(String);
+
+impl ToolCallId {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ToolCallId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for ToolCallId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for ToolCallId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
 // --- DagNodeId (ADR 067) ---
 
 /// Content-addressed hash identifying a single DAG node.

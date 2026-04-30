@@ -41,7 +41,7 @@ pub use deploy_agent::DeployAgentMessage;
 pub use fork::ForkMessage;
 pub use identity::{
     BranchId, DagNodeId, HarnessType, Instance, MessageId, Sequence, SequenceCounter, SessionId,
-    StateHash, SubmissionId,
+    StateHash, SubmissionId, ToolCallId,
 };
 pub use invoke::InvokeMessage;
 pub use promote::PromoteMessage;

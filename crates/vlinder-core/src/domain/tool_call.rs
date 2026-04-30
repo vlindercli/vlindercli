@@ -1,3 +1,4 @@
+use super::ToolCallId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -9,7 +10,7 @@ use serde_json::Value;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     /// Unique identifier for this tool call within the turn.
-    pub id: String,
+    pub id: ToolCallId,
     /// Tool name (e.g., `delegate_agent`, `call_inference`).
     pub name: String,
     /// Parsed JSON arguments for the tool.

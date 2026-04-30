@@ -3,6 +3,7 @@
 //! Industry-standard convention: each message has a role indicating who
 //! spoke, and content shaped by that role.
 
+use super::ToolCallId;
 use serde::{Deserialize, Serialize};
 
 /// A participant's contribution to the conversation, with provenance.
@@ -29,7 +30,7 @@ pub enum Message {
     },
     #[serde(rename = "tool")]
     Tool {
-        tool_call_id: String,
+        tool_call_id: ToolCallId,
         content: String,
         #[serde(default)]
         is_error: bool,

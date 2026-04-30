@@ -1,3 +1,4 @@
+use super::ToolCallId;
 use serde::{Deserialize, Serialize};
 
 /// Result of dispatching a tool call, returned to the agent on re-invocation.
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
     /// Correlates to `ToolCall::id`.
-    pub tool_call_id: String,
+    pub tool_call_id: ToolCallId,
     /// The result content.
     pub content: String,
     /// Whether the tool execution failed.

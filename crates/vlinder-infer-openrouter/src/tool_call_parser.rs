@@ -31,7 +31,7 @@ impl ToolCallParser for OpenAiToolCallParser {
                             ParseError::InvalidStructure(format!("invalid JSON arguments: {e}"))
                         })?;
                         parsed.push(ToolCall {
-                            id: inner.id,
+                            id: inner.id.into(),
                             name: inner.function.name,
                             arguments: args,
                         });
@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(result.content, None);
         let tcs = result.tool_calls.unwrap();
         assert_eq!(tcs.len(), 1);
-        assert_eq!(tcs[0].id, "call_123");
+        assert_eq!(tcs[0].id.as_str(), "call_123");
         assert_eq!(tcs[0].name, "delegate_agent");
         assert_eq!(tcs[0].arguments, json!({"agent": "worker"}));
     }
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(result.content, Some("Let me delegate that.".into()));
         let tcs = result.tool_calls.unwrap();
         assert_eq!(tcs.len(), 1);
-        assert_eq!(tcs[0].id, "call_456");
+        assert_eq!(tcs[0].id.as_str(), "call_456");
         assert_eq!(tcs[0].name, "delegate_agent");
         assert_eq!(tcs[0].arguments, json!({}));
     }
@@ -283,7 +283,7 @@ mod tests {
         let messages = vec![Message::Agent {
             content: None,
             tool_calls: Some(vec![ToolCall {
-                id: "call_1".into(),
+                id: "call_1".to_string().into(),
                 name: "test".into(),
                 arguments: json!({"arg": 1}),
             }]),
@@ -349,10 +349,10 @@ mod tests {
         assert_eq!(result.content, None);
         let tcs = result.tool_calls.unwrap();
         assert_eq!(tcs.len(), 2);
-        assert_eq!(tcs[0].id, "call_1");
+        assert_eq!(tcs[0].id.as_str(), "call_1");
         assert_eq!(tcs[0].name, "delegate_agent");
         assert_eq!(tcs[0].arguments, json!({"agent": "worker-a"}));
-        assert_eq!(tcs[1].id, "call_2");
+        assert_eq!(tcs[1].id.as_str(), "call_2");
         assert_eq!(tcs[1].name, "delegate_agent");
         assert_eq!(tcs[1].arguments, json!({"agent": "worker-b"}));
     }

@@ -56,7 +56,7 @@ pub use container_id::ContainerId;
 pub use conversation::Message;
 pub use image_digest::ImageDigest;
 pub use image_ref::ImageRef;
-pub use operation::Operation;
+pub use operation::{Operation, ServiceOperation};
 pub use pod_id::PodId;
 pub use readiness::{derive_status, ReadinessCheck, ReadinessStatus};
 pub use service_type::ServiceType;
@@ -76,7 +76,7 @@ pub use message::{
     BranchId, CompleteMessage, DagNodeId, DeleteAgentMessage, DeployAgentMessage, ForkMessage,
     HarnessType, Instance, InvokeMessage, MessageId, PromoteMessage, RequestMessage,
     ResponseMessage, Sequence, SequenceCounter, SessionId, SessionStartMessage, StateHash,
-    SubmissionId, PROTOCOL_VERSION,
+    SubmissionId, ToolCallId, PROTOCOL_VERSION,
 };
 pub use message_queue::{agent_routing_key, noop_ack, Acknowledgement, MessageQueue, QueueError};
 pub use routing_key::{
