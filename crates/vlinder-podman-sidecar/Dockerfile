@@ -1,8 +1,8 @@
 # Multi-stage build for vlinder-podman-sidecar.
 # Build context: workspace root (sidecar depends on sibling crates).
 #
-# Only the 10 crates in the sidecar's dependency chain get real Cargo.toml
-# files. The remaining 8 workspace members get minimal stubs (no deps) so
+# Only the 11 crates in the sidecar's dependency chain get real Cargo.toml
+# files. The remaining 10 workspace members get minimal stubs (no deps) so
 # Cargo can resolve the workspace without triggering feature unification
 # on shared dependencies like tonic.
 #
@@ -10,7 +10,7 @@
 #   podman build -t localhost/vlinder-podman-sidecar:latest -f crates/vlinder-podman-sidecar/Dockerfile .
 
 # ── Build stage ──────────────────────────────────────────────────────
-FROM rust:1.90-bookworm AS builder
+FROM rust:1.95-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && \
     rm -rf /var/lib/apt/lists/*
@@ -44,6 +44,7 @@ COPY crates/vlinder-podman-sidecar/stubs/vlinder-podman-runtime.toml crates/vlin
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-lambda-runtime.toml crates/vlinder-lambda-runtime/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-git-dag.toml crates/vlinder-git-dag/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-s3-storage.toml crates/vlinder-s3-storage/Cargo.toml
+COPY crates/vlinder-podman-sidecar/stubs/vlinder-mcp.toml crates/vlinder-mcp/Cargo.toml
 
 # Stub out src directories so Cargo can resolve the workspace
 RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs && \
@@ -65,7 +66,8 @@ RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs
     mkdir -p crates/vlinder-podman-runtime/src && echo "" > crates/vlinder-podman-runtime/src/lib.rs && \
     mkdir -p crates/vlinder-lambda-runtime/src && echo "" > crates/vlinder-lambda-runtime/src/lib.rs && \
     mkdir -p crates/vlinder-git-dag/src && echo "" > crates/vlinder-git-dag/src/lib.rs && \
-    mkdir -p crates/vlinder-s3-storage/src && echo "" > crates/vlinder-s3-storage/src/lib.rs
+    mkdir -p crates/vlinder-s3-storage/src && echo "" > crates/vlinder-s3-storage/src/lib.rs && \
+    mkdir -p crates/vlinder-mcp/src && echo "" > crates/vlinder-mcp/src/lib.rs
 
 # Proto build dependencies (only for dep-chain crates with gRPC)
 COPY crates/vlinder-nats/build.rs crates/vlinder-nats/
