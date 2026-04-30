@@ -37,9 +37,11 @@ mod resource_id;
 mod routing_key;
 mod runtime;
 mod secret_store;
+mod service_backend_v2;
 mod service_type;
 pub mod session;
 mod storage;
+mod svc_routing_key;
 mod tool_call;
 mod tool_call_parser;
 mod tool_result;
@@ -74,15 +76,17 @@ pub use diagnostics::{
 };
 pub use message::{
     BranchId, CompleteMessage, DagNodeId, DeleteAgentMessage, DeployAgentMessage, ForkMessage,
-    HarnessType, Instance, InvokeMessage, MessageId, PromoteMessage, RequestMessage,
-    ResponseMessage, Sequence, SequenceCounter, SessionId, SessionStartMessage, StateHash,
-    SubmissionId, ToolCallId, PROTOCOL_VERSION,
+    HarnessType, Instance, InvokeMessage, MessageId, PromoteMessage, RequestMessage, RequestV2,
+    ResponseMessage, ResponseV2, Sequence, SequenceCounter, SessionId, SessionStartMessage,
+    StateHash, SubmissionId, ToolCallId, PROTOCOL_VERSION,
 };
 pub use message_queue::{agent_routing_key, noop_ack, Acknowledgement, MessageQueue, QueueError};
 pub use routing_key::{
     AgentName, DataMessageKind, DataRoutingKey, EmbeddingBackendType, InferenceBackendType,
     InfraMessageKind, InfraRoutingKey, ServiceBackend, SessionMessageKind, SessionRoutingKey,
 };
+pub use service_backend_v2::ServiceBackendV2;
+pub use svc_routing_key::{SvcMessageKind, SvcRoutingKey};
 
 // ============================================================================
 // DAG (content-addressed Merkle DAG)

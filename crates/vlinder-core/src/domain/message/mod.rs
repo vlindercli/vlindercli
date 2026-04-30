@@ -31,7 +31,9 @@ pub mod identity;
 pub mod invoke;
 pub mod promote;
 pub mod request;
+pub mod request_v2;
 pub mod response;
+pub mod response_v2;
 pub mod session_start;
 
 // Re-export everything at the module level for backwards compatibility.
@@ -46,7 +48,9 @@ pub use identity::{
 pub use invoke::InvokeMessage;
 pub use promote::PromoteMessage;
 pub use request::RequestMessage;
+pub use request_v2::RequestV2;
 pub use response::ResponseMessage;
+pub use response_v2::ResponseV2;
 pub use session_start::SessionStartMessage;
 
 /// Protocol version stamped on every message at construction time.
