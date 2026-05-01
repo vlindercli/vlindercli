@@ -1,7 +1,7 @@
 use anyhow::Result;
 use vlinder_core::domain::{
     MessageId, MessageQueue, ResponseV2, ServiceBackendV2, ServiceOperation, SvcMessageKind,
-    SvcRoutingKey,
+    SvcResponseDiagnostics, SvcRoutingKey,
 };
 use vlinder_nats::NatsQueue;
 
@@ -74,6 +74,8 @@ pub async fn run_mcp_worker(queue: NatsQueue) -> Result<()> {
             id: MessageId::new(),
             dag_id: req.dag_id.clone(),
             correlation_id: req.id,
+            state: req.state.clone(),
+            diagnostics: SvcResponseDiagnostics::default(),
             content,
             is_error,
         };

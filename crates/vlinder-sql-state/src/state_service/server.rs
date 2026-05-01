@@ -1000,6 +1000,8 @@ impl StateService for StateServiceServer {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             dag_id: dag_id.clone(),
             tool_call_id: vlinder_core::domain::ToolCallId::from(req.tool_call_id),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
             arguments: serde_json::from_slice(&req.arguments).unwrap_or(serde_json::Value::Null),
         };
 
@@ -1063,6 +1065,8 @@ impl StateService for StateServiceServer {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             dag_id: dag_id.clone(),
             correlation_id: vlinder_core::domain::MessageId::from(req.correlation_id),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
             content: req.content,
             is_error: req.is_error != 0,
         };

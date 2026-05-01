@@ -412,6 +412,8 @@ pub struct SvcRequestNodeRow {
     pub sequence: i32,
     pub message_id: String,
     pub tool_call_id: String,
+    pub state: Option<String>,
+    pub diagnostics: Option<String>,
     pub arguments: Vec<u8>,
 }
 
@@ -426,6 +428,8 @@ pub struct NewSvcRequestNode<'a> {
     pub sequence: i32,
     pub message_id: &'a str,
     pub tool_call_id: &'a str,
+    pub state: Option<&'a str>,
+    pub diagnostics: Option<&'a str>,
     pub arguments: &'a [u8],
 }
 
@@ -444,6 +448,8 @@ pub struct SvcResponseNodeRow {
     pub sequence: i32,
     pub message_id: String,
     pub correlation_id: String,
+    pub state: Option<String>,
+    pub diagnostics: Option<String>,
     pub content: String,
     pub is_error: i32,
 }
@@ -459,6 +465,8 @@ pub struct NewSvcResponseNode<'a> {
     pub sequence: i32,
     pub message_id: &'a str,
     pub correlation_id: &'a str,
+    pub state: Option<&'a str>,
+    pub diagnostics: Option<&'a str>,
     pub content: &'a str,
     pub is_error: i32,
 }

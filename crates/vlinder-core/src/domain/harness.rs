@@ -14,8 +14,8 @@ use crate::domain::{
     ForkMessage, HarnessType, InvokeDiagnostics, InvokeMessage, JobId, JobStatus, Message,
     MessageId, MessageQueue, MessageType, PromoteMessage, Registry, RequestV2, ResourceId,
     Sequence, SequenceCounter, ServiceBackendV2, ServiceOperation, SessionId, SessionMessageKind,
-    SessionRoutingKey, SessionStartMessage, SubmissionId, SvcMessageKind, SvcRoutingKey,
-    ToolResult,
+    SessionRoutingKey, SessionStartMessage, SubmissionId, SvcMessageKind, SvcRequestDiagnostics,
+    SvcRoutingKey, ToolResult,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -307,6 +307,8 @@ impl CoreHarness {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
             tool_call_id: tc.id.clone(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
             arguments: tc.arguments.clone(),
         };
 

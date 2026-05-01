@@ -22,6 +22,9 @@ use sha2::{Digest, Sha256};
 use super::message::identity::{Instance, StateHash};
 use super::session::Session;
 
+#[cfg(test)]
+use super::diagnostics::{SvcRequestDiagnostics, SvcResponseDiagnostics};
+
 /// Snapshot of all store states at a point in the DAG (ADR 116).
 ///
 /// Maps service instance names to their per-store state hashes.
@@ -1373,6 +1376,8 @@ mod tests {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
             tool_call_id: ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
             arguments: serde_json::json!({"key": "val"}),
         };
         store
@@ -1403,6 +1408,8 @@ mod tests {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
             correlation_id: MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
             content: "result".to_string(),
             is_error: false,
         };

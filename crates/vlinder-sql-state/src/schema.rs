@@ -160,6 +160,8 @@ diesel::table! {
         sequence -> Integer,
         message_id -> Text,
         tool_call_id -> Text,
+        state -> Nullable<Text>,
+        diagnostics -> Nullable<Text>,
         arguments -> Binary,
     }
 }
@@ -174,6 +176,8 @@ diesel::table! {
         sequence -> Integer,
         message_id -> Text,
         correlation_id -> Text,
+        state -> Nullable<Text>,
+        diagnostics -> Nullable<Text>,
         content -> Text,
         is_error -> Integer,
     }

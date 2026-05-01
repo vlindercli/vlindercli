@@ -19,6 +19,9 @@ use crate::domain::{
     SessionRoutingKey, SessionStartMessage, Snapshot, StateHash, SubmissionId,
 };
 
+#[cfg(test)]
+use crate::domain::{SvcRequestDiagnostics, SvcResponseDiagnostics};
+
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
 ///
 /// Every `send_*` call: clone → convert to `ObservableMessage` → build
@@ -1338,6 +1341,8 @@ mod tests {
             id: crate::domain::MessageId::new(),
             dag_id: DagNodeId::root(),
             tool_call_id: crate::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
             arguments: serde_json::json!({"key": "val"}),
         };
 
@@ -1368,6 +1373,8 @@ mod tests {
             id: crate::domain::MessageId::new(),
             dag_id: DagNodeId::root(),
             correlation_id: crate::domain::MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
             content: "result".to_string(),
             is_error: false,
         };
@@ -1418,6 +1425,8 @@ mod tests {
             id: crate::domain::MessageId::new(),
             dag_id: DagNodeId::root(),
             correlation_id: crate::domain::MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
             content: "result".to_string(),
             is_error: false,
         };
@@ -1447,6 +1456,8 @@ mod tests {
             id: crate::domain::MessageId::new(),
             dag_id: DagNodeId::root(),
             tool_call_id: crate::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
             arguments: serde_json::json!({"key": "val"}),
         };
         inner

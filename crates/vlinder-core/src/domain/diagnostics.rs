@@ -20,6 +20,33 @@ use super::operation::Operation;
 use super::service_type::ServiceType;
 
 // ============================================================================
+// SvcRequestDiagnostics — V2 harness-mediated service request diagnostics
+// ============================================================================
+
+/// Diagnostics for a V2 harness-mediated service request.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SvcRequestDiagnostics {
+    pub server: String,
+    pub tool: String,
+    pub arguments_bytes: u64,
+    pub sent_at_ms: u64,
+}
+
+// ============================================================================
+// SvcResponseDiagnostics — V2 harness-mediated service response diagnostics
+// ============================================================================
+
+/// Diagnostics for a V2 harness-mediated service response.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SvcResponseDiagnostics {
+    pub server: String,
+    pub tool: String,
+    pub round_trip_ms: u64,
+    pub content_bytes: u64,
+    pub is_error: bool,
+}
+
+// ============================================================================
 // InvokeDiagnostics — Harness
 // ============================================================================
 

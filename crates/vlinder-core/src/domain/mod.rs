@@ -72,7 +72,7 @@ pub use tool_result::ToolResult;
 
 pub use diagnostics::{
     HealthSnapshot, HealthWindow, InvokeDiagnostics, RequestDiagnostics, RuntimeDiagnostics,
-    RuntimeInfo, ServiceDiagnostics, ServiceMetrics,
+    RuntimeInfo, ServiceDiagnostics, ServiceMetrics, SvcRequestDiagnostics, SvcResponseDiagnostics,
 };
 pub use message::{
     BranchId, CompleteMessage, DagNodeId, DeleteAgentMessage, DeployAgentMessage, ForkMessage,

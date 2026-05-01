@@ -10,7 +10,8 @@ use std::time::Duration;
 use tokio::time::timeout;
 use vlinder_core::domain::{
     AgentName, BranchId, DagNodeId, MessageId, MessageQueue, RequestV2, Sequence, ServiceBackendV2,
-    ServiceOperation, SessionId, SubmissionId, SvcMessageKind, SvcRoutingKey,
+    ServiceOperation, SessionId, SubmissionId, SvcMessageKind, SvcRequestDiagnostics,
+    SvcRoutingKey,
 };
 use vlinder_nats::{NatsConfig, NatsQueue};
 
@@ -40,6 +41,8 @@ fn echo_request(message: &str) -> RequestV2 {
         id: MessageId::new(),
         dag_id: DagNodeId::root(),
         tool_call_id: vlinder_core::domain::ToolCallId::new(),
+        state: None,
+        diagnostics: SvcRequestDiagnostics::default(),
         arguments: serde_json::json!({ "message": message }),
     }
 }

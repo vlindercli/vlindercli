@@ -178,6 +178,8 @@ impl SqliteDagStore {
                  sequence INTEGER NOT NULL,
                  message_id TEXT NOT NULL UNIQUE,
                  tool_call_id TEXT NOT NULL,
+                 state TEXT,
+                 diagnostics TEXT,
                  arguments BLOB NOT NULL
              );
              CREATE TABLE IF NOT EXISTS svc_response_nodes (
@@ -189,6 +191,8 @@ impl SqliteDagStore {
                  sequence INTEGER NOT NULL,
                  message_id TEXT NOT NULL UNIQUE,
                  correlation_id TEXT NOT NULL,
+                 state TEXT,
+                 diagnostics TEXT,
                  content TEXT NOT NULL,
                  is_error INTEGER NOT NULL DEFAULT 0
              );
@@ -569,6 +573,8 @@ impl DagStore for SqliteDagStore {
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
         let arguments_json = serde_json::to_vec(&msg.arguments).unwrap_or_default();
+        let state_json = msg.state.as_deref().map(String::from);
+        let diagnostics_json = serde_json::to_string(&msg.diagnostics).unwrap_or_default();
         let created_at_str = created_at.to_rfc3339();
         let service_type = service.service_type_str();
         let service_backend = service.backend_str();
@@ -598,6 +604,8 @@ impl DagStore for SqliteDagStore {
                 sequence: i32::try_from(sequence.as_u32()).unwrap_or(0),
                 message_id: msg.id.as_str(),
                 tool_call_id: msg.tool_call_id.as_str(),
+                state: state_json.as_deref(),
+                diagnostics: Some(&diagnostics_json),
                 arguments: &arguments_json,
             })
             .execute(&mut *conn)
@@ -628,6 +636,8 @@ impl DagStore for SqliteDagStore {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let state_json = msg.state.as_deref().map(String::from);
+        let diagnostics_json = serde_json::to_string(&msg.diagnostics).unwrap_or_default();
         let created_at_str = created_at.to_rfc3339();
         let service_type = service.service_type_str();
         let service_backend = service.backend_str();
@@ -657,6 +667,8 @@ impl DagStore for SqliteDagStore {
                 sequence: i32::try_from(sequence.as_u32()).unwrap_or(0),
                 message_id: msg.id.as_str(),
                 correlation_id: msg.correlation_id.as_str(),
+                state: state_json.as_deref(),
+                diagnostics: Some(&diagnostics_json),
                 content: &msg.content,
                 is_error: i32::from(msg.is_error),
             })
@@ -1987,6 +1999,8 @@ mod tests {
             id: vlinder_core::domain::MessageId::new(),
             dag_id: DagNodeId::root(),
             tool_call_id: vlinder_core::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
             arguments: serde_json::json!({"key": "val"}),
         };
         let request_dag_id = DagNodeId::from("svc-req-hash-1".to_string());
@@ -2018,6 +2032,8 @@ mod tests {
             id: vlinder_core::domain::MessageId::new(),
             dag_id: DagNodeId::root(),
             correlation_id: vlinder_core::domain::MessageId::new(),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
             content: "result".to_string(),
             is_error: false,
         };
