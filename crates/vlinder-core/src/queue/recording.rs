@@ -340,6 +340,170 @@ impl RecordingQueue {
             );
         }
     }
+
+    /// Record a DAG node for a harness-mediated service request (V2 path).
+    #[allow(dead_code)] // used by send_svc_request in the MessageQueue impl
+    async fn record_svc_request(
+        &self,
+        key: &crate::domain::SvcRoutingKey,
+        msg: &crate::domain::RequestV2,
+    ) {
+        let branch_id = key.branch;
+
+        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    branch = branch_id.as_i64(),
+                    "Failed to query latest node on branch"
+                );
+                None
+            }
+        };
+
+        let parent_id = parent_node
+            .as_ref()
+            .map_or_else(DagNodeId::root, |n| n.id.clone());
+        let parent_state = parent_node
+            .as_ref()
+            .map(|n| &n.state)
+            .cloned()
+            .unwrap_or_else(Snapshot::empty);
+
+        let arguments_bytes = serde_json::to_vec(&msg.arguments).unwrap_or_default();
+        let id = hash_dag_node(
+            &arguments_bytes,
+            &parent_id,
+            &MessageType::SvcRequest,
+            &[],
+            &key.session,
+        );
+
+        let crate::domain::SvcMessageKind::SvcRequest {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        else {
+            tracing::error!("record_svc_request called with non-SvcRequest key");
+            return;
+        };
+
+        if let Err(e) = self
+            .store
+            .insert_svc_request_node(
+                &id,
+                &parent_id,
+                Utc::now(),
+                &parent_state,
+                &key.session,
+                &key.submission,
+                key.branch,
+                agent,
+                service.clone(),
+                operation.clone(),
+                *sequence,
+                msg,
+            )
+            .await
+        {
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                service = %service.service_type_str(),
+                operation = %operation.as_str(),
+                error = %e,
+                "failed to record svc_request node — DAG chain may have a gap"
+            );
+        }
+    }
+
+    /// Record a DAG node for a harness-mediated service response (V2 path).
+    #[allow(dead_code)] // used by receive_svc_response in the MessageQueue impl
+    async fn record_svc_response(
+        &self,
+        key: &crate::domain::SvcRoutingKey,
+        msg: &crate::domain::ResponseV2,
+    ) {
+        let branch_id = key.branch;
+
+        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    branch = branch_id.as_i64(),
+                    "Failed to query latest node on branch"
+                );
+                None
+            }
+        };
+
+        let parent_id = parent_node
+            .as_ref()
+            .map_or_else(DagNodeId::root, |n| n.id.clone());
+        let parent_state = parent_node
+            .as_ref()
+            .map(|n| &n.state)
+            .cloned()
+            .unwrap_or_else(Snapshot::empty);
+
+        let content_bytes = msg.content.as_bytes();
+        let id = hash_dag_node(
+            content_bytes,
+            &parent_id,
+            &MessageType::SvcResponse,
+            &[],
+            &key.session,
+        );
+
+        let crate::domain::SvcMessageKind::SvcResponse {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        else {
+            tracing::error!("record_svc_response called with non-SvcResponse key");
+            return;
+        };
+
+        if let Err(e) = self
+            .store
+            .insert_svc_response_node(
+                &id,
+                &parent_id,
+                Utc::now(),
+                &parent_state,
+                &key.session,
+                &key.submission,
+                key.branch,
+                agent,
+                service.clone(),
+                operation.clone(),
+                *sequence,
+                msg,
+            )
+            .await
+        {
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                service = %service.service_type_str(),
+                operation = %operation.as_str(),
+                error = %e,
+                "failed to record svc_response node — DAG chain may have a gap"
+            );
+        }
+    }
 }
 
 #[async_trait]
