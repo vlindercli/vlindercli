@@ -180,6 +180,9 @@ impl Supervisor {
             counts.storage.vector.sqlite
         );
 
+        // MCP service worker
+        spawn_n!(WorkerRole::Mcp, counts.mcp);
+
         // Infra plane worker
         spawn_n!(WorkerRole::Infra, counts.infra);
 
