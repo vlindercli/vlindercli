@@ -434,6 +434,54 @@ pub trait DagStore: Send + Sync {
         Err("insert_delete_agent_node not implemented".to_string())
     }
 
+    /// Insert a typed `svc_request` node. Writes to `dag_nodes` + `svc_request_nodes`.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_request_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        agent: &super::AgentName,
+        service: super::ServiceBackendV2,
+        operation: super::ServiceOperation,
+        sequence: super::Sequence,
+        msg: &super::RequestV2,
+    ) -> Result<(), String> {
+        let _ = (
+            dag_id, parent_id, created_at, state, session, submission, branch, agent, service,
+            operation, sequence, msg,
+        );
+        Err("insert_svc_request_node not implemented".into())
+    }
+
+    /// Insert a typed `svc_response` node. Writes to `dag_nodes` + `svc_response_nodes`.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_response_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        agent: &super::AgentName,
+        service: super::ServiceBackendV2,
+        operation: super::ServiceOperation,
+        sequence: super::Sequence,
+        msg: &super::ResponseV2,
+    ) -> Result<(), String> {
+        let _ = (
+            dag_id, parent_id, created_at, state, session, submission, branch, agent, service,
+            operation, sequence, msg,
+        );
+        Err("insert_svc_response_node not implemented".into())
+    }
+
     /// Retrieve a node by its content-addressed ID.
     async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String>;
 
@@ -735,6 +783,68 @@ impl DagStore for InMemoryDagStore {
             submission: submission.clone(),
             branch,
             protocol_version: "v1".to_string(),
+        };
+        self.insert_node(&node);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_request_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        _agent: &super::AgentName,
+        _service: super::ServiceBackendV2,
+        _operation: super::ServiceOperation,
+        _sequence: super::Sequence,
+        _msg: &super::RequestV2,
+    ) -> Result<(), String> {
+        let node = DagNode {
+            id: dag_id.clone(),
+            parent_id: parent_id.clone(),
+            created_at,
+            state: state.clone(),
+            msg_type: MessageType::SvcRequest,
+            session: session.clone(),
+            submission: submission.clone(),
+            branch,
+            protocol_version: "v2".to_string(),
+        };
+        self.insert_node(&node);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_response_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        _agent: &super::AgentName,
+        _service: super::ServiceBackendV2,
+        _operation: super::ServiceOperation,
+        _sequence: super::Sequence,
+        _msg: &super::ResponseV2,
+    ) -> Result<(), String> {
+        let node = DagNode {
+            id: dag_id.clone(),
+            parent_id: parent_id.clone(),
+            created_at,
+            state: state.clone(),
+            msg_type: MessageType::SvcResponse,
+            session: session.clone(),
+            submission: submission.clone(),
+            branch,
+            protocol_version: "v2".to_string(),
         };
         self.insert_node(&node);
         Ok(())
@@ -1130,7 +1240,10 @@ mod tests {
 
     // --- hash_dag_node tests ---
 
-    use crate::domain::{DagNodeId, SessionId};
+    use crate::domain::{
+        AgentName, BranchId, DagNodeId, MessageId, RequestV2, ResponseV2, Sequence,
+        ServiceBackendV2, ServiceOperation, SessionId, SubmissionId, ToolCallId,
+    };
 
     fn did(s: &str) -> DagNodeId {
         DagNodeId::from(s.to_string())
@@ -1236,5 +1349,83 @@ mod tests {
             &sid(SES_1),
         );
         assert_eq!(h1, h2);
+    }
+
+    // --- InMemoryDagStore tests ---
+
+    #[tokio::test]
+    async fn inmemory_insert_svc_request_and_response_nodes() {
+        let store = InMemoryDagStore::new();
+
+        let dag_id = did("abc");
+        let parent_id = did("parent");
+        let session =
+            SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
+        let submission = SubmissionId::from("sub-1".to_string());
+        let branch = BranchId::from(1);
+        let agent = AgentName::new("test-agent");
+        let service = ServiceBackendV2::Mcp("brave".to_string());
+        let operation = ServiceOperation::new("echo");
+        let sequence = Sequence::first();
+
+        // Insert svc_request node
+        let req_msg = RequestV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: ToolCallId::new(),
+            arguments: serde_json::json!({"key": "val"}),
+        };
+        store
+            .insert_svc_request_node(
+                &dag_id,
+                &parent_id,
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service.clone(),
+                operation.clone(),
+                sequence,
+                &req_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&dag_id).await.unwrap().unwrap();
+        assert_eq!(node.msg_type, MessageType::SvcRequest);
+        assert_eq!(node.protocol_version, "v2");
+
+        // Insert svc_response node
+        let response_dag_id = did("xyz");
+        let response_msg = ResponseV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: MessageId::new(),
+            content: "result".to_string(),
+            is_error: false,
+        };
+        store
+            .insert_svc_response_node(
+                &response_dag_id,
+                &parent_id,
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence.next(),
+                &response_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&response_dag_id).await.unwrap().unwrap();
+        assert_eq!(node.msg_type, MessageType::SvcResponse);
+        assert_eq!(node.protocol_version, "v2");
     }
 }
