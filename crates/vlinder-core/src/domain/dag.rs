@@ -68,6 +68,8 @@ pub enum MessageType {
     Promote,
     DeployAgent,
     DeleteAgent,
+    SvcRequest,
+    SvcResponse,
 }
 
 impl MessageType {
@@ -81,6 +83,8 @@ impl MessageType {
             MessageType::Promote => "promote",
             MessageType::DeployAgent => "deploy-agent",
             MessageType::DeleteAgent => "delete-agent",
+            MessageType::SvcRequest => "svc_request",
+            MessageType::SvcResponse => "svc_response",
         }
     }
 
@@ -89,7 +93,9 @@ impl MessageType {
             MessageType::Invoke
             | MessageType::Request
             | MessageType::Response
-            | MessageType::Complete => Plane::Data,
+            | MessageType::Complete
+            | MessageType::SvcRequest
+            | MessageType::SvcResponse => Plane::Data,
             MessageType::Fork | MessageType::Promote => Plane::Session,
             MessageType::DeployAgent | MessageType::DeleteAgent => Plane::Infra,
         }
@@ -111,6 +117,8 @@ impl std::str::FromStr for MessageType {
             "promote" => Ok(MessageType::Promote),
             "deploy-agent" => Ok(MessageType::DeployAgent),
             "delete-agent" => Ok(MessageType::DeleteAgent),
+            "svc_request" => Ok(MessageType::SvcRequest),
+            "svc_response" => Ok(MessageType::SvcResponse),
             _ => Err(format!("unknown message type: {s}")),
         }
     }
@@ -1077,6 +1085,8 @@ mod tests {
             MessageType::Promote,
             MessageType::DeployAgent,
             MessageType::DeleteAgent,
+            MessageType::SvcRequest,
+            MessageType::SvcResponse,
         ] {
             assert_eq!(MessageType::from_str(mt.as_str()), Ok(mt));
         }
@@ -1095,6 +1105,27 @@ mod tests {
         assert_eq!(MessageType::Promote.plane(), Plane::Session);
         assert_eq!(MessageType::DeployAgent.plane(), Plane::Infra);
         assert_eq!(MessageType::DeleteAgent.plane(), Plane::Infra);
+        assert_eq!(MessageType::SvcRequest.plane(), Plane::Data);
+        assert_eq!(MessageType::SvcResponse.plane(), Plane::Data);
+    }
+
+    #[test]
+    fn msg_type_as_str_and_plane_and_fromstr() {
+        // SvcRequest
+        assert_eq!(MessageType::SvcRequest.as_str(), "svc_request");
+        assert_eq!(MessageType::SvcRequest.plane(), Plane::Data);
+        assert_eq!(
+            MessageType::from_str("svc_request"),
+            Ok(MessageType::SvcRequest)
+        );
+
+        // SvcResponse
+        assert_eq!(MessageType::SvcResponse.as_str(), "svc_response");
+        assert_eq!(MessageType::SvcResponse.plane(), Plane::Data);
+        assert_eq!(
+            MessageType::from_str("svc_response"),
+            Ok(MessageType::SvcResponse)
+        );
     }
 
     // --- hash_dag_node tests ---
