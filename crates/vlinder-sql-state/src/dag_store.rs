@@ -169,6 +169,29 @@ impl SqliteDagStore {
                  agent_name TEXT NOT NULL,
                  message_id TEXT NOT NULL UNIQUE
              );
+             CREATE TABLE IF NOT EXISTS svc_request_nodes (
+                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
+                 agent TEXT NOT NULL,
+                 service_type TEXT NOT NULL,
+                 service_backend TEXT NOT NULL,
+                 operation TEXT NOT NULL,
+                 sequence INTEGER NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE,
+                 tool_call_id TEXT NOT NULL,
+                 arguments BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS svc_response_nodes (
+                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
+                 agent TEXT NOT NULL,
+                 service_type TEXT NOT NULL,
+                 service_backend TEXT NOT NULL,
+                 operation TEXT NOT NULL,
+                 sequence INTEGER NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE,
+                 correlation_id TEXT NOT NULL,
+                 content TEXT NOT NULL,
+                 is_error INTEGER NOT NULL DEFAULT 0
+             );
              CREATE TABLE IF NOT EXISTS readiness_checks (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  agent_name TEXT NOT NULL,
