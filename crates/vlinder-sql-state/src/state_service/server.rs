@@ -17,8 +17,9 @@ use super::proto::{
     InsertDeployAgentNodeResponse, InsertForkNodeRequest, InsertForkNodeResponse,
     InsertInvokeNodeRequest, InsertInvokeNodeResponse, InsertPromoteNodeRequest,
     InsertPromoteNodeResponse, InsertRequestNodeRequest, InsertRequestNodeResponse,
-    InsertResponseNodeRequest, InsertResponseNodeResponse, InvokeNodeProto,
-    LatestNodeOnBranchRequest, LatestNodeOnBranchResponse, ListSessionsRequest,
+    InsertResponseNodeRequest, InsertResponseNodeResponse, InsertSvcRequestNodeRequest,
+    InsertSvcRequestNodeResponse, InsertSvcResponseNodeRequest, InsertSvcResponseNodeResponse,
+    InvokeNodeProto, LatestNodeOnBranchRequest, LatestNodeOnBranchResponse, ListSessionsRequest,
     ListSessionsResponse, PingRequest, RenameBranchRequest, RenameBranchResponse, RequestNodeProto,
     ResponseNodeProto, SealBranchRequest, SealBranchResponse, SemVer,
     UpdateSessionDefaultBranchRequest, UpdateSessionDefaultBranchResponse,
@@ -962,6 +963,133 @@ impl StateService for StateServiceServer {
                 error: None,
             })),
             Err(e) => Ok(Response::new(InsertDeleteAgentNodeResponse {
+                success: false,
+                error: Some(e),
+            })),
+        }
+    }
+
+    async fn insert_svc_request_node(
+        &self,
+        request: Request<InsertSvcRequestNodeRequest>,
+    ) -> Result<Response<InsertSvcRequestNodeResponse>, Status> {
+        let req = request.into_inner();
+
+        let dag_id = DagNodeId::from(req.dag_hash);
+        let parent_id = DagNodeId::from(req.parent_hash);
+        let created_at: chrono::DateTime<chrono::Utc> =
+            chrono::DateTime::parse_from_rfc3339(&req.created_at)
+                .map_err(|e| Status::invalid_argument(format!("invalid created_at: {e}")))?
+                .with_timezone(&chrono::Utc);
+        let snapshot: vlinder_core::domain::Snapshot = serde_json::from_str(&req.snapshot)
+            .map_err(|e| Status::invalid_argument(format!("invalid snapshot: {e}")))?;
+        let session = vlinder_core::domain::SessionId::try_from(req.session_id)
+            .map_err(Status::invalid_argument)?;
+        let submission = vlinder_core::domain::SubmissionId::from(req.submission_id);
+        let branch = vlinder_core::domain::BranchId::from(req.branch_id);
+        let agent = vlinder_core::domain::AgentName::new(req.agent);
+        let service = vlinder_core::domain::ServiceBackendV2::from_parts(
+            &req.service_type,
+            &req.service_backend,
+        )
+        .ok_or_else(|| Status::invalid_argument("invalid service_type or service_backend"))?;
+        let operation = vlinder_core::domain::ServiceOperation::new(req.operation);
+        let sequence = vlinder_core::domain::Sequence::from(req.sequence);
+
+        let msg = vlinder_core::domain::RequestV2 {
+            id: vlinder_core::domain::MessageId::from(req.message_id),
+            dag_id: dag_id.clone(),
+            tool_call_id: vlinder_core::domain::ToolCallId::from(req.tool_call_id),
+            arguments: serde_json::from_slice(&req.arguments).unwrap_or(serde_json::Value::Null),
+        };
+
+        match self
+            .store
+            .insert_svc_request_node(
+                &dag_id,
+                &parent_id,
+                created_at,
+                &snapshot,
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence,
+                &msg,
+            )
+            .await
+        {
+            Ok(()) => Ok(Response::new(InsertSvcRequestNodeResponse {
+                success: true,
+                error: None,
+            })),
+            Err(e) => Ok(Response::new(InsertSvcRequestNodeResponse {
+                success: false,
+                error: Some(e),
+            })),
+        }
+    }
+
+    async fn insert_svc_response_node(
+        &self,
+        request: Request<InsertSvcResponseNodeRequest>,
+    ) -> Result<Response<InsertSvcResponseNodeResponse>, Status> {
+        let req = request.into_inner();
+
+        let dag_id = DagNodeId::from(req.dag_hash);
+        let parent_id = DagNodeId::from(req.parent_hash);
+        let created_at: chrono::DateTime<chrono::Utc> =
+            chrono::DateTime::parse_from_rfc3339(&req.created_at)
+                .map_err(|e| Status::invalid_argument(format!("invalid created_at: {e}")))?
+                .with_timezone(&chrono::Utc);
+        let snapshot: vlinder_core::domain::Snapshot = serde_json::from_str(&req.snapshot)
+            .map_err(|e| Status::invalid_argument(format!("invalid snapshot: {e}")))?;
+        let session = vlinder_core::domain::SessionId::try_from(req.session_id)
+            .map_err(Status::invalid_argument)?;
+        let submission = vlinder_core::domain::SubmissionId::from(req.submission_id);
+        let branch = vlinder_core::domain::BranchId::from(req.branch_id);
+        let agent = vlinder_core::domain::AgentName::new(req.agent);
+        let service = vlinder_core::domain::ServiceBackendV2::from_parts(
+            &req.service_type,
+            &req.service_backend,
+        )
+        .ok_or_else(|| Status::invalid_argument("invalid service_type or service_backend"))?;
+        let operation = vlinder_core::domain::ServiceOperation::new(req.operation);
+        let sequence = vlinder_core::domain::Sequence::from(req.sequence);
+
+        let msg = vlinder_core::domain::ResponseV2 {
+            id: vlinder_core::domain::MessageId::from(req.message_id),
+            dag_id: dag_id.clone(),
+            correlation_id: vlinder_core::domain::MessageId::from(req.correlation_id),
+            content: req.content,
+            is_error: req.is_error != 0,
+        };
+
+        match self
+            .store
+            .insert_svc_response_node(
+                &dag_id,
+                &parent_id,
+                created_at,
+                &snapshot,
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence,
+                &msg,
+            )
+            .await
+        {
+            Ok(()) => Ok(Response::new(InsertSvcResponseNodeResponse {
+                success: true,
+                error: None,
+            })),
+            Err(e) => Ok(Response::new(InsertSvcResponseNodeResponse {
                 success: false,
                 error: Some(e),
             })),
