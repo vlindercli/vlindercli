@@ -709,6 +709,7 @@ pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: Can
             unreachable!("DagGit must be run via spawn_blocking — do not pass to run_worker_loop")
         }
         WorkerRole::SessionViewer => run_session_viewer_worker(&config, shutdown).await,
+        WorkerRole::Mcp => todo!("MCP worker implementation in commit 6.4"),
     }
 
     tracing::info!(role = %role, "Worker shutdown complete");

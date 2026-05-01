@@ -44,6 +44,8 @@ pub enum WorkerRole {
     /// Catalog service — gRPC interface to model catalogs (Ollama, `OpenRouter`)
     #[cfg(any(feature = "ollama", feature = "openrouter"))]
     Catalog,
+    /// MCP service worker — dispatches tool calls to MCP servers
+    Mcp,
     /// Infra plane worker — processes deploy/delete agent messages
     Infra,
     /// DAG git worker — writes messages as git commits for time-travel
@@ -83,6 +85,7 @@ impl WorkerRole {
             WorkerRole::State => "state",
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             WorkerRole::Catalog => "catalog",
+            WorkerRole::Mcp => "mcp",
             WorkerRole::Infra => "infra",
             WorkerRole::DagGit => "dag-git",
             WorkerRole::SessionViewer => "session-viewer",
@@ -110,6 +113,7 @@ impl WorkerRole {
             WorkerRole::State => "State service",
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             WorkerRole::Catalog => "Catalog service",
+            WorkerRole::Mcp => "MCP service worker",
             WorkerRole::Infra => "Infra plane worker",
             WorkerRole::DagGit => "DAG git worker",
             WorkerRole::SessionViewer => "Session viewer HTTP server",
@@ -146,6 +150,7 @@ impl FromStr for WorkerRole {
             "state" => Ok(WorkerRole::State),
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             "catalog" => Ok(WorkerRole::Catalog),
+            "mcp" => Ok(WorkerRole::Mcp),
             "infra" => Ok(WorkerRole::Infra),
             "dag-git" => Ok(WorkerRole::DagGit),
             "session-viewer" => Ok(WorkerRole::SessionViewer),
@@ -249,6 +254,7 @@ mod tests {
             WorkerRole::State,
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             WorkerRole::Catalog,
+            WorkerRole::Mcp,
             WorkerRole::Infra,
             WorkerRole::DagGit,
             WorkerRole::SessionViewer,
