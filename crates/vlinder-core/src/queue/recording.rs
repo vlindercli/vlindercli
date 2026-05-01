@@ -342,7 +342,6 @@ impl RecordingQueue {
     }
 
     /// Record a DAG node for a harness-mediated service request (V2 path).
-    #[allow(dead_code)] // used by send_svc_request in the MessageQueue impl
     async fn record_svc_request(
         &self,
         key: &crate::domain::SvcRoutingKey,
@@ -424,7 +423,6 @@ impl RecordingQueue {
     }
 
     /// Record a DAG node for a harness-mediated service response (V2 path).
-    #[allow(dead_code)] // used by receive_svc_response in the MessageQueue impl
     async fn record_svc_response(
         &self,
         key: &crate::domain::SvcRoutingKey,
@@ -620,6 +618,56 @@ impl MessageQueue for RecordingQueue {
         self.inner
             .receive_response(submission, agent, service, operation, sequence)
             .await
+    }
+
+    // -------------------------------------------------------------------------
+    // V2 harness-mediated service dispatch
+    // -------------------------------------------------------------------------
+
+    async fn send_svc_request(
+        &self,
+        key: crate::domain::SvcRoutingKey,
+        msg: crate::domain::RequestV2,
+    ) -> Result<(), QueueError> {
+        self.record_svc_request(&key, &msg).await;
+        self.inner.send_svc_request(key, msg).await
+    }
+
+    async fn receive_svc_request_mcp(
+        &self,
+    ) -> Result<
+        (
+            crate::domain::SvcRoutingKey,
+            crate::domain::RequestV2,
+            Acknowledgement,
+        ),
+        QueueError,
+    > {
+        self.inner.receive_svc_request_mcp().await
+    }
+
+    async fn send_svc_response(
+        &self,
+        key: crate::domain::SvcRoutingKey,
+        msg: crate::domain::ResponseV2,
+    ) -> Result<(), QueueError> {
+        self.inner.send_svc_response(key, msg).await
+    }
+
+    async fn receive_svc_response(
+        &self,
+        key: &crate::domain::SvcRoutingKey,
+    ) -> Result<
+        (
+            crate::domain::SvcRoutingKey,
+            crate::domain::ResponseV2,
+            Acknowledgement,
+        ),
+        QueueError,
+    > {
+        let (key, response, ack) = self.inner.receive_svc_response(key).await?;
+        self.record_svc_response(&key, &response).await;
+        Ok((key, response, ack))
     }
 
     // -------------------------------------------------------------------------
@@ -1258,6 +1306,162 @@ mod tests {
         assert_eq!(
             nodes[2].parent_id, first_id,
             "dag_parent should override chain cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_svc_request_and_receive_svc_response_record_nodes() {
+        let store = test_store().await;
+        let inner: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
+        let queue = RecordingQueue::new(Arc::clone(&inner), Arc::clone(&store));
+
+        let session = test_session();
+        let submission = test_submission();
+        let agent = test_agent_id();
+        let branch = BranchId::from(1);
+        let service = crate::domain::ServiceBackendV2::Mcp("brave".to_string());
+        let operation = crate::domain::ServiceOperation::new("echo");
+        let sequence = crate::domain::Sequence::first();
+
+        let svc_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcRequest {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let request_msg = crate::domain::RequestV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: crate::domain::ToolCallId::new(),
+            arguments: serde_json::json!({"key": "val"}),
+        };
+
+        // send_svc_request — should record node and forward
+        queue
+            .send_svc_request(svc_key.clone(), request_msg)
+            .await
+            .unwrap();
+
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].message_type(), MessageType::SvcRequest);
+        assert_eq!(nodes[0].protocol_version(), "v2");
+
+        // Now send a svc_response into the inner queue and receive it via RecordingQueue
+        let response_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcResponse {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let response_msg = crate::domain::ResponseV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: crate::domain::MessageId::new(),
+            content: "result".to_string(),
+            is_error: false,
+        };
+
+        // Put response into inner queue first
+        inner
+            .send_svc_response(response_key.clone(), response_msg)
+            .await
+            .unwrap();
+
+        // receive_svc_response — should receive from inner and record node
+        let result = queue.receive_svc_response(&response_key).await;
+        assert!(result.is_ok());
+
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[1].message_type(), MessageType::SvcResponse);
+        assert_eq!(nodes[1].protocol_version(), "v2");
+    }
+
+    #[tokio::test]
+    async fn send_svc_response_and_receive_svc_request_mcp_delegate_no_recording() {
+        let store = test_store().await;
+        let inner: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
+        let queue = RecordingQueue::new(Arc::clone(&inner), Arc::clone(&store));
+
+        let session = test_session();
+        let submission = test_submission();
+        let agent = test_agent_id();
+        let branch = BranchId::from(1);
+        let service = crate::domain::ServiceBackendV2::Mcp("brave".to_string());
+        let operation = crate::domain::ServiceOperation::new("echo");
+        let sequence = crate::domain::Sequence::first();
+
+        // send_svc_response should delegate without recording
+        let response_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcResponse {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let response_msg = crate::domain::ResponseV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: crate::domain::MessageId::new(),
+            content: "result".to_string(),
+            is_error: false,
+        };
+
+        queue
+            .send_svc_response(response_key, response_msg)
+            .await
+            .unwrap();
+
+        // No nodes should be recorded
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert!(nodes.is_empty(), "send_svc_response should not record");
+
+        // Put a request into inner and verify receive_svc_request_mcp delegates
+        let request_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcRequest {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let request_msg = crate::domain::RequestV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: crate::domain::ToolCallId::new(),
+            arguments: serde_json::json!({"key": "val"}),
+        };
+        inner
+            .send_svc_request(request_key, request_msg)
+            .await
+            .unwrap();
+
+        let result = queue.receive_svc_request_mcp().await;
+        assert!(result.is_ok());
+
+        // Still no nodes recorded
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert!(
+            nodes.is_empty(),
+            "receive_svc_request_mcp should not record"
         );
     }
 }

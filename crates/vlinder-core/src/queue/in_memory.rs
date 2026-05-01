@@ -6,8 +6,8 @@ use crate::domain::{
     noop_ack, Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind,
     DataRoutingKey, DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType,
     InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
-    RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey,
-    SessionStartMessage, SubmissionId,
+    RequestMessage, RequestV2, ResponseMessage, ResponseV2, Sequence, ServiceBackend,
+    SessionRoutingKey, SessionStartMessage, SubmissionId, SvcRoutingKey,
 };
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
@@ -25,6 +25,8 @@ pub struct InMemoryQueue {
     completes: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<CompleteMessage>>>>,
     requests: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<RequestMessage>>>>,
     responses: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<ResponseMessage>>>>,
+    svc_requests: Arc<Mutex<HashMap<SvcRoutingKey, VecDeque<RequestV2>>>>,
+    svc_responses: Arc<Mutex<HashMap<SvcRoutingKey, VecDeque<ResponseV2>>>>,
 }
 
 impl InMemoryQueue {
@@ -34,6 +36,8 @@ impl InMemoryQueue {
             completes: Arc::new(Mutex::new(HashMap::new())),
             requests: Arc::new(Mutex::new(HashMap::new())),
             responses: Arc::new(Mutex::new(HashMap::new())),
+            svc_requests: Arc::new(Mutex::new(HashMap::new())),
+            svc_responses: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -254,6 +258,65 @@ impl MessageQueue for InMemoryQueue {
         _msg: DeleteAgentMessage,
     ) -> Result<(), QueueError> {
         Ok(())
+    }
+
+    async fn send_svc_request(&self, key: SvcRoutingKey, msg: RequestV2) -> Result<(), QueueError> {
+        let mut q = self
+            .svc_requests
+            .lock()
+            .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        q.entry(key).or_default().push_back(msg);
+        Ok(())
+    }
+
+    async fn receive_svc_request_mcp(
+        &self,
+    ) -> Result<(SvcRoutingKey, RequestV2, Acknowledgement), QueueError> {
+        let mut q = self
+            .svc_requests
+            .lock()
+            .map_err(|e| QueueError::ReceiveFailed(format!("lock poisoned: {e}")))?;
+
+        for (key, queue) in q.iter_mut() {
+            if let Some(msg) = queue.pop_front() {
+                let key = key.clone();
+                return Ok((key, msg, noop_ack()));
+            }
+        }
+
+        Err(QueueError::Timeout)
+    }
+
+    async fn send_svc_response(
+        &self,
+        key: SvcRoutingKey,
+        msg: ResponseV2,
+    ) -> Result<(), QueueError> {
+        let mut q = self
+            .svc_responses
+            .lock()
+            .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        q.entry(key).or_default().push_back(msg);
+        Ok(())
+    }
+
+    async fn receive_svc_response(
+        &self,
+        key: &SvcRoutingKey,
+    ) -> Result<(SvcRoutingKey, ResponseV2, Acknowledgement), QueueError> {
+        let mut q = self
+            .svc_responses
+            .lock()
+            .map_err(|e| QueueError::ReceiveFailed(format!("lock poisoned: {e}")))?;
+
+        if let Some(queue) = q.get_mut(key) {
+            if let Some(msg) = queue.pop_front() {
+                let key = key.clone();
+                return Ok((key, msg, noop_ack()));
+            }
+        }
+
+        Err(QueueError::Timeout)
     }
 }
 
