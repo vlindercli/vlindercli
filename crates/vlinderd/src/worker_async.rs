@@ -664,6 +664,32 @@ pub async fn run_agent_lambda_worker(config: &Config, shutdown: CancellationToke
     runtime.shutdown().await;
 }
 
+pub async fn run_mcp_worker(config: &Config, shutdown: CancellationToken) {
+    let nats_config = vlinder_nats::NatsConfig {
+        url: config.queue.nats_url.clone(),
+        creds_file: None,
+        creds_content: None,
+    };
+    let queue = match vlinder_nats::NatsQueue::connect_async(&nats_config).await {
+        Ok(q) => q,
+        Err(e) => {
+            tracing::error!(error = %e, "MCP worker: failed to connect to NATS");
+            return;
+        }
+    };
+
+    tracing::info!("MCP service worker ready");
+
+    tokio::select! {
+        result = vlinder_mcp::run_mcp_worker(queue) => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "MCP worker exited with error");
+            }
+        }
+        () = shutdown.cancelled() => {}
+    }
+}
+
 pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: CancellationToken) {
     use crate::worker_role::WorkerRole;
 
@@ -709,7 +735,7 @@ pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: Can
             unreachable!("DagGit must be run via spawn_blocking — do not pass to run_worker_loop")
         }
         WorkerRole::SessionViewer => run_session_viewer_worker(&config, shutdown).await,
-        WorkerRole::Mcp => todo!("MCP worker implementation in commit 6.4"),
+        WorkerRole::Mcp => run_mcp_worker(&config, shutdown).await,
     }
 
     tracing::info!(role = %role, "Worker shutdown complete");
