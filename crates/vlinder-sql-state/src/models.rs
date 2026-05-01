@@ -10,7 +10,7 @@ use diesel::prelude::*;
 use crate::schema::{
     agents, branches, complete_nodes, dag_nodes, delete_agent_nodes, deploy_agent_nodes,
     fork_nodes, invoke_nodes, models, promote_nodes, readiness_checks, request_nodes,
-    response_nodes, sessions,
+    response_nodes, sessions, svc_request_nodes, svc_response_nodes,
 };
 
 // ============================================================================
@@ -395,4 +395,70 @@ pub struct NewDeleteAgentNode<'a> {
     pub dag_hash: &'a str,
     pub agent_name: &'a str,
     pub message_id: &'a str,
+}
+
+// ============================================================================
+// svc_request_nodes
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = svc_request_nodes)]
+pub struct SvcRequestNodeRow {
+    pub dag_hash: String,
+    pub agent: String,
+    pub service_type: String,
+    pub service_backend: String,
+    pub operation: String,
+    pub sequence: i32,
+    pub message_id: String,
+    pub tool_call_id: String,
+    pub arguments: Vec<u8>,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = svc_request_nodes)]
+pub struct NewSvcRequestNode<'a> {
+    pub dag_hash: &'a str,
+    pub agent: &'a str,
+    pub service_type: &'a str,
+    pub service_backend: &'a str,
+    pub operation: &'a str,
+    pub sequence: i32,
+    pub message_id: &'a str,
+    pub tool_call_id: &'a str,
+    pub arguments: &'a [u8],
+}
+
+// ============================================================================
+// svc_response_nodes
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = svc_response_nodes)]
+pub struct SvcResponseNodeRow {
+    pub dag_hash: String,
+    pub agent: String,
+    pub service_type: String,
+    pub service_backend: String,
+    pub operation: String,
+    pub sequence: i32,
+    pub message_id: String,
+    pub correlation_id: String,
+    pub content: String,
+    pub is_error: i32,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = svc_response_nodes)]
+pub struct NewSvcResponseNode<'a> {
+    pub dag_hash: &'a str,
+    pub agent: &'a str,
+    pub service_type: &'a str,
+    pub service_backend: &'a str,
+    pub operation: &'a str,
+    pub sequence: i32,
+    pub message_id: &'a str,
+    pub correlation_id: &'a str,
+    pub content: &'a str,
+    pub is_error: i32,
 }
