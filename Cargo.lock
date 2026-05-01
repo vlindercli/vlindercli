@@ -6013,6 +6013,7 @@ dependencies = [
  "vlinder-harness",
  "vlinder-infer-openrouter",
  "vlinder-lambda-runtime",
+ "vlinder-mcp",
  "vlinder-nats",
  "vlinder-ollama",
  "vlinder-podman-runtime",
