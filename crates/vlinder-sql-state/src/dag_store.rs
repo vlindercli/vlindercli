@@ -15,8 +15,8 @@ use diesel::sqlite::SqliteConnection;
 use async_trait::async_trait;
 use vlinder_core::domain::session::Session;
 use vlinder_core::domain::{
-    Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, SessionId, SessionSummary,
-    SubmissionId,
+    Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, ServiceBackendV2,
+    ServiceOperation, SessionId, SessionSummary, SubmissionId,
 };
 
 /// SQLite-backed `DagStore`.
@@ -542,6 +542,126 @@ impl DagStore for SqliteDagStore {
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert response_nodes failed: {e}"))?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_request_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        session: &SessionId,
+        submission: &vlinder_core::domain::SubmissionId,
+        branch: BranchId,
+        agent: &vlinder_core::domain::AgentName,
+        service: ServiceBackendV2,
+        operation: ServiceOperation,
+        sequence: vlinder_core::domain::Sequence,
+        msg: &vlinder_core::domain::RequestV2,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewSvcRequestNode};
+        use crate::schema::{dag_nodes, svc_request_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let arguments_json = serde_json::to_vec(&msg.arguments).unwrap_or_default();
+        let created_at_str = created_at.to_rfc3339();
+        let service_type = service.service_type_str();
+        let service_backend = service.backend_str();
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
+                message_type: "svc_request",
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
+                created_at: &created_at_str,
+                protocol_version: "v2",
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(svc_request_nodes::table)
+            .values(&NewSvcRequestNode {
+                dag_hash: dag_id.as_str(),
+                agent: agent.as_str(),
+                service_type,
+                service_backend,
+                operation: operation.as_str(),
+                sequence: i32::try_from(sequence.as_u32()).unwrap_or(0),
+                message_id: msg.id.as_str(),
+                tool_call_id: msg.tool_call_id.as_str(),
+                arguments: &arguments_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert svc_request_nodes failed: {e}"))?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_response_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        session: &SessionId,
+        submission: &vlinder_core::domain::SubmissionId,
+        branch: BranchId,
+        agent: &vlinder_core::domain::AgentName,
+        service: ServiceBackendV2,
+        operation: ServiceOperation,
+        sequence: vlinder_core::domain::Sequence,
+        msg: &vlinder_core::domain::ResponseV2,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewSvcResponseNode};
+        use crate::schema::{dag_nodes, svc_response_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let created_at_str = created_at.to_rfc3339();
+        let service_type = service.service_type_str();
+        let service_backend = service.backend_str();
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
+                message_type: "svc_response",
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
+                created_at: &created_at_str,
+                protocol_version: "v2",
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(svc_response_nodes::table)
+            .values(&NewSvcResponseNode {
+                dag_hash: dag_id.as_str(),
+                agent: agent.as_str(),
+                service_type,
+                service_backend,
+                operation: operation.as_str(),
+                sequence: i32::try_from(sequence.as_u32()).unwrap_or(0),
+                message_id: msg.id.as_str(),
+                correlation_id: msg.correlation_id.as_str(),
+                content: &msg.content,
+                is_error: i32::from(msg.is_error),
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert svc_response_nodes failed: {e}"))?;
 
         Ok(())
     }
@@ -1844,5 +1964,85 @@ mod tests {
             .exists_in_submission(&other_sub, BranchId::from(1), MessageType::Complete)
             .await
             .unwrap());
+    }
+
+    // ========================================================================
+    // V2 service nodes
+    // ========================================================================
+
+    #[tokio::test]
+    async fn insert_svc_request_and_response_nodes_round_trip() {
+        let (store, _dir) = test_store().await;
+
+        let session = sess();
+        let submission = sub();
+        let branch = BranchId::from(1);
+        let agent = vlinder_core::domain::AgentName::new("test-agent");
+        let service = ServiceBackendV2::Mcp("brave".to_string());
+        let operation = ServiceOperation::new("echo");
+        let sequence = vlinder_core::domain::Sequence::first();
+
+        // Insert svc_request node
+        let request_msg = vlinder_core::domain::RequestV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: vlinder_core::domain::ToolCallId::new(),
+            arguments: serde_json::json!({"key": "val"}),
+        };
+        let request_dag_id = DagNodeId::from("svc-req-hash-1".to_string());
+
+        store
+            .insert_svc_request_node(
+                &request_dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service.clone(),
+                operation.clone(),
+                sequence,
+                &request_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&request_dag_id).await.unwrap().unwrap();
+        assert_eq!(node.message_type(), MessageType::SvcRequest);
+        assert_eq!(node.protocol_version(), "v2");
+
+        // Insert svc_response node
+        let response_msg = vlinder_core::domain::ResponseV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: vlinder_core::domain::MessageId::new(),
+            content: "result".to_string(),
+            is_error: false,
+        };
+        let response_dag_id = DagNodeId::from("svc-res-hash-1".to_string());
+
+        store
+            .insert_svc_response_node(
+                &response_dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence.next(),
+                &response_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&response_dag_id).await.unwrap().unwrap();
+        assert_eq!(node.message_type(), MessageType::SvcResponse);
+        assert_eq!(node.protocol_version(), "v2");
     }
 }
