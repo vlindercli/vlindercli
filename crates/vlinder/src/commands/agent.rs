@@ -739,6 +739,7 @@ mod tests {
                 models: model_map,
                 services: std::collections::HashMap::new(),
                 mounts: std::collections::HashMap::new(),
+                mcp: std::collections::HashMap::new(),
             },
             prompts: None,
             object_storage: None,

@@ -188,6 +188,21 @@ pub struct RequirementsConfig {
     /// S3 mount declarations (ADR 107).
     #[serde(default)]
     pub mounts: HashMap<String, MountConfig>,
+    /// MCP provider declarations.
+    #[serde(default)]
+    pub mcp: HashMap<String, McpProviderConfig>,
+}
+
+/// MCP provider declaration in agent.toml.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct McpProviderConfig {
+    /// URL of the MCP server endpoint (HTTP transport).
+    pub url: String,
+    /// Environment variable names that the MCP worker should
+    /// pass to the server (e.g., "`BRAVE_API_KEY`"). Values come
+    /// from the process environment at runtime.
+    #[serde(default)]
+    pub env: Vec<String>,
 }
 
 /// Deserialize models from either table or array form.

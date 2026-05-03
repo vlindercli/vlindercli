@@ -20,6 +20,7 @@ fn empty_requirements() -> Requirements {
         models: HashMap::new(),
         services: HashMap::new(),
         mounts: HashMap::new(),
+        mcp: HashMap::new(),
     }
 }
 

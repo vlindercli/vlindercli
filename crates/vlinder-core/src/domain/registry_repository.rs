@@ -5,8 +5,8 @@ use std::str::FromStr;
 
 use super::runtime::RuntimeType;
 use super::{
-    Agent, ImageDigest, Model, ModelType, MountConfig, Prompts, Provider, Requirements, ResourceId,
-    ServiceConfig, ServiceType,
+    Agent, ImageDigest, McpProviderConfig, Model, ModelType, MountConfig, Prompts, Provider,
+    Requirements, ResourceId, ServiceConfig, ServiceType,
 };
 
 /// Repository for persisting Registry state.
@@ -157,6 +157,7 @@ impl StoredAgent {
             models: agent.requirements.models.clone(),
             services: agent.requirements.services.clone(),
             mounts: agent.requirements.mounts.clone(),
+            mcp: agent.requirements.mcp.clone(),
         };
 
         let prompts = agent.prompts.as_ref().map(|p| PromptsJson {
@@ -247,6 +248,7 @@ impl StoredAgent {
                 models,
                 services: requirements.services,
                 mounts: requirements.mounts,
+                mcp: requirements.mcp,
             },
             prompts: prompts.map(|p| Prompts {
                 intent_recognition: p.intent_recognition,
@@ -267,6 +269,8 @@ struct RequirementsJson {
     services: HashMap<ServiceType, ServiceConfig>,
     #[serde(default)]
     mounts: HashMap<String, MountConfig>,
+    #[serde(default)]
+    mcp: HashMap<String, McpProviderConfig>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -300,6 +304,7 @@ mod tests {
                 models: HashMap::new(),
                 services: HashMap::new(),
                 mounts: HashMap::new(),
+                mcp: HashMap::new(),
             },
             prompts: None,
         }
@@ -335,6 +340,7 @@ mod tests {
                 models,
                 services,
                 mounts: HashMap::new(),
+                mcp: HashMap::new(),
             },
             prompts: Some(Prompts {
                 intent_recognition: Some("Classify intent".to_string()),

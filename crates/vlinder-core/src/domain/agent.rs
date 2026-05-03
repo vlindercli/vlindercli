@@ -5,7 +5,8 @@ use std::str::FromStr;
 use serde::Serialize;
 
 use super::agent_manifest::{
-    AgentManifest, MountConfig, ParseError, PromptsConfig, RequirementsConfig, ServiceConfig,
+    AgentManifest, McpProviderConfig, MountConfig, ParseError, PromptsConfig, RequirementsConfig,
+    ServiceConfig,
 };
 use super::image_digest::ImageDigest;
 use super::resource_id::ResourceId;
@@ -184,6 +185,8 @@ pub struct Requirements {
     pub services: HashMap<ServiceType, ServiceConfig>,
     /// S3 mount declarations (ADR 107).
     pub mounts: HashMap<String, MountConfig>,
+    /// MCP provider declarations.
+    pub mcp: HashMap<String, McpProviderConfig>,
 }
 
 impl Requirements {
@@ -193,6 +196,7 @@ impl Requirements {
             models: config.models,
             services: config.services,
             mounts: config.mounts,
+            mcp: config.mcp,
         }
     }
 }

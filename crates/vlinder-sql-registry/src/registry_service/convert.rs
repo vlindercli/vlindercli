@@ -191,6 +191,7 @@ impl TryFrom<proto::Agent> for Agent {
                         )
                     })
                     .collect(),
+                mcp: HashMap::new(),
             },
             object_storage: agent
                 .object_storage

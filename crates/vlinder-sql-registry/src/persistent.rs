@@ -460,6 +460,7 @@ mod tests {
                 models: HashMap::new(),
                 services: HashMap::new(),
                 mounts: HashMap::new(),
+                mcp: HashMap::new(),
             },
             prompts: None,
         }
