@@ -70,12 +70,23 @@ pub async fn run_mcp_worker(queue: NatsQueue) -> Result<()> {
         };
 
         let response_key = response_key_from_request(&key);
+        let tool_name = match &key.kind {
+            SvcMessageKind::SvcRequest { operation, .. } => operation.as_str().to_string(),
+            SvcMessageKind::SvcResponse { .. } => "unknown".to_string(),
+        };
+        let content_bytes = content.len() as u64;
         let resp = ResponseV2 {
             id: MessageId::new(),
             dag_id: req.dag_id.clone(),
             correlation_id: req.id,
             state: req.state.clone(),
-            diagnostics: SvcResponseDiagnostics::default(),
+            diagnostics: SvcResponseDiagnostics {
+                server: server_package,
+                tool: tool_name,
+                round_trip_ms: 0, // deferred: real timing not yet wired
+                content_bytes,
+                is_error,
+            },
             content,
             is_error,
         };

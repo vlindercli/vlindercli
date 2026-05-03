@@ -286,6 +286,7 @@ impl CoreHarness {
         timeline: BranchId,
         submission: &SubmissionId,
         agent_name: &AgentName,
+        last_state: Option<String>,
     ) -> crate::domain::ToolResult {
         let service = ServiceBackendV2::Mcp("server-everything".to_string()); // hardcoded for now
         let operation = ServiceOperation::new(&tc.name);
@@ -303,12 +304,20 @@ impl CoreHarness {
             },
         };
 
+        let arguments_bytes = serde_json::to_vec(&tc.arguments).unwrap_or_default().len() as u64;
+        let sent_at_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+
         let req = RequestV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
             tool_call_id: tc.id.clone(),
-            state: None,
-            diagnostics: SvcRequestDiagnostics::default(),
+            state: last_state,
+            diagnostics: SvcRequestDiagnostics {
+                server: "server-everything".to_string(),
+                tool: tc.name.clone(),
+                arguments_bytes,
+                sent_at_ms,
+            },
             arguments: tc.arguments.clone(),
         };
 
@@ -340,6 +349,7 @@ impl CoreHarness {
     ///
     /// For `delegate_agent` tool calls, recursively invokes the target agent.
     /// For unknown tool names, returns a `ToolResult` with `is_error: true`.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_tool_calls(
         &self,
         tool_calls: Vec<crate::domain::ToolCall>,
@@ -348,6 +358,7 @@ impl CoreHarness {
         sealed: bool,
         submission: SubmissionId,
         agent_name: AgentName,
+        last_state: Option<String>,
     ) -> Vec<crate::domain::ToolResult> {
         let mut results = Vec::with_capacity(tool_calls.len());
         for tc in &tool_calls {
@@ -396,8 +407,15 @@ impl CoreHarness {
                     }
                 }
                 _ => {
-                    self.dispatch_service_call(tc, session_id, timeline, &submission, &agent_name)
-                        .await
+                    self.dispatch_service_call(
+                        tc,
+                        session_id,
+                        timeline,
+                        &submission,
+                        &agent_name,
+                        last_state.clone(),
+                    )
+                    .await
                 }
             };
             results.push(result);
@@ -634,6 +652,7 @@ impl Harness for CoreHarness {
                     sealed,
                     saved_submission,
                     saved_agent_name,
+                    invoke_state.clone(),
                 )
                 .await;
 
