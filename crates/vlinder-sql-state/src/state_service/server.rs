@@ -996,12 +996,19 @@ impl StateService for StateServiceServer {
         let operation = vlinder_core::domain::ServiceOperation::new(req.operation);
         let sequence = vlinder_core::domain::Sequence::from(req.sequence);
 
+        let state_str = req.state.as_deref().map(String::from);
+        let diagnostics: vlinder_core::domain::SvcRequestDiagnostics = req
+            .diagnostics
+            .as_deref()
+            .and_then(|d| serde_json::from_str(d).ok())
+            .unwrap_or_default();
+
         let msg = vlinder_core::domain::RequestV2 {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             dag_id: dag_id.clone(),
             tool_call_id: vlinder_core::domain::ToolCallId::from(req.tool_call_id),
-            state: None,
-            diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
+            state: state_str,
+            diagnostics,
             arguments: serde_json::from_slice(&req.arguments).unwrap_or(serde_json::Value::Null),
         };
 
@@ -1061,12 +1068,19 @@ impl StateService for StateServiceServer {
         let operation = vlinder_core::domain::ServiceOperation::new(req.operation);
         let sequence = vlinder_core::domain::Sequence::from(req.sequence);
 
+        let state_str = req.state.as_deref().map(String::from);
+        let diagnostics: vlinder_core::domain::SvcResponseDiagnostics = req
+            .diagnostics
+            .as_deref()
+            .and_then(|d| serde_json::from_str(d).ok())
+            .unwrap_or_default();
+
         let msg = vlinder_core::domain::ResponseV2 {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             dag_id: dag_id.clone(),
             correlation_id: vlinder_core::domain::MessageId::from(req.correlation_id),
-            state: None,
-            diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
+            state: state_str,
+            diagnostics,
             content: req.content,
             is_error: req.is_error != 0,
         };

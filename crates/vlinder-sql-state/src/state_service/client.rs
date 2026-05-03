@@ -698,6 +698,8 @@ impl DagStore for GrpcStateClient {
             message_id: msg.id.to_string(),
             tool_call_id: msg.tool_call_id.to_string(),
             arguments: serde_json::to_vec(&msg.arguments).unwrap_or_default(),
+            state: msg.state.clone(),
+            diagnostics: Some(serde_json::to_string(&msg.diagnostics).unwrap_or_default()),
         };
 
         let mut client = self.client.clone();
@@ -749,6 +751,8 @@ impl DagStore for GrpcStateClient {
             correlation_id: msg.correlation_id.to_string(),
             content: msg.content.clone(),
             is_error: i32::from(msg.is_error),
+            state: msg.state.clone(),
+            diagnostics: Some(serde_json::to_string(&msg.diagnostics).unwrap_or_default()),
         };
 
         let mut client = self.client.clone();

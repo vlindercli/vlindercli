@@ -442,6 +442,8 @@ message InsertSvcRequestNodeRequest {
   string message_id = 13;
   string tool_call_id = 14;
   bytes arguments = 15;
+  optional string state = 16;
+  optional string diagnostics = 17;
 }
 message InsertSvcRequestNodeResponse {
   bool success = 1;
@@ -465,6 +467,8 @@ message InsertSvcResponseNodeRequest {
   string correlation_id = 14;
   string content = 15;
   int32 is_error = 16;
+  optional string state = 17;
+  optional string diagnostics = 18;
 }
 message InsertSvcResponseNodeResponse {
   bool success = 1;
