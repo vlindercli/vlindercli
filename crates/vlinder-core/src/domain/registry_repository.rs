@@ -465,4 +465,24 @@ mod tests {
         let restored = stored.to_agent().unwrap();
         assert!(restored.public_key.is_none());
     }
+
+    #[test]
+    fn stored_agent_roundtrips_with_mcp_providers() {
+        let mut agent = minimal_agent();
+        agent.requirements.mcp = std::collections::HashMap::from([(
+            "brave".to_string(),
+            McpProviderConfig {
+                url: "http://mcp-brave:8000/mcp".to_string(),
+                env: vec!["BRAVE_API_KEY".to_string()],
+            },
+        )]);
+
+        let stored = StoredAgent::from_agent(&agent).unwrap();
+        let restored = stored.to_agent().unwrap();
+
+        assert_eq!(restored.requirements.mcp.len(), 1);
+        let brave = &restored.requirements.mcp["brave"];
+        assert_eq!(brave.url, "http://mcp-brave:8000/mcp");
+        assert_eq!(brave.env, vec!["BRAVE_API_KEY"]);
+    }
 }

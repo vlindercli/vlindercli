@@ -659,4 +659,75 @@ mod tests {
         assert_eq!(mount.s3, "vlinder-support/v0.1.0/");
         assert_eq!(mount.path, "/knowledge");
     }
+    // ========================================================================
+    // MCP provider parsing
+    // ========================================================================
+
+    #[test]
+    fn parse_manifest_with_mcp_provider() {
+        let toml = r#"
+            name = "mcp-agent"
+            description = "MCP agent"
+            runtime = "container"
+            executable = "localhost/mcp-agent:latest"
+
+            [requirements.mcp.brave]
+            url = "http://mcp-brave:8000/mcp"
+            env = ["BRAVE_API_KEY"]
+        "#;
+
+        let manifest: AgentManifest = toml::from_str(toml).unwrap();
+        let brave = &manifest.requirements.mcp["brave"];
+        assert_eq!(brave.url, "http://mcp-brave:8000/mcp");
+        assert_eq!(brave.env, vec!["BRAVE_API_KEY"]);
+    }
+
+    #[test]
+    fn parse_manifest_with_mcp_provider_no_env() {
+        let toml = r#"
+            name = "mcp-agent"
+            description = "MCP agent without env"
+            runtime = "container"
+            executable = "localhost/mcp-agent:latest"
+
+            [requirements.mcp.brave]
+            url = "http://mcp-brave:8000/mcp"
+        "#;
+
+        let manifest: AgentManifest = toml::from_str(toml).unwrap();
+        let brave = &manifest.requirements.mcp["brave"];
+        assert_eq!(brave.url, "http://mcp-brave:8000/mcp");
+        assert!(brave.env.is_empty());
+    }
+
+    #[test]
+    fn parse_manifest_without_mcp() {
+        let toml = r#"
+            name = "simple"
+            description = "No MCP"
+            runtime = "container"
+            executable = "localhost/simple:latest"
+
+            [requirements]
+        "#;
+
+        let manifest: AgentManifest = toml::from_str(toml).unwrap();
+        assert!(manifest.requirements.mcp.is_empty());
+    }
+
+    #[test]
+    fn parse_manifest_mcp_missing_url_fails() {
+        let toml = r#"
+            name = "bad"
+            description = "Missing url"
+            runtime = "container"
+            executable = "localhost/bad:latest"
+
+            [requirements.mcp.brave]
+            env = ["BRAVE_API_KEY"]
+        "#;
+
+        let result: Result<AgentManifest, _> = toml::from_str(toml);
+        assert!(result.is_err());
+    }
 }
