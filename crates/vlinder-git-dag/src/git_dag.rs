@@ -246,6 +246,48 @@ impl GitDagWorker {
         Ok(())
     }
 
+    /// Resolve the canonical parent node from HEAD's tree.
+    /// Returns `DagNodeId::root()` when there are no prior commits or no
+    /// session tree exists.
+    fn resolve_canonical_parent(
+        &self,
+        agent_name: &str,
+        session_id: &str,
+    ) -> Result<DagNodeId, String> {
+        let parent_commit_oid = self.head_commit();
+        match parent_commit_oid {
+            Some(oid) => {
+                let commit = self
+                    .repo
+                    .find_commit(oid)
+                    .map_err(|e| format!("find commit failed: {e}"))?;
+                let tree = commit
+                    .tree()
+                    .map_err(|e| format!("tree lookup failed: {e}"))?;
+                Ok(DagNodeId::from(self.session_canonical_hash_from_tree(
+                    &tree, agent_name, session_id,
+                )))
+            }
+            None => Ok(DagNodeId::root()),
+        }
+    }
+
+    /// Insert common scalar fields shared by all message types.
+    fn insert_common_fields(
+        &self,
+        tb: &mut TreeBuilder<'_>,
+        session_id: &str,
+        submission_id: &str,
+        created_at: &DateTime<Utc>,
+    ) -> Result<(), String> {
+        let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        self.insert_field(tb, "session_id", session_id)?;
+        self.insert_field(tb, "submission_id", submission_id)?;
+        self.insert_field(tb, "protocol_version", "v1")?;
+        self.insert_field(tb, "created_at", &created_at_str)?;
+        Ok(())
+    }
+
     /// Shared logic: nest the per-message subtree under `agent/session/`, build
     /// timeline indexes, add registry metadata, create the commit, and handle
     /// fork/promote branch operations.
@@ -536,23 +578,7 @@ impl DagWorker for GitDagWorker {
             let agent_str = agent_name.to_string();
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(self.session_canonical_hash_from_tree(
-                        &tree,
-                        &agent_str,
-                        &session_id,
-                    ))
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(&agent_str, &session_id)?;
 
             // Build fork subtree
             let mut tb = self
@@ -620,23 +646,7 @@ impl DagWorker for GitDagWorker {
             let agent_str = agent_name.to_string();
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(self.session_canonical_hash_from_tree(
-                        &tree,
-                        &agent_str,
-                        &session_id,
-                    ))
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(&agent_str, &session_id)?;
 
             // Build promote subtree
             let mut tb = self
@@ -688,7 +698,6 @@ impl DagWorker for GitDagWorker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn on_invoke(
         &mut self,
         key: &DataRoutingKey,
@@ -714,21 +723,7 @@ impl DagWorker for GitDagWorker {
 
             // Resolve canonical parent from HEAD
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             // Build message subtree inline
             let mut tb = self
@@ -736,12 +731,7 @@ impl DagWorker for GitDagWorker {
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
             let payload_bytes = serde_json::to_vec(invoke).unwrap_or_default();
             let payload_oid = self.write_blob(&payload_bytes)?;
@@ -817,33 +807,14 @@ impl DagWorker for GitDagWorker {
             let msg_type = "complete";
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             let mut tb = self
                 .repo
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
             let payload_oid = self.write_blob(&complete.payload)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
@@ -896,7 +867,6 @@ impl DagWorker for GitDagWorker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn on_request(
         &mut self,
         key: &DataRoutingKey,
@@ -922,33 +892,14 @@ impl DagWorker for GitDagWorker {
             let msg_type = "request";
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             let mut tb = self
                 .repo
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
             let payload_oid = self.write_blob(&request.payload)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
@@ -1007,7 +958,6 @@ impl DagWorker for GitDagWorker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn on_response(
         &mut self,
         key: &DataRoutingKey,
@@ -1033,33 +983,14 @@ impl DagWorker for GitDagWorker {
             let msg_type = "response";
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             let mut tb = self
                 .repo
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
             let payload_oid = self.write_blob(&response.payload)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
@@ -1119,7 +1050,6 @@ impl DagWorker for GitDagWorker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn on_svc_request(
         &mut self,
         key: &SvcRoutingKey,
@@ -1145,33 +1075,14 @@ impl DagWorker for GitDagWorker {
             let msg_type = "svc_request";
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             let mut tb = self
                 .repo
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
             let payload_bytes = serde_json::to_vec(&request.arguments).unwrap_or_default();
             let payload_oid = self.write_blob(&payload_bytes)?;
@@ -1229,7 +1140,6 @@ impl DagWorker for GitDagWorker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn on_svc_response(
         &mut self,
         key: &SvcRoutingKey,
@@ -1255,33 +1165,14 @@ impl DagWorker for GitDagWorker {
             let msg_type = "svc_response";
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             let mut tb = self
                 .repo
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
             let payload_bytes = response.content.as_bytes();
             let payload_oid = self.write_blob(payload_bytes)?;
