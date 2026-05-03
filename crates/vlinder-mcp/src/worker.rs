@@ -1,7 +1,7 @@
 use anyhow::Result;
 use vlinder_core::domain::{
-    MessageId, MessageQueue, ResponseV2, ServiceBackendV2, ServiceOperation, SvcMessageKind,
-    SvcResponseDiagnostics, SvcRoutingKey,
+    MessageId, MessageQueue, QueueError, ResponseV2, ServiceBackendV2, ServiceOperation,
+    SvcMessageKind, SvcResponseDiagnostics, SvcRoutingKey,
 };
 use vlinder_nats::NatsQueue;
 
@@ -49,10 +49,14 @@ fn response_key_from_request(req_key: &SvcRoutingKey) -> SvcRoutingKey {
 
 pub async fn run_mcp_worker(queue: NatsQueue) -> Result<()> {
     loop {
-        let (key, req, ack) = queue
-            .receive_svc_request_mcp()
-            .await
-            .map_err(|e| anyhow::anyhow!("receive error: {e}"))?;
+        let (key, req, ack) = match queue.receive_svc_request_mcp().await {
+            Ok(result) => result,
+            Err(QueueError::Timeout) => continue,
+            Err(e) => {
+                tracing::warn!(error = %e, "MCP worker receive error");
+                continue;
+            }
+        };
 
         let _ = ack().await;
 
