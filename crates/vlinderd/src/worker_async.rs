@@ -257,7 +257,7 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
     use vlinder_nats::{
         complete_parse_subject, delete_agent_parse_subject, deploy_agent_parse_subject,
         fork_parse_subject, invoke_parse_subject, promote_parse_subject, request_parse_subject,
-        response_parse_subject,
+        response_parse_subject, svc_request_parse_subject, svc_response_parse_subject,
     };
 
     let queue = crate::queue_factory::from_config_async(config)
@@ -354,6 +354,34 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
                                 tracing::warn!(
                                     subject = subject.as_str(),
                                     "DAG git: failed to deserialize PromoteMessage"
+                                );
+                            }
+                        } else if let Some(key) = svc_request_parse_subject(&subject) {
+                            if let Ok(request_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::RequestV2>(
+                                    &payload,
+                                )
+                            {
+                                git_worker.on_svc_request(&key, &request_msg, created_at).await;
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize RequestV2"
+                                );
+                            }
+                        } else if let Some(key) = svc_response_parse_subject(&subject) {
+                            if let Ok(response_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::ResponseV2>(
+                                    &payload,
+                                )
+                            {
+                                git_worker
+                                    .on_svc_response(&key, &response_msg, created_at)
+                                    .await;
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize ResponseV2"
                                 );
                             }
                         } else if deploy_agent_parse_subject(&subject).is_some()

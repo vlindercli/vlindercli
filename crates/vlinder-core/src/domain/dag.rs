@@ -293,6 +293,24 @@ pub trait DagWorker: Send {
         _created_at: DateTime<Utc>,
     ) {
     }
+
+    /// Persist a V2 service request (harness-mediated dispatch path).
+    async fn on_svc_request(
+        &mut self,
+        _key: &super::SvcRoutingKey,
+        _msg: &super::RequestV2,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
+
+    /// Persist a V2 service response (harness-mediated dispatch path).
+    async fn on_svc_response(
+        &mut self,
+        _key: &super::SvcRoutingKey,
+        _msg: &super::ResponseV2,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
 }
 
 /// Persistence layer for DAG nodes.
