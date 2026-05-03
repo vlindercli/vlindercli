@@ -1243,8 +1243,10 @@ mod tests {
     use vlinder_core::domain::{
         Agent, AgentName, BranchId, CompleteMessage, ContainerId, DagNodeId, DataMessageKind,
         DataRoutingKey, ForkMessage, HarnessType, InMemoryRegistry, InMemorySecretStore,
-        InvokeDiagnostics, InvokeMessage, Message, MessageId, RuntimeDiagnostics, RuntimeInfo,
-        RuntimeType, SecretStore, SessionId, SessionRoutingKey, SubmissionId,
+        InvokeDiagnostics, InvokeMessage, Message, MessageId, RequestV2, ResponseV2,
+        RuntimeDiagnostics, RuntimeInfo, RuntimeType, SecretStore, Sequence, ServiceBackendV2,
+        ServiceOperation, SessionId, SessionRoutingKey, SubmissionId, SvcMessageKind,
+        SvcRequestDiagnostics, SvcResponseDiagnostics, SvcRoutingKey, ToolCallId,
     };
 
     fn test_agent_id() -> AgentName {
@@ -1965,5 +1967,236 @@ mod tests {
         // Complete should parent on invoke
         let parents = git(tmp.path(), &["log", "--format=%P", "-1", "main"]).unwrap();
         assert!(!parents.is_empty(), "complete should have a parent");
+    }
+    // ========================================================================
+    // SvcRequest message tests
+    // ========================================================================
+
+    fn test_svc_request_key(session: &str) -> SvcRoutingKey {
+        SvcRoutingKey {
+            session: SessionId::try_from(session.to_string()).unwrap(),
+            branch: BranchId::from(1),
+            submission: SubmissionId::from("sub-1".to_string()),
+            kind: SvcMessageKind::SvcRequest {
+                agent: test_agent_id(),
+                service: ServiceBackendV2::from_parts("mcp", "brave").unwrap(),
+                operation: ServiceOperation::new("web_search"),
+                sequence: Sequence::from(1u32),
+            },
+        }
+    }
+
+    fn test_svc_request_msg() -> RequestV2 {
+        RequestV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            tool_call_id: ToolCallId::from("call_abc123".to_string()),
+            arguments: serde_json::json!({"query": "test"}),
+        }
+    }
+
+    async fn send_svc_request(worker: &mut GitDagWorker, epoch_secs: i64) {
+        let key = test_svc_request_key(SESSION);
+        let msg = test_svc_request_msg();
+        let ts = DateTime::from_timestamp(epoch_secs, 0).unwrap();
+        worker.on_svc_request(&key, &msg, ts).await;
+    }
+
+    #[tokio::test]
+    async fn svc_request_creates_commit() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_request(&mut worker, 1000).await;
+
+        let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
+        assert_eq!(count, "2"); // initial + svc_request
+    }
+
+    #[tokio::test]
+    async fn svc_request_directory_has_per_field_files() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_request(&mut worker, 1000).await;
+
+        let dir = "001-support-agent-svc_request";
+        let show = |field: &str| show_session_file(tmp.path(), dir, field);
+
+        assert_eq!(show("type").unwrap(), "svc_request");
+        assert_eq!(show("session_id").unwrap(), SESSION);
+        assert_eq!(show("submission_id").unwrap(), "sub-1");
+        assert_eq!(show("agent_id").unwrap(), "support-agent");
+        assert_eq!(show("service").unwrap(), "mcp");
+        assert_eq!(show("backend").unwrap(), "brave");
+        assert_eq!(show("operation").unwrap(), "web_search");
+        assert_eq!(show("sequence").unwrap(), "1");
+        assert_eq!(show("tool_call_id").unwrap(), "call_abc123");
+        assert_eq!(show("protocol_version").unwrap(), "v1");
+        let payload_json = show("payload").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
+        assert_eq!(parsed["query"], "test");
+        assert!(!show("hash").unwrap().is_empty());
+        let diag = show("diagnostics.toml").unwrap();
+        assert!(diag.contains("server"), "diag: {diag}");
+        // state should be absent when None
+        let result = show("state");
+        assert!(result.is_err(), "should not have state file when None");
+    }
+
+    #[tokio::test]
+    async fn svc_request_state_file_present_when_set() {
+        let (mut worker, tmp) = test_worker();
+        let key = test_svc_request_key(SESSION);
+        let msg = RequestV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            state: Some("state-abc123".to_string()),
+            diagnostics: SvcRequestDiagnostics::default(),
+            tool_call_id: ToolCallId::from("call_abc123".to_string()),
+            arguments: serde_json::json!({"query": "test"}),
+        };
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        worker.on_svc_request(&key, &msg, ts).await;
+
+        let state =
+            show_session_file(tmp.path(), "001-support-agent-svc_request", "state").unwrap();
+        assert_eq!(state, "state-abc123");
+    }
+
+    #[tokio::test]
+    async fn svc_request_commit_message_format() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_request(&mut worker, 1000).await;
+
+        let subject = git(tmp.path(), &["log", "-1", "--format=%s", "main"]).unwrap();
+        assert_eq!(subject, "svc_request: support-agent \u{2192} mcp.brave");
+    }
+
+    // ========================================================================
+    // SvcResponse message tests
+    // ========================================================================
+
+    fn test_svc_response_key(session: &str) -> SvcRoutingKey {
+        SvcRoutingKey {
+            session: SessionId::try_from(session.to_string()).unwrap(),
+            branch: BranchId::from(1),
+            submission: SubmissionId::from("sub-1".to_string()),
+            kind: SvcMessageKind::SvcResponse {
+                agent: test_agent_id(),
+                service: ServiceBackendV2::from_parts("mcp", "brave").unwrap(),
+                operation: ServiceOperation::new("web_search"),
+                sequence: Sequence::from(1u32),
+            },
+        }
+    }
+
+    fn test_svc_response_msg() -> ResponseV2 {
+        ResponseV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            content: "result text".to_string(),
+            is_error: false,
+        }
+    }
+
+    async fn send_svc_response(worker: &mut GitDagWorker, epoch_secs: i64) {
+        let key = test_svc_response_key(SESSION);
+        let msg = test_svc_response_msg();
+        let ts = DateTime::from_timestamp(epoch_secs, 0).unwrap();
+        worker.on_svc_response(&key, &msg, ts).await;
+    }
+
+    #[tokio::test]
+    async fn svc_response_creates_commit() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_response(&mut worker, 1000).await;
+
+        let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
+        assert_eq!(count, "2"); // initial + svc_response
+    }
+
+    #[tokio::test]
+    async fn svc_response_directory_has_per_field_files() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_response(&mut worker, 1000).await;
+
+        let dir = "001-mcp.brave-svc_response";
+        let show = |field: &str| show_session_file(tmp.path(), dir, field);
+
+        assert_eq!(show("type").unwrap(), "svc_response");
+        assert_eq!(show("session_id").unwrap(), SESSION);
+        assert_eq!(show("submission_id").unwrap(), "sub-1");
+        assert_eq!(show("agent_id").unwrap(), "support-agent");
+        assert_eq!(show("service").unwrap(), "mcp");
+        assert_eq!(show("backend").unwrap(), "brave");
+        assert_eq!(show("operation").unwrap(), "web_search");
+        assert_eq!(show("sequence").unwrap(), "1");
+        assert!(!show("correlation_id").unwrap().is_empty());
+        assert_eq!(show("is_error").unwrap(), "false");
+        assert_eq!(show("protocol_version").unwrap(), "v1");
+        assert_eq!(show("payload").unwrap(), "result text");
+        assert!(!show("hash").unwrap().is_empty());
+        let diag = show("diagnostics.toml").unwrap();
+        assert!(diag.contains("server"), "diag: {diag}");
+        // state should be absent when None
+        let result = show("state");
+        assert!(result.is_err(), "should not have state file when None");
+    }
+
+    #[tokio::test]
+    async fn svc_response_is_error_true() {
+        let (mut worker, tmp) = test_worker();
+        let key = test_svc_response_key(SESSION);
+        let msg = ResponseV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            content: "error occurred".to_string(),
+            is_error: true,
+        };
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        worker.on_svc_response(&key, &msg, ts).await;
+
+        assert_eq!(
+            show_session_file(tmp.path(), "001-mcp.brave-svc_response", "is_error").unwrap(),
+            "true"
+        );
+    }
+
+    #[tokio::test]
+    async fn svc_response_commit_message_format() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_response(&mut worker, 1000).await;
+
+        let subject = git(tmp.path(), &["log", "-1", "--format=%s", "main"]).unwrap();
+        assert_eq!(subject, "svc_response: mcp.brave \u{2192} support-agent");
+    }
+
+    #[tokio::test]
+    async fn svc_request_response_chain() {
+        let (mut worker, tmp) = test_worker();
+
+        // Send svc_request, then svc_response for the same session
+        let req_key = test_svc_request_key(SESSION);
+        let req_msg = test_svc_request_msg();
+        let t1 = DateTime::from_timestamp(1000, 0).unwrap();
+        worker.on_svc_request(&req_key, &req_msg, t1).await;
+
+        let resp_key = test_svc_response_key(SESSION);
+        let resp_msg = test_svc_response_msg();
+        let t2 = DateTime::from_timestamp(1001, 0).unwrap();
+        worker.on_svc_response(&resp_key, &resp_msg, t2).await;
+
+        // commit count = 3 (initial + request + response)
+        let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
+        assert_eq!(count, "3");
+
+        // Response should parent on request
+        let parents = git(tmp.path(), &["log", "--format=%P", "-1", "main"]).unwrap();
+        assert!(!parents.is_empty(), "response should have a parent");
     }
 }
