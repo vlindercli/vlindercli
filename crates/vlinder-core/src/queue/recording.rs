@@ -1435,7 +1435,7 @@ mod tests {
         let nodes = store.get_session_nodes(&session).await.unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].message_type(), MessageType::SvcRequest);
-        assert_eq!(nodes[0].protocol_version(), "v2");
+        assert_eq!(nodes[0].protocol_version(), "v1");
 
         // Now send a svc_response into the inner queue and receive it via RecordingQueue
         let response_key = crate::domain::SvcRoutingKey {
@@ -1472,7 +1472,7 @@ mod tests {
         let nodes = store.get_session_nodes(&session).await.unwrap();
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[1].message_type(), MessageType::SvcResponse);
-        assert_eq!(nodes[1].protocol_version(), "v2");
+        assert_eq!(nodes[1].protocol_version(), "v1");
     }
 
     #[tokio::test]

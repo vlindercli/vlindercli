@@ -834,7 +834,7 @@ impl DagStore for InMemoryDagStore {
             session: session.clone(),
             submission: submission.clone(),
             branch,
-            protocol_version: "v2".to_string(),
+            protocol_version: "v1".to_string(),
         };
         self.insert_node(&node);
         Ok(())
@@ -865,7 +865,7 @@ impl DagStore for InMemoryDagStore {
             session: session.clone(),
             submission: submission.clone(),
             branch,
-            protocol_version: "v2".to_string(),
+            protocol_version: "v1".to_string(),
         };
         self.insert_node(&node);
         Ok(())
@@ -1418,7 +1418,7 @@ mod tests {
 
         let node = store.get_node(&dag_id).await.unwrap().unwrap();
         assert_eq!(node.msg_type, MessageType::SvcRequest);
-        assert_eq!(node.protocol_version, "v2");
+        assert_eq!(node.protocol_version, "v1");
 
         // Insert svc_response node
         let response_dag_id = did("xyz");
@@ -1451,6 +1451,6 @@ mod tests {
 
         let node = store.get_node(&response_dag_id).await.unwrap().unwrap();
         assert_eq!(node.msg_type, MessageType::SvcResponse);
-        assert_eq!(node.protocol_version, "v2");
+        assert_eq!(node.protocol_version, "v1");
     }
 }
