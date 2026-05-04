@@ -288,7 +288,13 @@ impl CoreHarness {
         agent_name: &AgentName,
         last_state: Option<String>,
     ) -> crate::domain::ToolResult {
-        let service = ServiceBackendV2::Mcp("server-everything".to_string()); // hardcoded for now
+        let provider = self
+            .registry
+            .get_agent_by_name(agent_name.as_str())
+            .await
+            .and_then(|a| a.requirements.mcp.keys().next().cloned())
+            .unwrap_or_else(|| "server-everything".to_string());
+        let service = ServiceBackendV2::Mcp(provider.clone());
         let operation = ServiceOperation::new(&tc.name);
         let sequence = self.next_service_sequence();
 
@@ -313,7 +319,7 @@ impl CoreHarness {
             tool_call_id: tc.id.clone(),
             state: last_state,
             diagnostics: SvcRequestDiagnostics {
-                server: "server-everything".to_string(),
+                server: provider,
                 tool: tc.name.clone(),
                 arguments_bytes,
                 sent_at_ms,
