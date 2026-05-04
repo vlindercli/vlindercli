@@ -706,10 +706,14 @@ pub async fn run_mcp_worker(config: &Config, shutdown: CancellationToken) {
         }
     };
 
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+
     tracing::info!("MCP service worker ready");
 
     tokio::select! {
-        result = vlinder_mcp::run_mcp_worker(queue) => {
+        result = vlinder_mcp::run_mcp_worker(queue, registry) => {
             if let Err(e) = result {
                 tracing::error!(error = %e, "MCP worker exited with error");
             }

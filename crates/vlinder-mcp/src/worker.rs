@@ -1,27 +1,13 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use vlinder_core::domain::{
-    MessageId, MessageQueue, QueueError, ResponseV2, ServiceBackendV2, ServiceOperation,
+    MessageId, MessageQueue, QueueError, Registry, ResponseV2, ServiceBackendV2, ServiceOperation,
     SvcMessageKind, SvcResponseDiagnostics, SvcRoutingKey,
 };
 use vlinder_nats::NatsQueue;
 
 use crate::mcp_client::call_mcp_tool;
-
-/// Map MCP provider from routing key to the npx package name.
-fn mcp_server_package(key: &SvcRoutingKey) -> String {
-    let provider = match &key.kind {
-        SvcMessageKind::SvcRequest {
-            service: ServiceBackendV2::Mcp(p),
-            ..
-        } => p.as_str(),
-        SvcMessageKind::SvcResponse { .. } => "unknown",
-    };
-    match provider {
-        "server-everything" => "@modelcontextprotocol/server-everything".to_string(),
-        "unknown" => "unknown".to_string(),
-        _ => format!("@modelcontextprotocol/server-{provider}"),
-    }
-}
 
 /// Build response key from request key (swap `SvcRequest` → `SvcResponse`).
 fn response_key_from_request(req_key: &SvcRoutingKey) -> SvcRoutingKey {
@@ -47,7 +33,21 @@ fn response_key_from_request(req_key: &SvcRoutingKey) -> SvcRoutingKey {
     }
 }
 
-pub async fn run_mcp_worker(queue: NatsQueue) -> Result<()> {
+/// Extract the provider name from a routing key.
+fn provider_from_key(key: &SvcRoutingKey) -> String {
+    match &key.kind {
+        SvcMessageKind::SvcRequest {
+            service: ServiceBackendV2::Mcp(p),
+            ..
+        }
+        | SvcMessageKind::SvcResponse {
+            service: ServiceBackendV2::Mcp(p),
+            ..
+        } => p.clone(),
+    }
+}
+
+pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Result<()> {
     loop {
         let (key, req, ack) = match queue.receive_svc_request_mcp().await {
             Ok(result) => result,
@@ -60,13 +60,38 @@ pub async fn run_mcp_worker(queue: NatsQueue) -> Result<()> {
 
         let _ = ack().await;
 
-        let server_package = mcp_server_package(&key);
+        let provider_name = provider_from_key(&key);
+        let agent_name = match &key.kind {
+            SvcMessageKind::SvcRequest { agent, .. } => agent.as_str().to_string(),
+            SvcMessageKind::SvcResponse { .. } => String::new(),
+        };
         let operation = match &key.kind {
             SvcMessageKind::SvcRequest { operation, .. } => operation.clone(),
             SvcMessageKind::SvcResponse { .. } => ServiceOperation::new("unknown"),
         };
 
-        let result = call_mcp_tool(&server_package, &operation, req.arguments.clone()).await;
+        // Resolve the MCP server URL from the agent's config in the registry.
+        let server_url = if agent_name.is_empty() {
+            None
+        } else {
+            registry
+                .get_agent_by_name(&agent_name)
+                .await
+                .and_then(|a| a.requirements.mcp.get(&provider_name).cloned())
+                .map(|cfg| cfg.url)
+        };
+
+        let result = if let Some(url) = server_url {
+            call_mcp_tool(&url, &operation, req.arguments.clone()).await
+        } else {
+            let msg = if provider_name.is_empty() {
+                "MCP worker: no provider in routing key".to_string()
+            } else {
+                format!("MCP worker: agent '{agent_name}' has no MCP provider '{provider_name}'")
+            };
+            tracing::warn!("{msg}");
+            Err(anyhow::anyhow!("{msg}"))
+        };
 
         let (content, is_error) = match result {
             Ok(text) => (text, false),
@@ -85,7 +110,7 @@ pub async fn run_mcp_worker(queue: NatsQueue) -> Result<()> {
             correlation_id: req.id,
             state: req.state.clone(),
             diagnostics: SvcResponseDiagnostics {
-                server: server_package,
+                server: provider_name,
                 tool: tool_name,
                 round_trip_ms: 0, // deferred: real timing not yet wired
                 content_bytes,
@@ -119,37 +144,41 @@ mod tests {
     }
 
     #[test]
-    fn mcp_server_package_known_provider() {
-        let key = test_request_key("server-everything", "echo");
-        assert_eq!(
-            mcp_server_package(&key),
-            "@modelcontextprotocol/server-everything"
-        );
-    }
-
-    #[test]
-    fn mcp_server_package_unknown_provider() {
+    fn provider_from_key_request() {
         let key = test_request_key("brave", "search");
-        assert_eq!(
-            mcp_server_package(&key),
-            "@modelcontextprotocol/server-brave"
-        );
+        assert_eq!(provider_from_key(&key), "brave".to_string());
     }
 
     #[test]
-    fn mcp_server_package_response_key_returns_unknown() {
+    fn provider_from_key_response() {
         let key = SvcRoutingKey {
             session: SessionId::new(),
             branch: BranchId::from(1),
             submission: SubmissionId::new(),
             kind: SvcMessageKind::SvcResponse {
                 agent: AgentName::new("test_agent"),
-                service: ServiceBackendV2::Mcp("server-everything".to_string()),
+                service: ServiceBackendV2::Mcp("jira".to_string()),
+                operation: ServiceOperation::new("get_issue"),
+                sequence: Sequence::first(),
+            },
+        };
+        assert_eq!(provider_from_key(&key), "jira".to_string());
+    }
+
+    #[test]
+    fn provider_from_key_empty() {
+        let key = SvcRoutingKey {
+            session: SessionId::new(),
+            branch: BranchId::from(1),
+            submission: SubmissionId::new(),
+            kind: SvcMessageKind::SvcResponse {
+                agent: AgentName::new("test_agent"),
+                service: ServiceBackendV2::Mcp(String::new()),
                 operation: ServiceOperation::new("echo"),
                 sequence: Sequence::first(),
             },
         };
-        assert_eq!(mcp_server_package(&key), "unknown");
+        assert_eq!(provider_from_key(&key), String::new());
     }
 
     #[test]
