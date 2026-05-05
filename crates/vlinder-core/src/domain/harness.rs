@@ -15,7 +15,7 @@ use crate::domain::{
     MessageId, MessageQueue, MessageType, PromoteMessage, Registry, RequestV2, ResourceId,
     Sequence, SequenceCounter, ServiceBackendV2, ServiceOperation, SessionId, SessionMessageKind,
     SessionRoutingKey, SessionStartMessage, SubmissionId, SvcMessageKind, SvcRequestDiagnostics,
-    SvcRoutingKey, ToolResult,
+    SvcRoutingKey, ToolCallProtocol, ToolResult,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -110,6 +110,7 @@ pub struct CoreHarness {
     registry: Arc<dyn Registry>,
     store: Arc<dyn DagStore>,
     service_sequence: SequenceCounter,
+    protocol: Arc<dyn ToolCallProtocol>,
 }
 
 impl CoreHarness {
@@ -118,6 +119,7 @@ impl CoreHarness {
         registry: Arc<dyn Registry>,
         store: Arc<dyn DagStore>,
         harness_type: HarnessType,
+        protocol: Arc<dyn ToolCallProtocol>,
     ) -> Self {
         Self {
             harness_type,
@@ -125,6 +127,7 @@ impl CoreHarness {
             registry,
             store,
             service_sequence: SequenceCounter::new(),
+            protocol,
         }
     }
 
@@ -324,7 +327,7 @@ impl CoreHarness {
                 arguments_bytes,
                 sent_at_ms,
             },
-            payload: serde_json::to_vec(&tc.arguments.clone()).unwrap_or_default(),
+            payload: self.protocol.encode_tool_call(&tc.name, &tc.arguments),
         };
 
         match self.queue.send_svc_request(key.clone(), req).await {
@@ -720,8 +723,23 @@ mod tests {
     use super::*;
     use crate::domain::{
         InMemoryDagStore, InMemoryRegistry, InMemorySecretStore, RuntimeType, SecretStore,
+        ToolCallProtocol,
     };
     use crate::queue::InMemoryQueue;
+    use serde_json::Value;
+
+    /// Test protocol double — serializes arguments as JSON bytes.
+    struct TestProtocol;
+
+    impl ToolCallProtocol for TestProtocol {
+        fn encode_tool_call(&self, _name: &str, arguments: &Value) -> Vec<u8> {
+            serde_json::to_vec(arguments).unwrap_or_default()
+        }
+
+        fn decode_tool_result(&self, payload: &[u8]) -> String {
+            String::from_utf8_lossy(payload).into_owned()
+        }
+    }
 
     #[test]
     fn harness_type_is_cli() {
@@ -732,7 +750,13 @@ mod tests {
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let store: Arc<dyn DagStore> = Arc::new(InMemoryDagStore::new());
 
-        let harness = CoreHarness::new(queue, registry, store, HarnessType::Cli);
+        let harness = CoreHarness::new(
+            queue,
+            registry,
+            store,
+            HarnessType::Cli,
+            Arc::new(TestProtocol),
+        );
 
         assert_eq!(harness.harness_type(), HarnessType::Cli);
     }

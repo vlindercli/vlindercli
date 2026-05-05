@@ -517,6 +517,7 @@ pub async fn run_harness_worker(config: &Config, shutdown: CancellationToken) {
     use tonic::transport::Server;
     use vlinder_core::domain::{CoreHarness, HarnessType};
     use vlinder_harness::harness_service::HarnessServer;
+    use vlinder_mcp::McpProtocol;
 
     let queue = crate::queue_factory::recording_from_config_async(config)
         .await
@@ -528,7 +529,13 @@ pub async fn run_harness_worker(config: &Config, shutdown: CancellationToken) {
         .await
         .expect("Failed to connect to state service");
 
-    let harness = CoreHarness::new(queue, registry, store, HarnessType::Grpc);
+    let harness = CoreHarness::new(
+        queue,
+        registry,
+        store,
+        HarnessType::Grpc,
+        Arc::new(McpProtocol),
+    );
 
     let addr_str = config
         .distributed
