@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::RegistryConfig;
 use vlinder_core::domain::InMemoryRegistry;
 use vlinder_core::domain::{
-    Agent, AgentName, Fleet, Job, JobId, JobStatus, Model, ObjectStorageType, Provider,
+    Agent, AgentName, Fleet, Job, JobId, JobStatus, McpServer, Model, ObjectStorageType, Provider,
     ReadinessCheck, RegistrationError, Registry, RegistryRepository, ResourceId, RuntimeType,
     SecretStore, SubmissionId, VectorStorageType,
 };
@@ -64,6 +64,15 @@ impl PersistentRegistry {
 
         for agent in agents {
             inner.restore_agent(agent)?;
+        }
+
+        // Load persisted MCP servers
+        let mcp_servers = repo.load_mcp_servers().map_err(|e| {
+            RegistrationError::Persistence(format!("failed to load mcp servers: {e}"))
+        })?;
+
+        for server in mcp_servers {
+            inner.register_mcp_server(server).await?;
         }
 
         Ok(Self { inner, repo })
@@ -217,6 +226,44 @@ impl Registry for PersistentRegistry {
 
         if deleted {
             self.inner.remove_agent(name);
+        }
+
+        Ok(deleted)
+    }
+
+    // --- MCP Server operations (write-through for mutations) ---
+
+    async fn register_mcp_server(&self, server: McpServer) -> Result<(), RegistrationError> {
+        // Persist first, then cache
+        self.repo
+            .save_mcp_server(&server)
+            .map_err(|e| RegistrationError::Persistence(e.to_string()))?;
+
+        self.inner.register_mcp_server(server).await?;
+        Ok(())
+    }
+
+    async fn get_mcp_server(&self, name: &str) -> Option<McpServer> {
+        self.inner.get_mcp_server(name).await
+    }
+
+    async fn get_mcp_servers(&self) -> Vec<McpServer> {
+        self.inner.get_mcp_servers().await
+    }
+
+    async fn delete_mcp_server(&self, name: &str) -> Result<bool, RegistrationError> {
+        if self.inner.get_mcp_server(name).await.is_none() {
+            return Ok(false);
+        }
+
+        // Disk first, then cache
+        let deleted = self
+            .repo
+            .delete_mcp_server(name)
+            .map_err(|e| RegistrationError::Persistence(e.to_string()))?;
+
+        if deleted {
+            self.inner.remove_mcp_server(name);
         }
 
         Ok(deleted)

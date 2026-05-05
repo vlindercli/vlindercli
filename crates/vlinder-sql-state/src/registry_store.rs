@@ -6,11 +6,13 @@
 use diesel::prelude::*;
 
 use crate::dag_store::SqliteDagStore;
-use crate::models::{AgentRow, ModelRow, NewAgent, NewModel, NewReadinessCheck};
+use crate::models::{
+    AgentRow, McpServerRow, ModelRow, NewAgent, NewMcpServer, NewModel, NewReadinessCheck,
+};
 use crate::schema::{agents, models, readiness_checks};
 use vlinder_core::domain::{
-    Agent, AgentStatus, Model, ReadinessCheck, RegistryRepository, RepositoryError, StoredAgent,
-    StoredModel,
+    Agent, AgentStatus, McpServer, Model, ReadinessCheck, RegistryRepository, RepositoryError,
+    StoredAgent, StoredModel,
 };
 
 impl SqliteDagStore {
@@ -88,6 +90,63 @@ struct LatestCheckRow {
 }
 
 impl RegistryRepository for SqliteDagStore {
+    fn save_mcp_server(&self, server: &McpServer) -> Result<(), RepositoryError> {
+        let tools_json = serde_json::to_string(&server.tools)
+            .map_err(|e| RepositoryError::Serialization(e.to_string()))?;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        diesel::replace_into(crate::schema::mcp_servers::table)
+            .values(&NewMcpServer {
+                name: &server.name,
+                url: &server.url,
+                tools_json: &tools_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_mcp_servers(&self) -> Result<Vec<McpServer>, RepositoryError> {
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let rows: Vec<McpServerRow> = crate::schema::mcp_servers::table
+            .select(McpServerRow::as_select())
+            .load(&mut *conn)
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+
+        rows.into_iter()
+            .map(|r| {
+                let tools: Vec<serde_json::Value> = serde_json::from_str(&r.tools_json)
+                    .map_err(|e| RepositoryError::Serialization(e.to_string()))?;
+                Ok(McpServer {
+                    id: McpServer::placeholder_id(&r.name),
+                    name: r.name,
+                    url: r.url,
+                    tools,
+                })
+            })
+            .collect()
+    }
+
+    fn delete_mcp_server(&self, name: &str) -> Result<bool, RepositoryError> {
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let affected = diesel::delete(
+            crate::schema::mcp_servers::table.filter(crate::schema::mcp_servers::name.eq(name)),
+        )
+        .execute(&mut *conn)
+        .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(affected > 0)
+    }
+
+    fn mcp_server_exists(&self, name: &str) -> Result<bool, RepositoryError> {
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let count: i64 = crate::schema::mcp_servers::table
+            .filter(crate::schema::mcp_servers::name.eq(name))
+            .count()
+            .get_result(&mut *conn)
+            .map_err(|e| RepositoryError::Database(e.to_string()))?;
+        Ok(count > 0)
+    }
+
     fn save_model(&self, model: &Model) -> Result<(), RepositoryError> {
         let stored = StoredModel::from_model(model);
 

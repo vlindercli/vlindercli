@@ -4,8 +4,8 @@ use tonic::transport::Channel;
 
 use super::proto::{self, registry_client::RegistryClient};
 use vlinder_core::domain::{
-    Agent, Fleet, Job, JobId, JobStatus, Model, ObjectStorageType, Provider, RegistrationError,
-    Registry, ResourceId, RuntimeType, SubmissionId, VectorStorageType,
+    Agent, Fleet, Job, JobId, JobStatus, McpServer, Model, ObjectStorageType, Provider,
+    RegistrationError, Registry, ResourceId, RuntimeType, SubmissionId, VectorStorageType,
 };
 
 use async_trait::async_trait;
@@ -360,6 +360,74 @@ impl Registry for GrpcRegistryClient {
     }
 
     // --- Fleet operations ---
+
+    // --- MCP Server operations ---
+
+    async fn register_mcp_server(&self, server: McpServer) -> Result<(), RegistrationError> {
+        let proto_server: proto::McpServer = server.into();
+        let request = proto::RegisterMcpServerRequest {
+            server: Some(proto_server),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .register_mcp_server(request)
+            .await
+            .map_err(|e| RegistrationError::Remote(e.to_string()))?;
+
+        let resp = response.into_inner();
+        if resp.success {
+            Ok(())
+        } else {
+            Err(RegistrationError::Remote(
+                resp.error.unwrap_or_else(|| "unknown error".to_string()),
+            ))
+        }
+    }
+
+    async fn get_mcp_server(&self, name: &str) -> Option<McpServer> {
+        let request = proto::GetMcpServerRequest {
+            name: name.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = client.get_mcp_server(request).await.ok()?;
+
+        response.into_inner().server.and_then(|s| s.try_into().ok())
+    }
+
+    async fn get_mcp_servers(&self) -> Vec<McpServer> {
+        let request = proto::ListMcpServersRequest {};
+
+        let mut client = self.client.clone();
+        match client.list_mcp_servers(request).await {
+            Ok(resp) => resp
+                .into_inner()
+                .servers
+                .into_iter()
+                .filter_map(|s| s.try_into().ok())
+                .collect(),
+            Err(_) => vec![],
+        }
+    }
+
+    async fn delete_mcp_server(&self, name: &str) -> Result<bool, RegistrationError> {
+        let request = proto::DeleteMcpServerRequest {
+            name: name.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .delete_mcp_server(request)
+            .await
+            .map_err(|e| RegistrationError::Remote(e.to_string()))?;
+
+        let resp = response.into_inner();
+        if let Some(error) = resp.error {
+            return Err(RegistrationError::Remote(error));
+        }
+        Ok(resp.deleted)
+    }
 
     async fn register_fleet(&self, fleet: Fleet) -> Result<(), RegistrationError> {
         let proto_fleet: proto::Fleet = fleet.into();

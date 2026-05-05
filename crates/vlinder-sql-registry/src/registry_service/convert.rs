@@ -5,8 +5,8 @@ use std::str::FromStr;
 
 use super::proto;
 use vlinder_core::domain::{
-    Agent, Fleet, Job, JobId, JobStatus, Model, ModelType, MountConfig, Protocol, Provider,
-    Requirements, ResourceId, RuntimeType, ServiceConfig, ServiceType, SubmissionId,
+    Agent, Fleet, Job, JobId, JobStatus, McpServer, Model, ModelType, MountConfig, Protocol,
+    Provider, Requirements, ResourceId, RuntimeType, ServiceConfig, ServiceType, SubmissionId,
 };
 
 // =============================================================================
@@ -296,6 +296,36 @@ impl From<proto::ModelType> for ModelType {
             proto::ModelType::Inference | proto::ModelType::Unspecified => ModelType::Inference,
             proto::ModelType::Embedding => ModelType::Embedding,
         }
+    }
+}
+
+// =============================================================================
+// MCP Server
+// =============================================================================
+
+impl From<McpServer> for proto::McpServer {
+    fn from(server: McpServer) -> Self {
+        let tools_json = serde_json::to_string(&server.tools).unwrap_or_default();
+        Self {
+            name: server.name,
+            url: server.url,
+            tools_json,
+        }
+    }
+}
+
+impl TryFrom<proto::McpServer> for McpServer {
+    type Error = String;
+
+    fn try_from(server: proto::McpServer) -> Result<Self, Self::Error> {
+        let tools: Vec<serde_json::Value> = serde_json::from_str(&server.tools_json)
+            .map_err(|e| format!("invalid tools_json: {e}"))?;
+        Ok(Self {
+            id: McpServer::placeholder_id(&server.name),
+            name: server.name,
+            url: server.url,
+            tools,
+        })
     }
 }
 

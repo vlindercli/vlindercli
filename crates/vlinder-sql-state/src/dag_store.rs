@@ -195,6 +195,11 @@ impl SqliteDagStore {
                  diagnostics TEXT,
                  payload BLOB NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS mcp_servers (
+                 name TEXT PRIMARY KEY,
+                 url TEXT NOT NULL,
+                 tools_json TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS readiness_checks (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  agent_name TEXT NOT NULL,

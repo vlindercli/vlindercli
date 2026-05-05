@@ -28,6 +28,12 @@ service Registry {
   rpc GetFleet(GetFleetRequest) returns (GetFleetResponse);
   rpc ListFleets(ListFleetsRequest) returns (ListFleetsResponse);
 
+  // MCP server operations
+  rpc RegisterMcpServer(RegisterMcpServerRequest) returns (RegisterMcpServerResponse);
+  rpc GetMcpServer(GetMcpServerRequest) returns (GetMcpServerResponse);
+  rpc ListMcpServers(ListMcpServersRequest) returns (ListMcpServersResponse);
+  rpc DeleteMcpServer(DeleteMcpServerRequest) returns (DeleteMcpServerResponse);
+
   // Job operations
   rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
   rpc GetJob(GetJobRequest) returns (GetJobResponse);
@@ -248,6 +254,48 @@ message DeleteModelRequest {
 }
 
 message DeleteModelResponse {
+  bool deleted = 1;
+  optional string error = 2;
+}
+
+// =============================================================================
+// MCP Server
+// =============================================================================
+
+message McpServer {
+  string name = 1;
+  string url = 2;
+  string tools_json = 3;
+}
+
+message RegisterMcpServerRequest {
+  McpServer server = 1;
+}
+
+message RegisterMcpServerResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message GetMcpServerRequest {
+  string name = 1;
+}
+
+message GetMcpServerResponse {
+  optional McpServer server = 1;
+}
+
+message ListMcpServersRequest {}
+
+message ListMcpServersResponse {
+  repeated McpServer servers = 1;
+}
+
+message DeleteMcpServerRequest {
+  string name = 1;
+}
+
+message DeleteMcpServerResponse {
   bool deleted = 1;
   optional string error = 2;
 }

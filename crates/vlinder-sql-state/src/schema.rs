@@ -193,6 +193,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    mcp_servers (name) {
+        name -> Text,
+        url -> Text,
+        tools_json -> Text,
+    }
+}
+
+diesel::table! {
     readiness_checks (id) {
         id -> Integer,
         agent_name -> Text,
@@ -230,5 +238,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     svc_request_nodes,
     svc_response_nodes,
     models,
+    mcp_servers,
     readiness_checks,
 );

@@ -9,7 +9,7 @@ use diesel::prelude::*;
 
 use crate::schema::{
     agents, branches, complete_nodes, dag_nodes, delete_agent_nodes, deploy_agent_nodes,
-    fork_nodes, invoke_nodes, models, promote_nodes, readiness_checks, request_nodes,
+    fork_nodes, invoke_nodes, mcp_servers, models, promote_nodes, readiness_checks, request_nodes,
     response_nodes, sessions, svc_request_nodes, svc_response_nodes,
 };
 
@@ -468,4 +468,24 @@ pub struct NewSvcResponseNode<'a> {
     pub state: Option<&'a str>,
     pub diagnostics: Option<&'a str>,
     pub payload: &'a [u8],
+}
+
+// ============================================================================
+// mcp_servers
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = mcp_servers)]
+pub struct McpServerRow {
+    pub name: String,
+    pub url: String,
+    pub tools_json: String,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = mcp_servers)]
+pub struct NewMcpServer<'a> {
+    pub name: &'a str,
+    pub url: &'a str,
+    pub tools_json: &'a str,
 }
