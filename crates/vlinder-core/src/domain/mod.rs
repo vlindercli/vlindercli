@@ -21,6 +21,8 @@ pub mod harness;
 mod identity;
 mod image_digest;
 mod image_ref;
+mod mcp_manifest;
+mod mcp_server;
 mod message;
 mod message_queue;
 mod model;
@@ -131,6 +133,13 @@ pub use resource_id::ResourceId;
 
 pub use model::{LoadError as ModelLoadError, Model, ModelType};
 pub use model_manifest::{ModelManifest, ModelTypeConfig};
+
+// ============================================================================
+// MCP Server
+// ============================================================================
+
+pub use mcp_manifest::McpManifest;
+pub use mcp_server::McpServer;
 
 // ============================================================================
 // Model Catalog (trait)
