@@ -102,15 +102,11 @@ pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Re
             SvcMessageKind::SvcResponse { .. } => ServiceOperation::new("unknown"),
         };
 
-        // Resolve the MCP server URL from the agent's config in the registry.
-        let server_url = if agent_name.is_empty() {
+        // Resolve the MCP server URL from the registry (first-class MCP server entity).
+        let server_url = if provider_name.is_empty() {
             None
         } else {
-            registry
-                .get_agent_by_name(&agent_name)
-                .await
-                .and_then(|a| a.requirements.mcp.get(&provider_name).cloned())
-                .map(|cfg| cfg.url)
+            registry.get_mcp_server(&provider_name).await.map(|s| s.url)
         };
 
         let (_, params) = match boundary::deserialize_request(&req.payload) {
