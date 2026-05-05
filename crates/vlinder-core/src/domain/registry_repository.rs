@@ -5,8 +5,8 @@ use std::str::FromStr;
 
 use super::runtime::RuntimeType;
 use super::{
-    Agent, ImageDigest, McpProviderConfig, Model, ModelType, MountConfig, Prompts, Provider,
-    Requirements, ResourceId, ServiceConfig, ServiceType,
+    Agent, ImageDigest, McpProviderConfig, McpServer, Model, ModelType, MountConfig, Prompts,
+    Provider, Requirements, ResourceId, ServiceConfig, ServiceType,
 };
 
 /// Repository for persisting Registry state.
@@ -14,6 +14,30 @@ use super::{
 /// Implementations handle storage (`SQLite`, `Postgres`, etc.).
 /// Registry uses this for save/load operations.
 pub trait RegistryRepository: Send + Sync {
+    // --- MCP Server operations ---
+
+    /// Save an MCP server to the repository.
+    fn save_mcp_server(&self, _server: &McpServer) -> Result<(), RepositoryError> {
+        Err(RepositoryError::Database(
+            "save_mcp_server not implemented".into(),
+        ))
+    }
+
+    /// Load all MCP servers from the repository.
+    fn load_mcp_servers(&self) -> Result<Vec<McpServer>, RepositoryError> {
+        Ok(Vec::new())
+    }
+
+    /// Delete an MCP server by name.
+    fn delete_mcp_server(&self, _name: &str) -> Result<bool, RepositoryError> {
+        Ok(false)
+    }
+
+    /// Check if an MCP server exists.
+    fn mcp_server_exists(&self, _name: &str) -> Result<bool, RepositoryError> {
+        Ok(false)
+    }
+
     /// Save a model to the repository.
     fn save_model(&self, model: &Model) -> Result<(), RepositoryError>;
 

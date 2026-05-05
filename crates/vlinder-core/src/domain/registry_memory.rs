@@ -8,9 +8,9 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 
 use super::{
-    ensure_agent_identity, Agent, AgentManifest, Fleet, Job, JobId, JobStatus, Model, ModelType,
-    ObjectStorageType, Provider, RegistrationError, Registry, ResourceId, RuntimeType, SecretStore,
-    ServiceType, SubmissionId, VectorStorageType,
+    ensure_agent_identity, Agent, AgentManifest, Fleet, Job, JobId, JobStatus, McpServer, Model,
+    ModelType, ObjectStorageType, Provider, RegistrationError, Registry, ResourceId, RuntimeType,
+    SecretStore, ServiceType, SubmissionId, VectorStorageType,
 };
 
 /// Internal state for `InMemoryRegistry`.
@@ -20,6 +20,7 @@ struct RegistryState {
     /// Stored manifests keyed by agent name (ADR 102).
     manifests: HashMap<String, AgentManifest>,
     models: HashMap<ResourceId, Model>,
+    mcp_servers: HashMap<ResourceId, McpServer>,
     fleets: HashMap<String, Fleet>,
     available_runtimes: HashSet<RuntimeType>,
     available_object_storage: HashSet<ObjectStorageType>,
@@ -46,6 +47,7 @@ impl InMemoryRegistry {
                 agents: HashMap::new(),
                 manifests: HashMap::new(),
                 models: HashMap::new(),
+                mcp_servers: HashMap::new(),
                 fleets: HashMap::new(),
                 available_runtimes: HashSet::new(),
                 available_object_storage: HashSet::new(),
@@ -93,6 +95,23 @@ impl InMemoryRegistry {
         let model_id = ResourceId::new(format!("{}/models/{}", self.registry_id.as_str(), name));
         let mut state = self.state.write().unwrap();
         state.models.remove(&model_id).is_some()
+    }
+
+    fn mcp_server_id(&self, name: &str) -> ResourceId {
+        ResourceId::new(format!(
+            "{}/mcp-servers/{}",
+            self.registry_id.as_str(),
+            name
+        ))
+    }
+
+    /// Remove an MCP server by name. Returns true if the server existed.
+    ///
+    /// Used by `PersistentRegistry` for cache eviction after disk delete.
+    pub fn remove_mcp_server(&self, name: &str) -> bool {
+        let server_id = self.mcp_server_id(name);
+        let mut state = self.state.write().unwrap();
+        state.mcp_servers.remove(&server_id).is_some()
     }
 
     /// Remove an agent by name. Returns true if the agent existed.
@@ -513,6 +532,33 @@ impl Registry for InMemoryRegistry {
             .filter(|j| j.status == JobStatus::Pending)
             .cloned()
             .collect()
+    }
+
+    // --- MCP Server operations ---
+
+    async fn register_mcp_server(&self, mut server: McpServer) -> Result<(), RegistrationError> {
+        let server_id = self.mcp_server_id(&server.name);
+        server.id = server_id.clone();
+        let mut state = self.state.write().unwrap();
+        state.mcp_servers.insert(server_id, server);
+        Ok(())
+    }
+
+    async fn get_mcp_server(&self, name: &str) -> Option<McpServer> {
+        let server_id = self.mcp_server_id(name);
+        let state = self.state.read().unwrap();
+        state.mcp_servers.get(&server_id).cloned()
+    }
+
+    async fn get_mcp_servers(&self) -> Vec<McpServer> {
+        let state = self.state.read().unwrap();
+        state.mcp_servers.values().cloned().collect()
+    }
+
+    async fn delete_mcp_server(&self, name: &str) -> Result<bool, RegistrationError> {
+        let server_id = self.mcp_server_id(name);
+        let mut state = self.state.write().unwrap();
+        Ok(state.mcp_servers.remove(&server_id).is_some())
     }
 
     // --- Capability registration ---
