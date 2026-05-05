@@ -44,6 +44,7 @@ mod storage;
 mod svc_routing_key;
 mod tool_call;
 mod tool_call_parser;
+mod tool_call_protocol;
 mod tool_result;
 pub mod wire;
 pub mod workers;
@@ -64,6 +65,7 @@ pub use readiness::{derive_status, ReadinessCheck, ReadinessStatus};
 pub use service_type::ServiceType;
 pub use tool_call::ToolCall;
 pub use tool_call_parser::{ParseError, ParsedResponse, ToolCallParser};
+pub use tool_call_protocol::ToolCallProtocol;
 pub use tool_result::ToolResult;
 
 // ============================================================================
