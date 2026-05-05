@@ -5,7 +5,8 @@ use clap::{Subcommand, ValueEnum};
 
 use crate::config::CliConfig;
 use vlinder_core::domain::{
-    Agent, AgentManifest, AgentStatus, BranchId, DagNodeId, DagStore, Registry,
+    Agent, AgentManifest, AgentStatus, BranchId, DagNodeId, DagStore, McpManifest, McpServer,
+    Registry,
 };
 use vlinder_sql_registry::registry_service::GrpcRegistryClient;
 
@@ -157,6 +158,17 @@ async fn deploy(path: Option<PathBuf>) {
 
     // Auto-deploy models before submitting the deploy request
     let agent_dir = resolve_agent_dir(&absolute_path);
+    match auto_deploy_mcp_servers(&agent_dir, &manifest, &client).await {
+        Ok(deployed) => {
+            for name in &deployed {
+                println!("  MCP Server: {name} (auto-deployed)");
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
     match auto_deploy_models(&agent_dir, &manifest, &client).await {
         Ok(deployed) => {
             for name in &deployed {
@@ -218,6 +230,18 @@ pub(super) async fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Regi
         std::process::exit(1);
     });
 
+    // Auto-deploy MCP servers from <agent_dir>/mcp/<name>.toml
+    match auto_deploy_mcp_servers(agent_dir, &manifest, registry).await {
+        Ok(deployed) => {
+            for name in &deployed {
+                println!("  MCP Server: {name} (auto-deployed)");
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
     // Auto-deploy models from <agent_dir>/models/<name>.toml
     match auto_deploy_models(agent_dir, &manifest, registry).await {
         Ok(deployed) => {
@@ -698,6 +722,50 @@ pub(super) async fn auto_deploy_models(
         if model_toml.exists() {
             let model = super::model::load_and_register_model(&model_toml, registry).await?;
             deployed.push(model.name);
+        }
+    }
+    Ok(deployed)
+}
+
+/// Auto-deploy MCP servers found in `<agent_dir>/mcp/<name>.toml` for each
+/// MCP server referenced in the manifest's requirements.
+pub(super) async fn auto_deploy_mcp_servers(
+    agent_dir: &Path,
+    manifest: &AgentManifest,
+    registry: &dyn Registry,
+) -> Result<Vec<String>, String> {
+    let mcp_dir = agent_dir.join("mcp");
+    if !mcp_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mcp_names: std::collections::HashSet<&str> = manifest
+        .requirements
+        .mcp
+        .keys()
+        .map(std::string::String::as_str)
+        .collect();
+
+    let mut deployed = Vec::new();
+    for mcp_name in &mcp_names {
+        let mcp_toml = mcp_dir.join(format!("{mcp_name}.toml"));
+        if mcp_toml.exists() {
+            let mcp_manifest = McpManifest::load(&mcp_toml).map_err(|e| {
+                format!(
+                    "Failed to load MCP manifest '{}': {}",
+                    mcp_toml.display(),
+                    e
+                )
+            })?;
+            let tools = mcp_manifest
+                .load_tools(&mcp_dir)
+                .map_err(|e| format!("Failed to load tools for '{mcp_name}': {e}"))?;
+            let server = McpServer::from_manifest(mcp_manifest, tools);
+            registry
+                .register_mcp_server(server.clone())
+                .await
+                .map_err(|e| format!("Failed to register MCP server '{mcp_name}': {e}"))?;
+            deployed.push(mcp_name.to_string());
         }
     }
     Ok(deployed)
