@@ -4,6 +4,7 @@ mod connect;
 mod context;
 mod fleet;
 mod help;
+mod mcp;
 mod model;
 mod repl;
 mod secret;
@@ -40,6 +41,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: model::ModelCommand,
     },
+    /// Manage MCP server registrations
+    Mcp {
+        #[command(subcommand)]
+        cmd: mcp::McpCommand,
+    },
     /// Manage secrets (private keys, `NKeys`, API keys)
     Secret {
         #[command(subcommand)]
@@ -74,6 +80,7 @@ pub async fn run() {
         Command::Agent { cmd } => agent::execute(cmd).await,
         Command::Fleet { cmd } => fleet::execute(cmd).await,
         Command::Support => help::execute().await,
+        Command::Mcp { cmd } => mcp::execute(cmd).await,
         Command::Model { cmd } => model::execute(cmd).await,
         Command::Secret { cmd } => secret::execute(cmd).await,
         Command::Session { cmd } => session::execute(cmd).await,
@@ -562,6 +569,43 @@ mod tests {
     }
 
     // --- Turn subcommand tests ---
+
+    #[test]
+    fn cli_mcp_add() {
+        let cli = Cli::try_parse_from(["vlinder", "mcp", "add", "brave.toml"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Command::Mcp {
+                cmd: mcp::McpCommand::Add {
+                    path: "brave.toml".to_string(),
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn cli_mcp_list() {
+        let cli = Cli::try_parse_from(["vlinder", "mcp", "list"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Command::Mcp {
+                cmd: mcp::McpCommand::List,
+            }
+        );
+    }
+
+    #[test]
+    fn cli_mcp_remove() {
+        let cli = Cli::try_parse_from(["vlinder", "mcp", "remove", "brave"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Command::Mcp {
+                cmd: mcp::McpCommand::Remove {
+                    name: "brave".to_string(),
+                }
+            }
+        );
+    }
 
     #[test]
     fn cli_turn_get() {
