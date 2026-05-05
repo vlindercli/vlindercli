@@ -47,7 +47,7 @@ fn echo_request(message: &str) -> RequestV2 {
         tool_call_id: vlinder_core::domain::ToolCallId::new(),
         state: None,
         diagnostics: SvcRequestDiagnostics::default(),
-        arguments: serde_json::json!({ "message": message }),
+        payload: serde_json::to_vec(&serde_json::json!({ "message": message })).unwrap(),
     }
 }
 

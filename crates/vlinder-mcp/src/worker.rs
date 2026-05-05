@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use serde_json::Value;
 use vlinder_core::domain::{
     MessageId, MessageQueue, QueueError, Registry, ResponseV2, ServiceBackendV2, ServiceOperation,
     SvcMessageKind, SvcResponseDiagnostics, SvcRoutingKey,
@@ -81,8 +82,10 @@ pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Re
                 .map(|cfg| cfg.url)
         };
 
+        let arguments: Value = serde_json::from_slice(&req.payload).unwrap_or_default();
+
         let result = if let Some(url) = server_url {
-            call_mcp_tool(&url, &operation, req.arguments.clone()).await
+            call_mcp_tool(&url, &operation, arguments.clone()).await
         } else {
             let msg = if provider_name.is_empty() {
                 "MCP worker: no provider in routing key".to_string()

@@ -324,7 +324,7 @@ impl CoreHarness {
                 arguments_bytes,
                 sent_at_ms,
             },
-            arguments: tc.arguments.clone(),
+            payload: serde_json::to_vec(&tc.arguments.clone()).unwrap_or_default(),
         };
 
         match self.queue.send_svc_request(key.clone(), req).await {

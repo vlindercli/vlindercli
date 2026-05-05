@@ -1009,7 +1009,7 @@ impl StateService for StateServiceServer {
             tool_call_id: vlinder_core::domain::ToolCallId::from(req.tool_call_id),
             state: state_str,
             diagnostics,
-            arguments: serde_json::from_slice(&req.arguments).unwrap_or(serde_json::Value::Null),
+            payload: req.arguments,
         };
 
         match self

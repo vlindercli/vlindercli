@@ -1377,7 +1377,7 @@ mod tests {
             tool_call_id: crate::domain::ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
-            arguments: serde_json::json!({}),
+            payload: serde_json::to_vec(&serde_json::json!({})).unwrap(),
         };
 
         queue.send_svc_request(svc_key, request_msg).await.unwrap();
@@ -1423,7 +1423,7 @@ mod tests {
             tool_call_id: crate::domain::ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
-            arguments: serde_json::json!({"key": "val"}),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
         };
 
         // send_svc_request — should record node and forward
@@ -1538,7 +1538,7 @@ mod tests {
             tool_call_id: crate::domain::ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
-            arguments: serde_json::json!({"key": "val"}),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
         };
         inner
             .send_svc_request(request_key, request_msg)

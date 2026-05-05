@@ -1084,7 +1084,7 @@ impl DagWorker for GitDagWorker {
 
             self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
-            let payload_bytes = serde_json::to_vec(&request.arguments).unwrap_or_default();
+            let payload_bytes = request.payload.clone();
             let payload_oid = self.write_blob(&payload_bytes)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
                 .map_err(|e| format!("insert payload failed: {e}"))?;
@@ -1993,7 +1993,7 @@ mod tests {
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
             tool_call_id: ToolCallId::from("call_abc123".to_string()),
-            arguments: serde_json::json!({"query": "test"}),
+            payload: serde_json::to_vec(&serde_json::json!({"query": "test"})).unwrap(),
         }
     }
 
@@ -2052,7 +2052,7 @@ mod tests {
             state: Some("state-abc123".to_string()),
             diagnostics: SvcRequestDiagnostics::default(),
             tool_call_id: ToolCallId::from("call_abc123".to_string()),
-            arguments: serde_json::json!({"query": "test"}),
+            payload: serde_json::to_vec(&serde_json::json!({"query": "test"})).unwrap(),
         };
         let ts = DateTime::from_timestamp(1000, 0).unwrap();
         worker.on_svc_request(&key, &msg, ts).await;

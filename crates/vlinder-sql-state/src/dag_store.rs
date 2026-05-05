@@ -572,7 +572,7 @@ impl DagStore for SqliteDagStore {
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
         let snapshot_json =
             serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
-        let arguments_json = serde_json::to_vec(&msg.arguments).unwrap_or_default();
+        let payload_bytes = msg.payload.clone();
         let state_json = msg.state.as_deref().map(String::from);
         let diagnostics_json = serde_json::to_string(&msg.diagnostics).unwrap_or_default();
         let created_at_str = created_at.to_rfc3339();
@@ -606,7 +606,7 @@ impl DagStore for SqliteDagStore {
                 tool_call_id: msg.tool_call_id.as_str(),
                 state: state_json.as_deref(),
                 diagnostics: Some(&diagnostics_json),
-                arguments: &arguments_json,
+                payload: &payload_bytes,
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert svc_request_nodes failed: {e}"))?;
@@ -2002,7 +2002,7 @@ mod tests {
             tool_call_id: vlinder_core::domain::ToolCallId::new(),
             state: None,
             diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
-            arguments: serde_json::json!({"key": "val"}),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
         };
         let request_dag_id = DagNodeId::from("svc-req-hash-1".to_string());
 

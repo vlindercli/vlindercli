@@ -430,7 +430,8 @@ pub struct NewSvcRequestNode<'a> {
     pub tool_call_id: &'a str,
     pub state: Option<&'a str>,
     pub diagnostics: Option<&'a str>,
-    pub arguments: &'a [u8],
+    #[diesel(column_name = arguments)]
+    pub payload: &'a [u8],
 }
 
 // ============================================================================

@@ -1396,7 +1396,7 @@ mod tests {
             tool_call_id: ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
-            arguments: serde_json::json!({"key": "val"}),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
         };
         store
             .insert_svc_request_node(

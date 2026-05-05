@@ -1,7 +1,6 @@
 //! `RequestV2`: harness-mediated service request payload.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use super::identity::{DagNodeId, MessageId, ToolCallId};
 use crate::domain::SvcRequestDiagnostics;
@@ -10,10 +9,10 @@ use crate::domain::SvcRequestDiagnostics;
 /// to a service worker via NATS `svc_request` subjects.
 ///
 /// Unlike `RequestMessage` (sidecar-mediated, opaque payload),
-/// `RequestV2` carries structured call data. Routing metadata
+/// `RequestV2` carries opaque payload bytes. Routing metadata
 /// (service type, provider, operation) lives in the NATS subject
 /// and the parsed `SvcRoutingKey` — the worker reads it from there.
-/// This payload is just the call parameters.
+/// This payload is just opaque bytes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RequestV2 {
     pub id: MessageId,
@@ -23,7 +22,8 @@ pub struct RequestV2 {
     pub state: Option<String>,
     #[serde(default)]
     pub diagnostics: SvcRequestDiagnostics,
-    pub arguments: Value,
+    #[serde(with = "super::base64_serde")]
+    pub payload: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -39,7 +39,7 @@ mod tests {
             tool_call_id: ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
-            arguments: json!({"key": "value"}),
+            payload: serde_json::to_vec(&json!({"key": "value"})).unwrap(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: RequestV2 = serde_json::from_str(&json).unwrap();
@@ -47,18 +47,18 @@ mod tests {
     }
 
     #[test]
-    fn request_v2_arguments_preserved() {
+    fn request_v2_payload_preserved() {
         let msg = RequestV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
             tool_call_id: ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
-            arguments: json!({"nested": {"array": [1, 2, 3]}}),
+            payload: serde_json::to_vec(&json!({"nested": {"array": [1, 2, 3]}})).unwrap(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: RequestV2 = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.arguments, msg.arguments);
+        assert_eq!(back.payload, msg.payload);
     }
 
     #[test]
@@ -69,7 +69,7 @@ mod tests {
             tool_call_id: ToolCallId::new(),
             state: Some("state-hash-abc".to_string()),
             diagnostics: SvcRequestDiagnostics::default(),
-            arguments: json!({"key": "value"}),
+            payload: serde_json::to_vec(&json!({"key": "value"})).unwrap(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(
@@ -88,7 +88,7 @@ mod tests {
             tool_call_id: ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
-            arguments: json!({"key": "value"}),
+            payload: serde_json::to_vec(&json!({"key": "value"})).unwrap(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("state"), "state should be omitted when None");

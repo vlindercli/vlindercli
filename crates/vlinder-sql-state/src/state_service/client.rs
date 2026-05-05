@@ -697,7 +697,7 @@ impl DagStore for GrpcStateClient {
             sequence: sequence.as_u32(),
             message_id: msg.id.to_string(),
             tool_call_id: msg.tool_call_id.to_string(),
-            arguments: serde_json::to_vec(&msg.arguments).unwrap_or_default(),
+            arguments: msg.payload.clone(),
             state: msg.state.clone(),
             diagnostics: Some(serde_json::to_string(&msg.diagnostics).unwrap_or_default()),
         };
