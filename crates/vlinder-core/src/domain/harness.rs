@@ -333,7 +333,7 @@ impl CoreHarness {
                     let _ = ack().await;
                     crate::domain::ToolResult {
                         tool_call_id: tc.id.clone(),
-                        content: resp.content.into_bytes(),
+                        content: resp.payload,
                     }
                 }
                 Err(e) => crate::domain::ToolResult {

@@ -1081,8 +1081,7 @@ impl StateService for StateServiceServer {
             correlation_id: vlinder_core::domain::MessageId::from(req.correlation_id),
             state: state_str,
             diagnostics,
-            content: req.content,
-            is_error: req.is_error != 0,
+            payload: req.payload,
         };
 
         match self

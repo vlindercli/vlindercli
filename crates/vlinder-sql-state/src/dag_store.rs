@@ -193,8 +193,7 @@ impl SqliteDagStore {
                  correlation_id TEXT NOT NULL,
                  state TEXT,
                  diagnostics TEXT,
-                 content TEXT NOT NULL,
-                 is_error INTEGER NOT NULL DEFAULT 0
+                 payload BLOB NOT NULL
              );
              CREATE TABLE IF NOT EXISTS readiness_checks (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -669,8 +668,7 @@ impl DagStore for SqliteDagStore {
                 correlation_id: msg.correlation_id.as_str(),
                 state: state_json.as_deref(),
                 diagnostics: Some(&diagnostics_json),
-                content: &msg.content,
-                is_error: i32::from(msg.is_error),
+                payload: &msg.payload,
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert svc_response_nodes failed: {e}"))?;
@@ -2035,8 +2033,7 @@ mod tests {
             correlation_id: vlinder_core::domain::MessageId::new(),
             state: None,
             diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
-            content: "result".to_string(),
-            is_error: false,
+            payload: b"result".to_vec(),
         };
         let response_dag_id = DagNodeId::from("svc-res-hash-1".to_string());
 

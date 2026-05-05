@@ -451,8 +451,7 @@ pub struct SvcResponseNodeRow {
     pub correlation_id: String,
     pub state: Option<String>,
     pub diagnostics: Option<String>,
-    pub content: String,
-    pub is_error: i32,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Insertable, Debug)]
@@ -468,6 +467,5 @@ pub struct NewSvcResponseNode<'a> {
     pub correlation_id: &'a str,
     pub state: Option<&'a str>,
     pub diagnostics: Option<&'a str>,
-    pub content: &'a str,
-    pub is_error: i32,
+    pub payload: &'a [u8],
 }

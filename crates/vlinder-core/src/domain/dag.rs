@@ -1428,8 +1428,7 @@ mod tests {
             correlation_id: MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
-            content: "result".to_string(),
-            is_error: false,
+            payload: b"result".to_vec(),
         };
         store
             .insert_svc_response_node(

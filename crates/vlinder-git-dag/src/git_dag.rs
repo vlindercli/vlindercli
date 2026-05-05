@@ -1174,7 +1174,7 @@ impl DagWorker for GitDagWorker {
 
             self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
-            let payload_bytes = response.content.as_bytes();
+            let payload_bytes = &response.payload;
             let payload_oid = self.write_blob(payload_bytes)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
                 .map_err(|e| format!("insert payload failed: {e}"))?;
@@ -1186,11 +1186,7 @@ impl DagWorker for GitDagWorker {
             self.insert_field(&mut tb, "operation", operation.as_str())?;
             self.insert_field(&mut tb, "sequence", &sequence.as_u32().to_string())?;
             self.insert_field(&mut tb, "correlation_id", response.correlation_id.as_str())?;
-            self.insert_field(
-                &mut tb,
-                "is_error",
-                if response.is_error { "true" } else { "false" },
-            )?;
+
             if let Some(ref state) = response.state {
                 self.insert_field(&mut tb, "state", state)?;
             }
@@ -2096,8 +2092,7 @@ mod tests {
             correlation_id: MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
-            content: "result text".to_string(),
-            is_error: false,
+            payload: b"result text".to_vec(),
         }
     }
 
@@ -2134,8 +2129,11 @@ mod tests {
         assert_eq!(show("operation").unwrap(), "web_search");
         assert_eq!(show("sequence").unwrap(), "1");
         assert!(!show("correlation_id").unwrap().is_empty());
-        assert_eq!(show("is_error").unwrap(), "false");
         assert_eq!(show("protocol_version").unwrap(), "v1");
+        assert!(
+            !show("payload").unwrap().is_empty(),
+            "payload should not be empty"
+        );
         assert_eq!(show("payload").unwrap(), "result text");
         assert!(!show("hash").unwrap().is_empty());
         let diag = show("diagnostics.toml").unwrap();
@@ -2146,7 +2144,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn svc_response_is_error_true() {
+    async fn svc_response_error_has_no_is_error_file() {
         let (mut worker, tmp) = test_worker();
         let key = test_svc_response_key(SESSION);
         let msg = ResponseV2 {
@@ -2155,15 +2153,16 @@ mod tests {
             correlation_id: MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
-            content: "error occurred".to_string(),
-            is_error: true,
+            payload: b"error occurred".to_vec(),
         };
         let ts = DateTime::from_timestamp(1000, 0).unwrap();
         worker.on_svc_response(&key, &msg, ts).await;
 
-        assert_eq!(
-            show_session_file(tmp.path(), "001-mcp.brave-svc_response", "is_error").unwrap(),
-            "true"
+        // is_error was removed from ResponseV2; verify no is_error file in git
+        let result = show_session_file(tmp.path(), "001-mcp.brave-svc_response", "is_error");
+        assert!(
+            result.is_err(),
+            "is_error should not have a file when removed"
         );
     }
 

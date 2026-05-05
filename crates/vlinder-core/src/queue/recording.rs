@@ -1455,8 +1455,7 @@ mod tests {
             correlation_id: crate::domain::MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
-            content: "result".to_string(),
-            is_error: false,
+            payload: b"result".to_vec(),
         };
 
         // Put response into inner queue first
@@ -1507,8 +1506,7 @@ mod tests {
             correlation_id: crate::domain::MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
-            content: "result".to_string(),
-            is_error: false,
+            payload: b"result".to_vec(),
         };
 
         queue

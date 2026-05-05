@@ -99,13 +99,10 @@ async fn mcp_echo_dispatch_e2e() {
 
     // 8. Assert content contains "hello"
     assert!(
-        resp.content.contains("hello"),
+        String::from_utf8_lossy(&resp.payload).contains("hello"),
         "Expected response to contain 'hello', got: {}",
-        resp.content
+        String::from_utf8_lossy(&resp.payload)
     );
-
-    // 9. Assert no error
-    assert!(!resp.is_error, "Response marked as error: {}", resp.content);
 
     // Stop the worker (it will exit when the NATS connection drops)
     worker_handle.abort();

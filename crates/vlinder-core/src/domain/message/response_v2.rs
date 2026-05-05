@@ -9,8 +9,7 @@ use crate::domain::SvcResponseDiagnostics;
 /// via NATS `svc_response` subjects.
 ///
 /// Unlike `ResponseMessage` (sidecar‑mediated, opaque payload + HTTP status),
-/// `ResponseV2` carries structured tool result data: the content string
-/// and an error flag, matching `ToolResult`'s shape.
+/// `ResponseV2` carries opaque payload bytes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResponseV2 {
     pub id: MessageId,
@@ -20,9 +19,8 @@ pub struct ResponseV2 {
     pub state: Option<String>,
     #[serde(default)]
     pub diagnostics: SvcResponseDiagnostics,
-    pub content: String,
-    #[serde(default)]
-    pub is_error: bool,
+    #[serde(with = "super::base64_serde")]
+    pub payload: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -37,8 +35,7 @@ mod tests {
             correlation_id: MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
-            content: "result content".to_string(),
-            is_error: false,
+            payload: b"result content".to_vec(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ResponseV2 = serde_json::from_str(&json).unwrap();
@@ -46,38 +43,19 @@ mod tests {
     }
 
     #[test]
-    fn response_v2_is_error_defaults_to_false() {
-        // Serialize without is_error field, deserialize should default to false
-        let json = format!(
-            r#"{{
-                "id": "{}",
-                "dag_id": "",
-                "correlation_id": "{}",
-                "content": "ok"
-            }}"#,
-            MessageId::new(),
-            MessageId::new()
-        );
-        let back: ResponseV2 = serde_json::from_str(&json).unwrap();
-        assert!(!back.is_error);
-        assert_eq!(back.content, "ok");
-    }
-
-    #[test]
-    fn response_v2_is_error_true_serializes() {
+    fn response_v2_payload_is_base64_in_json() {
         let msg = ResponseV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
             correlation_id: MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
-            content: "error".to_string(),
-            is_error: true,
+            payload: b"hello".to_vec(),
         };
         let json = serde_json::to_string(&msg).unwrap();
-        let back: ResponseV2 = serde_json::from_str(&json).unwrap();
-        assert!(back.is_error);
-        assert_eq!(back.content, "error");
+        // payload should be base64-encoded in the JSON
+        assert!(json.contains("\"payload\":\""));
+        assert!(json.len() > 50); // should have base64 content
     }
 
     #[test]
@@ -88,8 +66,7 @@ mod tests {
             correlation_id: MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
-            content: "ok".to_string(),
-            is_error: false,
+            payload: b"ok".to_vec(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("state"), "state should be omitted when None");
@@ -103,8 +80,7 @@ mod tests {
             correlation_id: MessageId::new(),
             state: Some("state-hash".to_string()),
             diagnostics: SvcResponseDiagnostics::default(),
-            content: "ok".to_string(),
-            is_error: false,
+            payload: b"ok".to_vec(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("state"), "state should appear when present");

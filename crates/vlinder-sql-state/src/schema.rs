@@ -178,8 +178,7 @@ diesel::table! {
         correlation_id -> Text,
         state -> Nullable<Text>,
         diagnostics -> Nullable<Text>,
-        content -> Text,
-        is_error -> Integer,
+        payload -> Binary,
     }
 }
 

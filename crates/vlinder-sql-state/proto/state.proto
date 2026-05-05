@@ -465,10 +465,9 @@ message InsertSvcResponseNodeRequest {
   uint32 sequence = 12;
   string message_id = 13;
   string correlation_id = 14;
-  string content = 15;
-  int32 is_error = 16;
-  optional string state = 17;
-  optional string diagnostics = 18;
+  bytes payload = 15;
+  optional string state = 16;
+  optional string diagnostics = 17;
 }
 message InsertSvcResponseNodeResponse {
   bool success = 1;

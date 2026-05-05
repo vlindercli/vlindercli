@@ -96,9 +96,9 @@ pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Re
             Err(anyhow::anyhow!("{msg}"))
         };
 
-        let (content, is_error) = match result {
-            Ok(text) => (text, false),
-            Err(e) => (e.to_string(), true),
+        let payload = match result {
+            Ok(text) => text.into_bytes(),
+            Err(e) => e.to_string().into_bytes(),
         };
 
         let response_key = response_key_from_request(&key);
@@ -106,7 +106,7 @@ pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Re
             SvcMessageKind::SvcRequest { operation, .. } => operation.as_str().to_string(),
             SvcMessageKind::SvcResponse { .. } => "unknown".to_string(),
         };
-        let content_bytes = content.len() as u64;
+        let content_bytes = payload.len() as u64;
         let resp = ResponseV2 {
             id: MessageId::new(),
             dag_id: req.dag_id.clone(),
@@ -117,10 +117,8 @@ pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Re
                 tool: tool_name,
                 round_trip_ms: 0, // deferred: real timing not yet wired
                 content_bytes,
-                is_error,
             },
-            content,
-            is_error,
+            payload,
         };
 
         queue.send_svc_response(response_key, resp).await?;

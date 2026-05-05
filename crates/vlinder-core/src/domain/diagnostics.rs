@@ -43,7 +43,6 @@ pub struct SvcResponseDiagnostics {
     pub tool: String,
     pub round_trip_ms: u64,
     pub content_bytes: u64,
-    pub is_error: bool,
 }
 
 // ============================================================================
