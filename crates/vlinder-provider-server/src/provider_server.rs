@@ -26,6 +26,8 @@ pub struct ProviderServer {
 struct ServerState {
     handler: InvokeHandler,
     hosts: Vec<ProviderHost>,
+    /// Pre-computed tool definitions (`OpenAI` format) for the agent's MCP servers.
+    tools: Vec<serde_json::Value>,
 }
 
 impl ProviderServer {
@@ -39,6 +41,7 @@ impl ProviderServer {
         hosts: Vec<ProviderHost>,
         state: Arc<RwLock<Option<String>>>,
         port: u16,
+        tools: Vec<serde_json::Value>,
     ) -> Self {
         let hosts: Vec<ProviderHost> = hosts
             .into_iter()
@@ -48,9 +51,14 @@ impl ProviderServer {
             })
             .collect();
 
-        let server_state = Arc::new(ServerState { handler, hosts });
+        let server_state = Arc::new(ServerState {
+            handler,
+            hosts,
+            tools,
+        });
 
         let router = axum::Router::new()
+            .route("/tools", axum::routing::get(handle_tools))
             .fallback(handle_request)
             .with_state(server_state);
 
@@ -86,6 +94,18 @@ impl Drop for ProviderServer {
             h.abort();
         }
     }
+}
+
+/// Handle GET /tools — return the pre-computed tool definitions as a JSON array.
+async fn handle_tools(
+    axum::extract::State(state): axum::extract::State<Arc<ServerState>>,
+) -> impl axum::response::IntoResponse {
+    let tools_json = serde_json::to_string(&state.tools).unwrap_or_else(|_| "[]".to_string());
+    axum::response::Response::builder()
+        .status(200)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(tools_json))
+        .unwrap()
 }
 
 async fn handle_request(

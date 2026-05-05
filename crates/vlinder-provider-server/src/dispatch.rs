@@ -113,6 +113,7 @@ pub struct DispatchResult {
 ///
 /// The caller is responsible for building diagnostics, sending
 /// the `CompleteMessage`, and acknowledging the invoke.
+#[allow(clippy::too_many_lines)]
 pub async fn dispatch_invoke(
     queue: &Arc<dyn MessageQueue + Send + Sync>,
     registry: &Arc<dyn Registry>,
@@ -138,6 +139,14 @@ pub async fn dispatch_invoke(
         None
     };
 
+    // Collect tool definitions from MCP servers referenced by the agent.
+    let mut tools: Vec<serde_json::Value> = Vec::new();
+    for mcp_name in agent_info.requirements.mcp.keys() {
+        if let Some(server) = registry.get_mcp_server(mcp_name).await {
+            tools.extend(server.tools);
+        }
+    }
+
     let state = Arc::new(std::sync::RwLock::new(initial_state));
     let handler = InvokeHandler::new(
         queue.clone(),
@@ -147,7 +156,7 @@ pub async fn dispatch_invoke(
         agent.clone(),
         Arc::clone(&state),
     );
-    let provider_server = ProviderServer::start(handler, hosts, state, 3544).await;
+    let provider_server = ProviderServer::start(handler, hosts, state, 3544, tools).await;
 
     // Combine history + current_input into a single conversation.
     let mut conversation: Vec<Message> = msg.history.clone();
