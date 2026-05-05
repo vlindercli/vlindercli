@@ -117,11 +117,7 @@ fn format_current_input(messages: &[Message]) -> String {
             Message::Tool {
                 tool_call_id,
                 content,
-                is_error,
-            } => format!(
-                "Tool({tool_call_id}): {content}{}",
-                if *is_error { " [error]" } else { "" }
-            ),
+            } => format!("Tool({tool_call_id}): {}", String::from_utf8_lossy(content)),
         })
         .collect::<Vec<_>>()
         .join("\n")

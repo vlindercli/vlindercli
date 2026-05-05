@@ -31,8 +31,6 @@ pub enum Message {
     #[serde(rename = "tool")]
     Tool {
         tool_call_id: ToolCallId,
-        content: String,
-        #[serde(default)]
-        is_error: bool,
+        content: Vec<u8>,
     },
 }

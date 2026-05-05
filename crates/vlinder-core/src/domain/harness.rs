@@ -333,20 +333,17 @@ impl CoreHarness {
                     let _ = ack().await;
                     crate::domain::ToolResult {
                         tool_call_id: tc.id.clone(),
-                        content: resp.content,
-                        is_error: resp.is_error,
+                        content: resp.content.into_bytes(),
                     }
                 }
                 Err(e) => crate::domain::ToolResult {
                     tool_call_id: tc.id.clone(),
-                    content: format!("svc_response receive error: {e}"),
-                    is_error: true,
+                    content: format!("svc_response receive error: {e}").into_bytes(),
                 },
             },
             Err(e) => crate::domain::ToolResult {
                 tool_call_id: tc.id.clone(),
-                content: format!("svc_request send error: {e}"),
-                is_error: true,
+                content: format!("svc_request send error: {e}").into_bytes(),
             },
         }
     }
@@ -402,13 +399,11 @@ impl CoreHarness {
                     {
                         Ok(output) => crate::domain::ToolResult {
                             tool_call_id: tc.id.clone(),
-                            content: output,
-                            is_error: false,
+                            content: output.into_bytes(),
                         },
                         Err(e) => crate::domain::ToolResult {
                             tool_call_id: tc.id.clone(),
-                            content: e,
-                            is_error: true,
+                            content: e.into_bytes(),
                         },
                     }
                 }
@@ -544,7 +539,6 @@ impl CoreHarness {
             .map(|tr| Message::Tool {
                 tool_call_id: tr.tool_call_id,
                 content: tr.content,
-                is_error: tr.is_error,
             })
             .collect();
         (

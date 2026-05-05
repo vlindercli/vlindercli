@@ -9,9 +9,6 @@ use serde::{Deserialize, Serialize};
 pub struct ToolResult {
     /// Correlates to `ToolCall::id`.
     pub tool_call_id: ToolCallId,
-    /// The result content.
-    pub content: String,
-    /// Whether the tool execution failed.
-    #[serde(default)]
-    pub is_error: bool,
+    /// The result content as opaque bytes.
+    pub content: Vec<u8>,
 }

@@ -90,10 +90,9 @@ impl ToolCallParser for OpenAiToolCallParser {
                 Message::Tool {
                     tool_call_id,
                     content,
-                    is_error: _,
                 } => json!({
                     "role": "tool",
-                    "content": content,
+                    "content": String::from_utf8_lossy(content).into_owned(),
                     "tool_call_id": tool_call_id,
                 }),
             })
