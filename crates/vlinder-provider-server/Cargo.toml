@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [features]
-default = ["ollama", "openrouter", "sqlite-kv", "sqlite-vec"]
+default = ["ollama", "openrouter", "sqlite-kv", "sqlite-vec", "mcp"]
 amqp = ["dep:vlinder-amqp"]
 ollama = ["dep:vlinder-ollama"]
 openrouter = ["dep:vlinder-infer-openrouter"]
