@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rmcp::model::CallToolRequestParams;
+use rmcp::model::CallToolResult;
 use rmcp::service::ServiceExt;
 use rmcp::transport::StreamableHttpClientTransport;
 use serde_json::Value;
@@ -14,7 +15,7 @@ pub async fn call_mcp_tool(
     server_url: &str,
     operation: &ServiceOperation,
     arguments: Value,
-) -> Result<String> {
+) -> Result<CallToolResult> {
     let transport = StreamableHttpClientTransport::from_uri(server_url);
     let client = ().serve(transport).await?;
 
@@ -27,19 +28,7 @@ pub async fn call_mcp_tool(
 
     client.cancel().await?;
 
-    let text = result
-        .content
-        .into_iter()
-        .filter_map(|c| {
-            if let rmcp::model::RawContent::Text(tc) = c.raw {
-                Some(tc.text)
-            } else {
-                None
-            }
-        })
-        .collect::<String>();
-
-    Ok(text)
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -58,7 +47,7 @@ mod tests {
         .await;
         // Test requires a running server; we just verify the call path works.
         match result {
-            Ok(text) => println!("echo succeeded: {text}"),
+            Ok(result) => println!("echo succeeded ({} content blocks)", result.content.len()),
             Err(e) => println!("echo error (expected without server): {e}"),
         }
     }

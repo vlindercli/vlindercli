@@ -22,6 +22,11 @@ use crate::provider_server::ProviderServer;
 #[cfg(feature = "openrouter")]
 use vlinder_infer_openrouter::OpenAiToolCallParser;
 
+#[cfg(feature = "mcp")]
+use vlinder_core::domain::ToolCallProtocol;
+#[cfg(feature = "mcp")]
+use vlinder_mcp::McpProtocol;
+
 /// Serialize a conversation (`history` + `current_input`) to `OpenAI` Chat Completions format.
 ///
 /// Maps domain `Message::Agent` → wire-format `"assistant"`,
@@ -49,6 +54,21 @@ pub fn serialize_openai_conversation(messages: &[Message]) -> Vec<u8> {
 
         let body = serde_json::json!({"messages": wire_messages});
         serde_json::to_vec(&body).unwrap_or_default()
+    }
+}
+
+/// Decode tool result bytes into a text string for LLM serialization.
+///
+/// Uses the MCP protocol decoder when the `mcp` feature is enabled,
+/// falling back to lossy UTF-8 conversion otherwise.
+pub fn decode_tool_content(content: &[u8]) -> String {
+    #[cfg(feature = "mcp")]
+    {
+        McpProtocol.decode_tool_result(content)
+    }
+    #[cfg(not(feature = "mcp"))]
+    {
+        String::from_utf8_lossy(content).into_owned()
     }
 }
 
@@ -129,11 +149,29 @@ pub async fn dispatch_invoke(
     );
     let provider_server = ProviderServer::start(handler, hosts, state, 3544).await;
 
-    // Combine history + current_input into a single conversation and
-    // serialize to OpenAI Chat Completions format JSON.
+    // Combine history + current_input into a single conversation.
     let mut conversation: Vec<Message> = msg.history.clone();
     conversation.extend(msg.current_input.clone());
-    let body = serialize_openai_conversation(&conversation);
+
+    // Convert tool result bytes to text strings via protocol decoder.
+    let conversation_for_serialization: Vec<Message> = conversation
+        .iter()
+        .map(|m| match m {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => {
+                let text = decode_tool_content(content);
+                Message::Tool {
+                    tool_call_id: tool_call_id.clone(),
+                    content: text.into_bytes(),
+                }
+            }
+            other => other.clone(),
+        })
+        .collect();
+
+    let body = serialize_openai_conversation(&conversation_for_serialization);
 
     let http = ureq::Agent::new();
     let agent_url = format!("http://127.0.0.1:{agent_port}/invoke");

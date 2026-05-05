@@ -5903,6 +5903,7 @@ dependencies = [
  "vlinder-amqp",
  "vlinder-core",
  "vlinder-infer-openrouter",
+ "vlinder-mcp",
  "vlinder-nats",
  "vlinder-ollama",
  "vlinder-sql-registry",

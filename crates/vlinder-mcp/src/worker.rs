@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use serde_json::Value;
 use vlinder_core::domain::{
     MessageId, MessageQueue, QueueError, Registry, ResponseV2, ServiceBackendV2, ServiceOperation,
     SvcMessageKind, SvcResponseDiagnostics, SvcRoutingKey,
 };
 use vlinder_nats::NatsQueue;
 
+use crate::boundary;
 use crate::mcp_client::call_mcp_tool;
 
 /// Build response key from request key (swap `SvcRequest` → `SvcResponse`).
@@ -48,6 +48,37 @@ fn provider_from_key(key: &SvcRoutingKey) -> String {
     }
 }
 
+/// Send an error response for a failed request and continue.
+async fn send_error_response(
+    queue: &NatsQueue,
+    key: &SvcRoutingKey,
+    req: &vlinder_core::domain::RequestV2,
+    err: &str,
+    provider_name: &str,
+    tool_name: &str,
+) -> Result<()> {
+    let error_result = boundary::make_text_result(err, true);
+    let response_key = response_key_from_request(key);
+    let resp = ResponseV2 {
+        id: MessageId::new(),
+        dag_id: req.dag_id.clone(),
+        correlation_id: req.id.clone(),
+        state: req.state.clone(),
+        diagnostics: SvcResponseDiagnostics {
+            server: provider_name.to_string(),
+            tool: tool_name.to_string(),
+            round_trip_ms: 0,
+            content_bytes: 0,
+        },
+        payload: boundary::serialize_response(&error_result),
+    };
+    queue
+        .send_svc_response(response_key, resp)
+        .await
+        .map_err(Into::into)
+}
+
+#[allow(clippy::too_many_lines)]
 pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Result<()> {
     loop {
         let (key, req, ack) = match queue.receive_svc_request_mcp().await {
@@ -82,10 +113,24 @@ pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Re
                 .map(|cfg| cfg.url)
         };
 
-        let arguments: Value = serde_json::from_slice(&req.payload).unwrap_or_default();
+        let (_, params) = match boundary::deserialize_request(&req.payload) {
+            Ok(v) => v,
+            Err(e) => {
+                let tool = operation.as_str().to_string();
+                send_error_response(&queue, &key, &req, &e.to_string(), &provider_name, &tool)
+                    .await?;
+                continue;
+            }
+        };
+        let arguments = params
+            .arguments
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
         let result = if let Some(url) = server_url {
-            call_mcp_tool(&url, &operation, arguments.clone()).await
+            call_mcp_tool(&url, &operation, arguments).await
         } else {
             let msg = if provider_name.is_empty() {
                 "MCP worker: no provider in routing key".to_string()
@@ -97,8 +142,11 @@ pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Re
         };
 
         let payload = match result {
-            Ok(text) => text.into_bytes(),
-            Err(e) => e.to_string().into_bytes(),
+            Ok(call_tool_result) => boundary::serialize_response(&call_tool_result),
+            Err(e) => {
+                let error_result = boundary::make_text_result(&e.to_string(), true);
+                boundary::serialize_response(&error_result)
+            }
         };
 
         let response_key = response_key_from_request(&key);
