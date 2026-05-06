@@ -5899,6 +5899,7 @@ dependencies = [
  "http 1.4.0",
  "serde_json",
  "tokio",
+ "tower 0.5.3",
  "tracing",
  "ureq 2.12.1",
  "vlinder-amqp",
