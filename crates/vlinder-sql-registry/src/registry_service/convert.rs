@@ -135,7 +135,7 @@ impl From<Agent> for proto::Agent {
                     secret: cfg.secret,
                 })
                 .collect(),
-            mcp: Vec::new(),
+            mcp: agent.requirements.mcp,
         }
     }
 }
@@ -192,7 +192,7 @@ impl TryFrom<proto::Agent> for Agent {
                         )
                     })
                     .collect(),
-                mcp: Vec::new(),
+                mcp: agent.mcp,
             },
             object_storage: agent
                 .object_storage
