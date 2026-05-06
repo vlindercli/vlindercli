@@ -129,6 +129,7 @@ fn agent_proto_to_domain_round_trip() {
 
         models: vec![],
         mounts: vec![],
+        mcp: vec![],
         object_storage: None,
         vector_storage: None,
     };
@@ -214,6 +215,7 @@ fn agent_proto_missing_id_fails() {
 
         models: vec![],
         mounts: vec![],
+        mcp: vec![],
         object_storage: None,
         vector_storage: None,
     };

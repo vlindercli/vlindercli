@@ -85,6 +85,7 @@ message Agent {
   string executable = 9;  // Native artifact ref (e.g., OCI image)
   repeated MountEntry mounts = 10;  // S3-backed read-only mounts (ADR 107)
   repeated ModelAlias models = 11;  // Agent's model alias → URI map
+  repeated string mcp = 12;  // MCP provider names
 }
 
 message ModelAlias {

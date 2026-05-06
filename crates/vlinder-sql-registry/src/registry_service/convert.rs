@@ -135,6 +135,7 @@ impl From<Agent> for proto::Agent {
                     secret: cfg.secret,
                 })
                 .collect(),
+            mcp: Vec::new(),
         }
     }
 }
