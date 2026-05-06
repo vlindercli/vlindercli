@@ -224,6 +224,34 @@ fn agent_proto_missing_id_fails() {
     assert!(result.is_err());
 }
 
+#[test]
+fn agent_mcp_survives_proto_round_trip() {
+    let agent = Agent {
+        name: "mcp-echo".to_string(),
+        description: "Uses MCP".to_string(),
+        source: None,
+        id: ResourceId::new("http://localhost:9000/agents/mcp-echo"),
+        runtime: RuntimeType::Container,
+        executable: "localhost/mcp-echo:latest".to_string(),
+        image_digest: None,
+        public_key: None,
+        requirements: Requirements {
+            models: HashMap::new(),
+            services: HashMap::new(),
+            mounts: HashMap::new(),
+            mcp: vec!["brave".to_string(), "fetch".to_string()],
+        },
+        prompts: None,
+        object_storage: None,
+        vector_storage: None,
+    };
+
+    let proto_agent: proto::Agent = agent.into();
+    let back: Agent = proto_agent.try_into().unwrap();
+
+    assert_eq!(back.requirements.mcp, vec!["brave", "fetch"]);
+}
+
 // ============================================================================
 // Model round-trip
 // ============================================================================
