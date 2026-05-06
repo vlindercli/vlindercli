@@ -368,7 +368,7 @@ mod tests {
                 models: HashMap::new(),
                 services: HashMap::new(),
                 mounts: HashMap::new(),
-                mcp: HashMap::new(),
+                mcp: Vec::new(),
             },
             prompts: None,
         }
@@ -484,7 +484,7 @@ mod tests {
                 models,
                 services,
                 mounts: HashMap::new(),
-                mcp: HashMap::new(),
+                mcp: Vec::new(),
             },
             prompts: Some(Prompts {
                 intent_recognition: Some("Classify".to_string()),

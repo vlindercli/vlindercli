@@ -1852,7 +1852,7 @@ mod tests {
                 models: std::collections::HashMap::new(),
                 services: std::collections::HashMap::new(),
                 mounts: std::collections::HashMap::new(),
-                mcp: std::collections::HashMap::new(),
+                mcp: Vec::new(),
             },
             prompts: None,
             object_storage: None,

@@ -80,7 +80,7 @@ fn agent_domain_to_proto_preserves_fields() {
             models: HashMap::from([("phi3".to_string(), "phi3".to_string())]),
             services,
             mounts: HashMap::new(),
-            mcp: HashMap::new(),
+            mcp: Vec::new(),
         },
         prompts: None,
 
@@ -170,7 +170,7 @@ fn agent_models_survive_proto_round_trip() {
             ]),
             services,
             mounts: HashMap::new(),
-            mcp: HashMap::new(),
+            mcp: Vec::new(),
         },
         prompts: None,
 

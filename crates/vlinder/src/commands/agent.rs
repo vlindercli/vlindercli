@@ -742,7 +742,7 @@ pub(super) async fn auto_deploy_mcp_servers(
     let mcp_names: std::collections::HashSet<&str> = manifest
         .requirements
         .mcp
-        .keys()
+        .iter()
         .map(std::string::String::as_str)
         .collect();
 
@@ -807,7 +807,7 @@ mod tests {
                 models: model_map,
                 services: std::collections::HashMap::new(),
                 mounts: std::collections::HashMap::new(),
-                mcp: std::collections::HashMap::new(),
+                mcp: Vec::new(),
             },
             prompts: None,
             object_storage: None,

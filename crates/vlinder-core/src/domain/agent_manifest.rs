@@ -188,21 +188,9 @@ pub struct RequirementsConfig {
     /// S3 mount declarations (ADR 107).
     #[serde(default)]
     pub mounts: HashMap<String, MountConfig>,
-    /// MCP provider declarations.
+    /// MCP provider names (references registered MCP servers by name).
     #[serde(default)]
-    pub mcp: HashMap<String, McpProviderConfig>,
-}
-
-/// MCP provider declaration in agent.toml.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct McpProviderConfig {
-    /// URL of the MCP server endpoint (HTTP transport).
-    pub url: String,
-    /// Environment variable names that the MCP worker should
-    /// pass to the server (e.g., "`BRAVE_API_KEY`"). Values come
-    /// from the process environment at runtime.
-    #[serde(default)]
-    pub env: Vec<String>,
+    pub mcp: Vec<String>,
 }
 
 /// Deserialize models from either table or array form.
@@ -660,44 +648,25 @@ mod tests {
         assert_eq!(mount.path, "/knowledge");
     }
     // ========================================================================
-    // MCP provider parsing
+    // MCP provider parsing (now Vec<String> of names)
     // ========================================================================
 
     #[test]
-    fn parse_manifest_with_mcp_provider() {
+    fn parse_manifest_with_mcp_names() {
         let toml = r#"
             name = "mcp-agent"
             description = "MCP agent"
             runtime = "container"
             executable = "localhost/mcp-agent:latest"
 
-            [requirements.mcp.brave]
-            url = "http://mcp-brave:8000/mcp"
-            env = ["BRAVE_API_KEY"]
+            [requirements]
+            mcp = ["brave", "jira"]
         "#;
 
         let manifest: AgentManifest = toml::from_str(toml).unwrap();
-        let brave = &manifest.requirements.mcp["brave"];
-        assert_eq!(brave.url, "http://mcp-brave:8000/mcp");
-        assert_eq!(brave.env, vec!["BRAVE_API_KEY"]);
-    }
-
-    #[test]
-    fn parse_manifest_with_mcp_provider_no_env() {
-        let toml = r#"
-            name = "mcp-agent"
-            description = "MCP agent without env"
-            runtime = "container"
-            executable = "localhost/mcp-agent:latest"
-
-            [requirements.mcp.brave]
-            url = "http://mcp-brave:8000/mcp"
-        "#;
-
-        let manifest: AgentManifest = toml::from_str(toml).unwrap();
-        let brave = &manifest.requirements.mcp["brave"];
-        assert_eq!(brave.url, "http://mcp-brave:8000/mcp");
-        assert!(brave.env.is_empty());
+        assert_eq!(manifest.requirements.mcp.len(), 2);
+        assert_eq!(manifest.requirements.mcp[0], "brave");
+        assert_eq!(manifest.requirements.mcp[1], "jira");
     }
 
     #[test]
@@ -716,18 +685,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_manifest_mcp_missing_url_fails() {
+    fn parse_manifest_single_mcp() {
         let toml = r#"
-            name = "bad"
-            description = "Missing url"
+            name = "mcp-agent"
+            description = "Single MCP"
             runtime = "container"
-            executable = "localhost/bad:latest"
+            executable = "localhost/mcp-agent:latest"
 
-            [requirements.mcp.brave]
-            env = ["BRAVE_API_KEY"]
+            [requirements]
+            mcp = ["brave"]
         "#;
 
-        let result: Result<AgentManifest, _> = toml::from_str(toml);
-        assert!(result.is_err());
+        let manifest: AgentManifest = toml::from_str(toml).unwrap();
+        assert_eq!(manifest.requirements.mcp, vec!["brave"]);
     }
 }

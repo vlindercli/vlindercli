@@ -295,7 +295,7 @@ impl CoreHarness {
             .registry
             .get_agent_by_name(agent_name.as_str())
             .await
-            .and_then(|a| a.requirements.mcp.keys().next().cloned())
+            .and_then(|a| a.requirements.mcp.first().cloned())
             .unwrap_or_else(|| "server-everything".to_string());
         let service = ServiceBackendV2::Mcp(provider.clone());
         let operation = ServiceOperation::new(&tc.name);

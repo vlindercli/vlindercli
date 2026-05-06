@@ -111,7 +111,7 @@ fn minimal_agent(name: &str) -> vlinder_core::domain::Agent {
             models: HashMap::new(),
             services: HashMap::new(),
             mounts: HashMap::new(),
-            mcp: HashMap::new(),
+            mcp: Vec::new(),
         },
         prompts: None,
     }

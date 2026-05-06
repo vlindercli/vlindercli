@@ -105,9 +105,7 @@ pub use dag::{
 // Paths
 // ============================================================================
 
-pub use agent_manifest::{
-    AgentManifest, McpProviderConfig, MountConfig, Protocol, RequirementsConfig, ServiceConfig,
-};
+pub use agent_manifest::{AgentManifest, MountConfig, Protocol, RequirementsConfig, ServiceConfig};
 pub use fleet::{Fleet, LoadError as FleetLoadError};
 pub use fleet_manifest::{FleetManifest, ParseError as FleetManifestParseError};
 pub use path::{AbsolutePath, AbsoluteUri};

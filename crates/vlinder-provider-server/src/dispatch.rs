@@ -141,7 +141,7 @@ pub async fn dispatch_invoke(
 
     // Collect tool definitions from MCP servers referenced by the agent.
     let mut tools: Vec<serde_json::Value> = Vec::new();
-    for mcp_name in agent_info.requirements.mcp.keys() {
+    for mcp_name in &agent_info.requirements.mcp {
         if let Some(server) = registry.get_mcp_server(mcp_name).await {
             tools.extend(server.tools);
         }

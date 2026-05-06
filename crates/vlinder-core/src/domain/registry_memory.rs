@@ -816,7 +816,7 @@ mod tests {
                 models: HashMap::new(),
                 services: HashMap::new(),
                 mounts: HashMap::new(),
-                mcp: HashMap::new(),
+                mcp: Vec::new(),
             },
             prompts: None,
         }
@@ -867,7 +867,7 @@ mod tests {
                 models: HashMap::new(),
                 services: HashMap::new(),
                 mounts: HashMap::new(),
-                mcp: HashMap::new(),
+                mcp: Vec::new(),
             },
             prompts: None,
             object_storage: None,

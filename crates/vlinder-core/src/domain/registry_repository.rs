@@ -5,8 +5,8 @@ use std::str::FromStr;
 
 use super::runtime::RuntimeType;
 use super::{
-    Agent, ImageDigest, McpProviderConfig, McpServer, Model, ModelType, MountConfig, Prompts,
-    Provider, Requirements, ResourceId, ServiceConfig, ServiceType,
+    Agent, ImageDigest, McpServer, Model, ModelType, MountConfig, Prompts, Provider, Requirements,
+    ResourceId, ServiceConfig, ServiceType,
 };
 
 /// Repository for persisting Registry state.
@@ -294,7 +294,7 @@ struct RequirementsJson {
     #[serde(default)]
     mounts: HashMap<String, MountConfig>,
     #[serde(default)]
-    mcp: HashMap<String, McpProviderConfig>,
+    mcp: Vec<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -328,7 +328,7 @@ mod tests {
                 models: HashMap::new(),
                 services: HashMap::new(),
                 mounts: HashMap::new(),
-                mcp: HashMap::new(),
+                mcp: Vec::new(),
             },
             prompts: None,
         }
@@ -364,7 +364,7 @@ mod tests {
                 models,
                 services,
                 mounts: HashMap::new(),
-                mcp: HashMap::new(),
+                mcp: Vec::new(),
             },
             prompts: Some(Prompts {
                 intent_recognition: Some("Classify intent".to_string()),
@@ -491,22 +491,14 @@ mod tests {
     }
 
     #[test]
-    fn stored_agent_roundtrips_with_mcp_providers() {
+    fn stored_agent_roundtrips_with_mcp_names() {
         let mut agent = minimal_agent();
-        agent.requirements.mcp = std::collections::HashMap::from([(
-            "brave".to_string(),
-            McpProviderConfig {
-                url: "http://mcp-brave:8000/mcp".to_string(),
-                env: vec!["BRAVE_API_KEY".to_string()],
-            },
-        )]);
+        agent.requirements.mcp = vec!["brave".to_string()];
 
         let stored = StoredAgent::from_agent(&agent).unwrap();
         let restored = stored.to_agent().unwrap();
 
         assert_eq!(restored.requirements.mcp.len(), 1);
-        let brave = &restored.requirements.mcp["brave"];
-        assert_eq!(brave.url, "http://mcp-brave:8000/mcp");
-        assert_eq!(brave.env, vec!["BRAVE_API_KEY"]);
+        assert_eq!(restored.requirements.mcp[0], "brave");
     }
 }
