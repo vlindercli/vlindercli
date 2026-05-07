@@ -9,8 +9,9 @@ name = "vlinderd"
 path = "src/main.rs"
 
 [features]
-default = ["container", "lambda", "ollama", "openrouter", "sqlite-kv", "sqlite-vec", "amqp"]
+default = ["container", "lambda", "ollama", "openrouter", "sqlite-kv", "sqlite-vec", "amqp", "api-server"]
 amqp = ["dep:vlinder-amqp"]
+api-server = ["dep:vlinder-openai-server"]
 test-support = []
 vendored-openssl = ["openssl/vendored"]
 container = ["dep:vlinder-podman-runtime"]
@@ -37,6 +38,7 @@ vlinder-sql-state = { path = "../vlinder-sql-state" }
 vlinder-mcp = { path = "../vlinder-mcp" }
 vlinder-git-dag = { path = "../vlinder-git-dag" }
 vlinder-sql-registry = { path = "../vlinder-sql-registry" }
+vlinder-openai-server = { path = "../vlinder-openai-server", optional = true }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 indicatif = "0.17"

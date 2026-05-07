@@ -52,6 +52,8 @@ pub enum WorkerRole {
     DagGit,
     /// Session viewer HTTP server — read-only conversation browser
     SessionViewer,
+    /// OpenAI-compatible API server (Chat Completions, Models, Embeddings stub)
+    ApiServer,
 }
 
 impl WorkerRole {
@@ -89,6 +91,7 @@ impl WorkerRole {
             WorkerRole::Infra => "infra",
             WorkerRole::DagGit => "dag-git",
             WorkerRole::SessionViewer => "session-viewer",
+            WorkerRole::ApiServer => "api-server",
         }
     }
 
@@ -117,6 +120,7 @@ impl WorkerRole {
             WorkerRole::Infra => "Infra plane worker",
             WorkerRole::DagGit => "DAG git worker",
             WorkerRole::SessionViewer => "Session viewer HTTP server",
+            WorkerRole::ApiServer => "OpenAI-compatible API server",
         }
     }
 }
@@ -154,6 +158,7 @@ impl FromStr for WorkerRole {
             "infra" => Ok(WorkerRole::Infra),
             "dag-git" => Ok(WorkerRole::DagGit),
             "session-viewer" => Ok(WorkerRole::SessionViewer),
+            "api-server" => Ok(WorkerRole::ApiServer),
             _ => Err(ParseWorkerRoleError(s.to_string())),
         }
     }
@@ -258,6 +263,7 @@ mod tests {
             WorkerRole::Infra,
             WorkerRole::DagGit,
             WorkerRole::SessionViewer,
+            WorkerRole::ApiServer,
         ] {
             let env_val = role.as_env_value();
             let parsed: WorkerRole = env_val.parse().unwrap();

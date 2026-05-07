@@ -5203,6 +5203,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-test"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6d24790a10a7af737693a3e8f1d03faef7e6ca0cc99aae5066f533766de545"
+dependencies = [
+ "futures-core",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5376,6 +5387,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -5856,6 +5868,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "vlinder-openai-server"
+version = "0.1.0"
+dependencies = [
+ "async-openai",
+ "async-trait",
+ "axum",
+ "http 1.4.0",
+ "hyper 1.8.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-test",
+ "tower 0.4.13",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "vlinder-core",
+]
+
+[[package]]
 name = "vlinder-podman-runtime"
 version = "0.1.0"
 dependencies = [
@@ -6044,6 +6077,7 @@ dependencies = [
  "vlinder-mcp",
  "vlinder-nats",
  "vlinder-ollama",
+ "vlinder-openai-server",
  "vlinder-podman-runtime",
  "vlinder-sql-registry",
  "vlinder-sql-state",

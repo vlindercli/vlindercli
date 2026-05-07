@@ -775,6 +775,8 @@ pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: Can
         }
         WorkerRole::SessionViewer => run_session_viewer_worker(&config, shutdown).await,
         WorkerRole::Mcp => run_mcp_worker(&config, shutdown).await,
+        #[cfg(feature = "api-server")]
+        WorkerRole::ApiServer => run_api_server_worker(&config, shutdown).await,
     }
 
     tracing::info!(role = %role, "Worker shutdown complete");
@@ -803,4 +805,52 @@ pub async fn run_session_viewer_worker(_config: &Config, shutdown: CancellationT
 
     shutdown.cancelled().await;
     server.stop().await;
+}
+
+#[cfg(feature = "api-server")]
+pub async fn run_api_server_worker(config: &Config, shutdown: CancellationToken) {
+    use crate::config::dag_db_path;
+    use vlinder_core::domain::{CoreHarness, HarnessType};
+    use vlinder_mcp::McpProtocol;
+    use vlinder_openai_server::ApiServer;
+    use vlinder_sql_state::SqliteDagStore;
+
+    let port = std::env::var("VLINDER_OPENAI_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7890u16);
+
+    let queue = crate::queue_factory::from_config_async(config)
+        .await
+        .expect("Failed to create queue for api-server worker");
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path).expect("Failed to open DAG store for api-server");
+    let store: Arc<dyn vlinder_core::domain::DagStore> = Arc::new(store);
+
+    let harness: Arc<dyn vlinder_core::domain::Harness + Send + Sync> = Arc::new(CoreHarness::new(
+        queue,
+        Arc::clone(&registry) as _,
+        Arc::clone(&store) as _,
+        HarnessType::Api,
+        Arc::new(McpProtocol),
+    ));
+
+    let server = ApiServer::new(harness, registry, store);
+    let handle = server
+        .start(port)
+        .await
+        .expect("Failed to start api-server");
+
+    tracing::info!(
+        port = handle.port(),
+        "OpenAI-compatible API server started: http://127.0.0.1:{}",
+        handle.port()
+    );
+
+    shutdown.cancelled().await;
+    handle.stop();
 }
