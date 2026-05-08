@@ -235,6 +235,8 @@ pub struct WorkerCounts {
     pub dag_git: u32,
     /// Session viewer worker
     pub session_viewer: u32,
+    /// OpenAI-compatible API server worker
+    pub api_server: u32,
     /// MCP service workers
     pub mcp: u32,
 }
@@ -381,6 +383,7 @@ impl Default for WorkerCounts {
             infra: 1,
             dag_git: 1,
             session_viewer: 1,
+            api_server: 1,
             mcp: 1,
         }
     }
@@ -586,6 +589,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("VLINDER_WORKERS_SESSION_VIEWER") {
             self.distributed.workers.session_viewer = v.parse().unwrap_or(1);
+        }
+        if let Ok(v) = std::env::var("VLINDER_WORKERS_API_SERVER") {
+            self.distributed.workers.api_server = v.parse().unwrap_or(1);
         }
         if let Ok(v) = std::env::var("VLINDER_WORKERS_MCP") {
             self.distributed.workers.mcp = v.parse().unwrap_or(1);
@@ -794,6 +800,7 @@ mod tests {
         assert_eq!(config.distributed.workers.storage.vector.sqlite, 1);
         assert_eq!(config.distributed.workers.dag_git, 1);
         assert_eq!(config.distributed.workers.session_viewer, 1);
+        assert_eq!(config.distributed.workers.api_server, 1);
         assert_eq!(config.distributed.workers.mcp, 1);
     }
 
