@@ -2,7 +2,7 @@
 # Build context: workspace root (sidecar depends on sibling crates).
 #
 # Only the 12 crates in the sidecar's dependency chain get real Cargo.toml
-# files. The remaining 9 workspace members get minimal stubs (no deps) so
+# files. The remaining 10 workspace members get minimal stubs (no deps) so
 # Cargo can resolve the workspace without triggering feature unification
 # on shared dependencies like tonic.
 #
@@ -45,6 +45,7 @@ COPY crates/vlinder-podman-sidecar/stubs/vlinder-podman-runtime.toml crates/vlin
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-lambda-runtime.toml crates/vlinder-lambda-runtime/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-git-dag.toml crates/vlinder-git-dag/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-s3-storage.toml crates/vlinder-s3-storage/Cargo.toml
+COPY crates/vlinder-podman-sidecar/stubs/vlinder-openai-server.toml crates/vlinder-openai-server/Cargo.toml
 
 
 # Stub out src directories so Cargo can resolve the workspace
@@ -68,7 +69,8 @@ RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs
     mkdir -p crates/vlinder-podman-runtime/src && echo "" > crates/vlinder-podman-runtime/src/lib.rs && \
     mkdir -p crates/vlinder-lambda-runtime/src && echo "" > crates/vlinder-lambda-runtime/src/lib.rs && \
     mkdir -p crates/vlinder-git-dag/src && echo "" > crates/vlinder-git-dag/src/lib.rs && \
-    mkdir -p crates/vlinder-s3-storage/src && echo "" > crates/vlinder-s3-storage/src/lib.rs
+    mkdir -p crates/vlinder-s3-storage/src && echo "" > crates/vlinder-s3-storage/src/lib.rs && \
+    mkdir -p crates/vlinder-openai-server/src && echo "" > crates/vlinder-openai-server/src/lib.rs
 
 # Proto build dependencies (only for dep-chain crates with gRPC)
 COPY crates/vlinder-nats/build.rs crates/vlinder-nats/
