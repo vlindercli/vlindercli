@@ -315,8 +315,16 @@ async fn chat_completions(
             }
         }
     } else {
-        let (sid, _) = server.harness.start_session(&model).await;
-        sid
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "message": "X-Vlinder-Session header is required — create a session first via the session plane",
+                    "type": "invalid_request_error",
+                }
+            })),
+        )
+            .into_response();
     };
 
     let messages_json: &[Value] = req
@@ -503,6 +511,7 @@ mod tests {
             .method("POST")
             .uri("/v1/chat/completions")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header("X-Vlinder-Session", "00000000-0000-4000-8000-000000000000")
             .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
 
