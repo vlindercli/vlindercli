@@ -49,6 +49,14 @@ pub fn serialize_openai_conversation(messages: &[Message]) -> Vec<u8> {
                     "role": "assistant",
                     "content": content.unwrap_or_default(),
                 }),
+                Message::System { content } => serde_json::json!({
+                    "role": "system",
+                    "content": content,
+                }),
+                Message::Tool { content, .. } => serde_json::json!({
+                    "role": "tool",
+                    "content": String::from_utf8_lossy(content).into_owned(),
+                }),
             })
             .collect();
 

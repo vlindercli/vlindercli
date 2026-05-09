@@ -87,6 +87,10 @@ impl ToolCallParser for OpenAiToolCallParser {
                     }
                     msg
                 }
+                Message::System { content } => json!({
+                    "role": "system",
+                    "content": content,
+                }),
                 Message::Tool {
                     tool_call_id,
                     content,

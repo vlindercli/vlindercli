@@ -538,7 +538,9 @@ impl CoreHarness {
                 current_input
                     .iter()
                     .filter_map(|m| match m {
-                        Message::User { content } => Some(content.as_str()),
+                        Message::User { content } | Message::System { content } => {
+                            Some(content.as_str())
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>()
@@ -826,7 +828,9 @@ impl Harness for CoreHarness {
                 current_input
                     .iter()
                     .filter_map(|m| match m {
-                        Message::User { content } => Some(content.as_str()),
+                        Message::User { content } | Message::System { content } => {
+                            Some(content.as_str())
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>()

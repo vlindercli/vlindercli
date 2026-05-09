@@ -114,6 +114,7 @@ fn format_current_input(messages: &[Message]) -> String {
             Message::Agent { content, .. } => {
                 format!("Agent: {}", content.as_deref().unwrap_or(""))
             }
+            Message::System { content } => format!("System: {content}"),
             Message::Tool {
                 tool_call_id,
                 content,

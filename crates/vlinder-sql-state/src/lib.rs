@@ -247,7 +247,8 @@ async fn render_session(
                     msg.current_input
                         .last()
                         .map(|m| match m {
-                            vlinder_core::domain::Message::User { content } => content.clone(),
+                            vlinder_core::domain::Message::User { content }
+                            | vlinder_core::domain::Message::System { content } => content.clone(),
                             vlinder_core::domain::Message::Agent { content, .. } => {
                                 content.clone().unwrap_or_default()
                             }
@@ -299,7 +300,8 @@ async fn render_node(
                     msg.current_input
                         .last()
                         .map(|m| match m {
-                            vlinder_core::domain::Message::User { content } => content.clone(),
+                            vlinder_core::domain::Message::User { content }
+                            | vlinder_core::domain::Message::System { content } => content.clone(),
                             vlinder_core::domain::Message::Agent { content, .. } => {
                                 content.clone().unwrap_or_default()
                             }

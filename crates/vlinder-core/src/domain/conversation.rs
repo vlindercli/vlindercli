@@ -28,6 +28,8 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_calls: Option<Vec<crate::domain::ToolCall>>,
     },
+    #[serde(rename = "system")]
+    System { content: String },
     #[serde(rename = "tool")]
     Tool {
         tool_call_id: ToolCallId,
