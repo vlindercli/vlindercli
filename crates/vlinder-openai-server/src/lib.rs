@@ -94,18 +94,37 @@ impl ApiServer {
 // Conversions
 // ============================================================================
 
+/// Extract text content from an `OpenAI` message value, supporting both string
+/// and array-of-content-parts formats.
+fn extract_text_content(value: &serde_json::Value) -> String {
+    if let Some(s) = value.as_str() {
+        s.to_string()
+    } else if let Some(arr) = value.as_array() {
+        arr.iter()
+            .filter_map(|item| {
+                if item.get("type")?.as_str()? == "text" {
+                    item.get("text")?.as_str()
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    } else {
+        String::new()
+    }
+}
+
 /// Convert a JSON array of `OpenAI` messages into Vlinder domain `Message` array.
 fn messages_from_json(msgs: &[Value]) -> Vec<Message> {
     let mut result = Vec::with_capacity(msgs.len());
     for msg in msgs {
         let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let content = extract_text_content(msg.get("content").unwrap_or(&serde_json::Value::Null));
 
         match role {
             "user" => {
-                result.push(Message::User {
-                    content: content.to_string(),
-                });
+                result.push(Message::User { content });
             }
             "assistant" => {
                 let tool_calls = msg.get("tool_calls").and_then(|v| v.as_array()).map(|arr| {
@@ -133,7 +152,7 @@ fn messages_from_json(msgs: &[Value]) -> Vec<Message> {
                         .collect()
                 });
                 result.push(Message::Agent {
-                    content: Some(content.to_string()),
+                    content: Some(content),
                     tool_calls,
                 });
             }
@@ -146,19 +165,21 @@ fn messages_from_json(msgs: &[Value]) -> Vec<Message> {
                     });
                 result.push(Message::Tool {
                     tool_call_id,
-                    content: content.as_bytes().to_vec(),
+                    content: content.into_bytes(),
                 });
             }
             "system" => {
+                result.push(Message::System { content });
+            }
+            "function" => {
+                // Deprecated — treat as user
                 result.push(Message::User {
-                    content: format!("[system] {content}\n"),
+                    content: format!("[function] {content}\n"),
                 });
             }
-            "function" | "developer" => {
-                // Deprecated / dev override — treat as user
-                result.push(Message::User {
-                    content: format!("[{role}] {content}\n"),
-                });
+            "developer" => {
+                // Developer role is semantically a system instruction per OpenAI spec
+                result.push(Message::System { content });
             }
             _ => {}
         }
@@ -691,6 +712,56 @@ mod tests {
         assert_eq!(
             choice["message"]["tool_calls"][0]["function"]["name"],
             "get_weather"
+        );
+    }
+
+    #[test]
+    fn messages_from_json_system_message() {
+        let msgs = vec![serde_json::json!({
+            "role": "system",
+            "content": "You are helpful",
+        })];
+        let result = messages_from_json(&msgs);
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], Message::System { content } if content == "You are helpful"));
+    }
+
+    #[test]
+    fn messages_from_json_developer_role() {
+        let msgs = vec![serde_json::json!({
+            "role": "developer",
+            "content": "Be concise",
+        })];
+        let result = messages_from_json(&msgs);
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], Message::System { content } if content == "Be concise"));
+    }
+
+    #[test]
+    fn messages_from_json_array_content() {
+        let msgs = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "Hello"}],
+        })];
+        let result = messages_from_json(&msgs);
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], Message::User { content } if content == "Hello"));
+    }
+
+    #[test]
+    fn messages_from_json_mixed_array_content() {
+        let msgs = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image: "},
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+            ],
+        })];
+        let result = messages_from_json(&msgs);
+        assert_eq!(result.len(), 1);
+        // Only text parts should be extracted; image_url parts are discarded
+        assert!(
+            matches!(&result[0], Message::User { content } if content == "Describe this image: ")
         );
     }
 }
