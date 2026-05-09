@@ -237,12 +237,79 @@ fn choices_to_json(parsed: &vlinder_core::domain::ParsedResponse) -> Value {
 }
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+#[allow(clippy::result_large_err)]
+/// Extract a `SessionId` from the `X-Vlinder-Session` header, returning a 400
+/// response on any error.
+fn resolve_session_from_header(headers: &HeaderMap) -> Result<SessionId, Response> {
+    let raw = headers.get("X-Vlinder-Session").ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "message": "X-Vlinder-Session header is required — create a session first via the session plane",
+                    "type": "invalid_request_error",
+                }
+            })),
+        )
+            .into_response()
+    })?;
+    let s = raw.to_str().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "message": "X-Vlinder-Session header must be valid UTF-8",
+                    "type": "invalid_request_error",
+                }
+            })),
+        )
+            .into_response()
+    })?;
+    SessionId::try_from(s.to_string()).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "message": "invalid X-Vlinder-Session header value",
+                    "type": "invalid_request_error",
+                }
+            })),
+        )
+            .into_response()
+    })
+}
+
+/// Build the standard `OpenAI` chat completion JSON response body.
+fn build_chat_completion_response(
+    model_str: &str,
+    parsed: &vlinder_core::domain::ParsedResponse,
+) -> Value {
+    let created = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    serde_json::json!({
+        "id": format!("chatcmpl-{}", Uuid::new_v4()),
+        "object": "chat.completion",
+        "created": created,
+        "model": model_str,
+        "choices": choices_to_json(parsed),
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+    })
+}
+
+// ============================================================================
 // Handlers
 // ============================================================================
 
 type AppState = Arc<ApiServer>;
 
-#[allow(clippy::too_many_lines)]
 async fn chat_completions(
     State(server): State<AppState>,
     headers: HeaderMap,
@@ -284,47 +351,9 @@ async fn chat_completions(
     };
     let agent_id = agent.id.clone();
 
-    let session_id = if let Some(raw) = headers.get("X-Vlinder-Session") {
-        match raw.to_str() {
-            Ok(s) => match SessionId::try_from(s.to_string()) {
-                Ok(sid) => sid,
-                Err(_) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": "invalid X-Vlinder-Session header value",
-                                "type": "invalid_request_error",
-                            }
-                        })),
-                    )
-                        .into_response();
-                }
-            },
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": "X-Vlinder-Session header must be valid UTF-8",
-                            "type": "invalid_request_error",
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-        }
-    } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": {
-                    "message": "X-Vlinder-Session header is required — create a session first via the session plane",
-                    "type": "invalid_request_error",
-                }
-            })),
-        )
-            .into_response();
+    let session_id = match resolve_session_from_header(&headers) {
+        Ok(sid) => sid,
+        Err(resp) => return resp,
     };
 
     let messages_json: &[Value] = req
@@ -354,24 +383,11 @@ async fn chat_completions(
         }
     };
 
-    let created = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-
-    let response = serde_json::json!({
-        "id": format!("chatcmpl-{}", Uuid::new_v4()),
-        "object": "chat.completion",
-        "created": created,
-        "model": req.get("model").and_then(|v| v.as_str()).unwrap_or(&model),
-        "choices": choices_to_json(&parsed),
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        },
-    });
-
-    (StatusCode::OK, Json(response)).into_response()
+    (
+        StatusCode::OK,
+        Json(build_chat_completion_response(&model, &parsed)),
+    )
+        .into_response()
 }
 
 async fn models(State(server): State<AppState>) -> Response {
