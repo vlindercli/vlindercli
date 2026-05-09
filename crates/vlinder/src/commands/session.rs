@@ -5,7 +5,7 @@ use vlinder_core::domain::{
     AgentName, BranchId, DagStore, ForkParams, MessageType, PromoteParams, SessionId,
 };
 
-use super::connect::{connect_harness, open_dag_store};
+use super::connect::{connect_harness, connect_registry, open_dag_store};
 
 #[derive(Subcommand, Debug, PartialEq)]
 pub enum SessionCommand {
@@ -39,6 +39,11 @@ pub enum SessionCommand {
         #[arg(long)]
         branch: String,
     },
+    /// Create a new session without invoking the agent
+    New {
+        /// Agent name
+        agent: String,
+    },
 }
 
 pub async fn execute(cmd: SessionCommand) {
@@ -51,6 +56,7 @@ pub async fn execute(cmd: SessionCommand) {
             branch,
         } => fork(&session_id, &from, &branch).await,
         SessionCommand::Promote { session_id, branch } => promote(&session_id, &branch).await,
+        SessionCommand::New { agent } => new(&agent).await,
     }
 }
 
@@ -302,6 +308,45 @@ async fn promote(session_id_or_name: &str, branch_name: &str) {
         });
 
     println!("Promoted branch '{branch_name}' to main");
+}
+
+async fn new(agent_name: &str) {
+    let config = CliConfig::load();
+
+    // Validate agent exists — fail fast
+    let registry = connect_registry(&config).await;
+    let Some(_agent) = registry.get_agent_by_name(agent_name).await else {
+        eprintln!("Agent '{agent_name}' not found — deploy it first with: vlinder agent deploy");
+        std::process::exit(1);
+    };
+
+    // Create session via harness (persists synchronously)
+    let harness = connect_harness(&config).await;
+    let (session_id, _branch_id) = harness.start_session(agent_name).await;
+
+    // Read back session for name and created_at
+    let store = open_dag_store(&config).await.unwrap_or_else(|| {
+        eprintln!("Cannot connect to state service. Is the daemon running?");
+        std::process::exit(1);
+    });
+    let session = store
+        .get_session(&session_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| {
+            eprintln!("Failed to read back session {session_id}");
+            std::process::exit(1);
+        });
+
+    // Print in same format as `session list`
+    println!(
+        "{:<28} {:<40} {:<24} {:>8}",
+        session.name,
+        session.id,
+        session.created_at.format("%Y-%m-%d %H:%M:%S"),
+        1,
+    );
 }
 
 // ---------------------------------------------------------------------------
