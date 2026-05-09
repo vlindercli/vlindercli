@@ -304,6 +304,66 @@ fn build_chat_completion_response(
     })
 }
 
+/// Build an SSE (`text/event-stream`) response body for the given response.
+fn build_sse_response(model_str: &str, parsed: &vlinder_core::domain::ParsedResponse) -> String {
+    let id = format!("chatcmpl-{}", Uuid::new_v4());
+    let created = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+
+    let role_event = serde_json::json!({
+        "id": id, "object": "chat.completion.chunk", "created": created, "model": model_str,
+        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]
+    });
+
+    let content_delta = match (&parsed.content, &parsed.tool_calls) {
+        (Some(content), Some(tcs)) => {
+            let tc_json: Vec<Value> = tcs.iter().map(|tc| serde_json::json!({
+                "index": 0, "id": tc.id.to_string(), "type": "function",
+                "function": {"name": tc.name, "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default()}
+            })).collect();
+            serde_json::json!({"content": content, "tool_calls": tc_json})
+        }
+        (Some(content), None) => serde_json::json!({"content": content}),
+        (None, Some(tcs)) => {
+            let tc_json: Vec<Value> = tcs.iter().map(|tc| serde_json::json!({
+                "index": 0, "id": tc.id.to_string(), "type": "function",
+                "function": {"name": tc.name, "arguments": serde_json::to_string(&tc.arguments).unwrap_or_default()}
+            })).collect();
+            serde_json::json!({"content": Value::Null, "tool_calls": tc_json})
+        }
+        (None, None) => serde_json::json!({"content": Value::Null}),
+    };
+    let content_event = serde_json::json!({
+        "id": id, "object": "chat.completion.chunk", "created": created, "model": model_str,
+        "choices": [{"index": 0, "delta": content_delta, "finish_reason": null}]
+    });
+
+    let finish_reason = if parsed.tool_calls.is_some() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+    let finish_event = serde_json::json!({
+        "id": id, "object": "chat.completion.chunk", "created": created, "model": model_str,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]
+    });
+
+    // Construct SSE body with explicit newlines between events
+    let mut sse = String::new();
+    sse.push_str("data: ");
+    sse.push_str(&role_event.to_string());
+    sse.push_str("\n\n");
+    sse.push_str("data: ");
+    sse.push_str(&content_event.to_string());
+    sse.push_str("\n\n");
+    sse.push_str("data: ");
+    sse.push_str(&finish_event.to_string());
+    sse.push_str("\n\n");
+    sse.push_str("data: [DONE]\n\n");
+    sse
+}
+
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -315,20 +375,7 @@ async fn chat_completions(
     headers: HeaderMap,
     Json(req): Json<Value>,
 ) -> Response {
-    // Reject streaming.
     let stream = req.get("stream").and_then(Value::as_bool).unwrap_or(false);
-    if stream {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": {
-                    "message": "streaming is not supported",
-                    "type": "invalid_request_error",
-                }
-            })),
-        )
-            .into_response();
-    }
 
     let model = req
         .get("model")
@@ -383,11 +430,25 @@ async fn chat_completions(
         }
     };
 
-    (
-        StatusCode::OK,
-        Json(build_chat_completion_response(&model, &parsed)),
-    )
-        .into_response()
+    let model_str = req.get("model").and_then(|v| v.as_str()).unwrap_or(&model);
+    if stream {
+        let body = build_sse_response(model_str, &parsed);
+        (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "text/event-stream"),
+                (axum::http::header::CACHE_CONTROL, "no-cache"),
+            ],
+            body,
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::OK,
+            Json(build_chat_completion_response(model_str, &parsed)),
+        )
+            .into_response()
+    }
 }
 
 async fn models(State(server): State<AppState>) -> Response {
@@ -510,7 +571,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_completions_rejects_streaming() {
+    async fn chat_completions_accepts_streaming() {
+        // Verify streaming is no longer rejected — the request should pass the
+        // streaming check and proceed to agent lookup (which returns 404 because
+        // no agent is registered). Previously this returned 400 BAD_REQUEST.
+        use axum::body::Body;
         use tower::ServiceExt;
 
         let server = test_server();
@@ -528,11 +593,44 @@ mod tests {
             .uri("/v1/chat/completions")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
             .header("X-Vlinder-Session", "00000000-0000-4000-8000-000000000000")
-            .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // 404 (agent not found) proves streaming was not rejected (would be 400)
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn build_sse_response_content_only() {
+        use vlinder_core::domain::ParsedResponse;
+        let parsed = ParsedResponse {
+            content: Some("hello".to_string()),
+            tool_calls: None,
+        };
+        let body = build_sse_response("test-agent", &parsed);
+        assert!(body.contains(r#""content":"hello""#));
+        assert!(body.contains(r#""finish_reason":"stop""#));
+        assert!(body.contains("[DONE]"));
+    }
+
+    #[test]
+    fn build_sse_response_with_tool_calls() {
+        use serde_json::json;
+        use vlinder_core::domain::{ParsedResponse, ToolCall, ToolCallId};
+
+        let parsed = ParsedResponse {
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: ToolCallId::new(),
+                name: "get_weather".to_string(),
+                arguments: json!({"city": "NYC"}),
+            }]),
+        };
+        let body = build_sse_response("test-agent", &parsed);
+        assert!(body.contains("tool_calls"));
+        assert!(body.contains(r#""finish_reason":"tool_calls""#));
+        assert!(body.contains("[DONE]"));
     }
 
     #[test]
