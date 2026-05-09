@@ -405,6 +405,12 @@ async fn chat_completions(
         .trim_end_matches(":latest")
         .to_string();
 
+    tracing::info!(
+        model = %model,
+        messages = %serde_json::to_string(req.get("messages").unwrap_or(&serde_json::Value::Null)).unwrap_or_default(),
+        "chat_completions request"
+    );
+
     let Some(agent) = server.registry.get_agent_by_name(&model).await else {
         return (
             StatusCode::NOT_FOUND,
