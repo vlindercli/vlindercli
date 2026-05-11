@@ -15,10 +15,10 @@ use lapin::{
 };
 use vlinder_core::domain::{
     Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataRoutingKey,
-    DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey,
-    InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError, RequestMessage,
-    ResponseMessage, Sequence, ServiceBackend, SessionMessageKind, SessionRoutingKey,
-    SessionStartMessage, SubmissionId,
+    DeleteAgentMessage, DeployAgentMessage, ExternalSessionId, ForkMessage, HarnessType,
+    InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
+    RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionMessageKind,
+    SessionRoutingKey, SessionStartMessage, SubmissionId,
 };
 
 use crate::connect::{AmqpConfig, EXCHANGE_NAME};
@@ -467,6 +467,7 @@ impl MessageQueue for AmqpQueue {
         &self,
         _key: SessionRoutingKey,
         _msg: SessionStartMessage,
+        _external_id: ExternalSessionId,
     ) -> Result<vlinder_core::domain::BranchId, QueueError> {
         Ok(vlinder_core::domain::BranchId::from(1))
     }

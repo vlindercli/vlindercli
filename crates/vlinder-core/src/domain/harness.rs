@@ -10,12 +10,15 @@
 use std::sync::Arc;
 
 use crate::domain::{
-    AgentName, BranchId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, ForkMessage,
-    HarnessType, InvokeDiagnostics, InvokeMessage, JobId, JobStatus, MessageId, MessageQueue,
-    MessageType, PromoteMessage, Registry, ResourceId, SessionId, SessionMessageKind,
-    SessionRoutingKey, SessionStartMessage, SubmissionId,
+    AgentName, BranchId, CompleteMessage, DagNodeId, DagStore, DataMessageKind, DataRoutingKey,
+    ExternalSessionId, ForkMessage, HarnessType, InvokeDiagnostics, InvokeMessage, JobId,
+    JobStatus, Message, MessageId, MessageQueue, MessageType, ParsedResponse, PromoteMessage,
+    Registry, RequestV2, ResourceId, Sequence, SequenceCounter, ServiceBackendV2, ServiceOperation,
+    SessionId, SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId,
+    SvcMessageKind, SvcRequestDiagnostics, SvcRoutingKey, ToolCallProtocol, ToolResult,
 };
 use async_trait::async_trait;
+use serde_json::Value;
 
 /// Common harness operations shared across all harness types.
 #[async_trait]
@@ -30,7 +33,11 @@ pub trait Harness {
     ///
     /// Creates a session and its default "main" branch. Returns the
     /// `SessionId` and the default branch's `BranchId`.
-    async fn start_session(&self, agent_name: &str) -> (SessionId, BranchId);
+    async fn start_session(
+        &self,
+        agent_name: &str,
+        external_id: ExternalSessionId,
+    ) -> (SessionId, BranchId);
 
     /// Run an agent to completion synchronously.
     ///
@@ -47,6 +54,23 @@ pub trait Harness {
         initial_state: Option<String>,
         dag_parent: DagNodeId,
     ) -> Result<String, String>;
+
+    /// Run an agent with caller-provided message history.
+    ///
+    /// The caller provides the full conversation history (user, agent, tool
+    /// messages). The harness does NOT read the DAG for prior context. This
+    /// is the path used by the OpenAI-compatible API server.
+    ///
+    /// Tool calls in the agent's response are dispatched internally (via the
+    /// service plane) and the agent is re-invoked with tool results. The method
+    /// loops until the agent returns a text-only response. The returned
+    /// `ParsedResponse` always has `tool_calls: None`.
+    async fn run_agent_with_messages(
+        &self,
+        agent_id: &ResourceId,
+        messages: Vec<Message>,
+        session_id: SessionId,
+    ) -> Result<ParsedResponse, String>;
 
     /// Create a timeline fork by sending a `ForkMessage` through the queue.
     ///
@@ -89,23 +113,6 @@ pub struct PromoteParams {
     pub agent_name: AgentName,
 }
 
-/// Build an enriched payload from DAG-derived history.
-///
-/// Each invoke payload already contains the full conversation history up to
-/// that point, so we only need the last invoke + last complete to reconstruct.
-fn build_payload(
-    last_invoke_payload: Option<&str>,
-    last_complete_payload: Option<&str>,
-    current_input: &str,
-) -> String {
-    match (last_invoke_payload, last_complete_payload) {
-        (Some(invoke), Some(complete)) => {
-            format!("{invoke}\nAgent: {complete}\nUser: {current_input}")
-        }
-        _ => format!("User: {current_input}"),
-    }
-}
-
 // ============================================================================
 // CoreHarness — canonical implementation
 // ============================================================================
@@ -123,6 +130,8 @@ pub struct CoreHarness {
     queue: Arc<dyn MessageQueue + Send + Sync>,
     registry: Arc<dyn Registry>,
     store: Arc<dyn DagStore>,
+    service_sequence: SequenceCounter,
+    protocol: Arc<dyn ToolCallProtocol>,
 }
 
 impl CoreHarness {
@@ -131,13 +140,174 @@ impl CoreHarness {
         registry: Arc<dyn Registry>,
         store: Arc<dyn DagStore>,
         harness_type: HarnessType,
+        protocol: Arc<dyn ToolCallProtocol>,
     ) -> Self {
         Self {
             harness_type,
             queue,
             registry,
             store,
+            service_sequence: SequenceCounter::new(),
+            protocol,
         }
+    }
+
+    /// Get the next sequence number for service calls.
+    fn next_service_sequence(&self) -> Sequence {
+        self.service_sequence.next()
+    }
+
+    /// Look up the agent and resolve its runtime.
+    async fn resolve_agent_and_runtime(
+        &self,
+        agent_id: &ResourceId,
+    ) -> Result<(crate::domain::Agent, crate::domain::RuntimeType), String> {
+        let agent = self
+            .registry
+            .get_agent(agent_id)
+            .await
+            .ok_or_else(|| format!("agent not deployed: {agent_id}"))?;
+        let runtime = self
+            .registry
+            .select_runtime(&agent)
+            .ok_or_else(|| format!("no runtime available for agent: {agent_id}"))?;
+        Ok((agent, runtime))
+    }
+
+    /// Resolve the session's branch, `dag_parent`, and `initial_state` for `run_agent_with_messages`.
+    async fn resolve_session_context(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<(BranchId, DagNodeId, Option<String>), String> {
+        let session = self
+            .store
+            .get_session(session_id)
+            .await
+            .map_err(|e| format!("failed to resolve session: {e}"))?
+            .ok_or_else(|| format!("session not found: {session_id}"))?;
+
+        let branch_id = session.default_branch;
+        let branch = self
+            .store
+            .get_branch(branch_id)
+            .await
+            .map_err(|e| format!("failed to resolve branch: {e}"))?
+            .ok_or_else(|| format!("branch not found: {branch_id}"))?;
+
+        if branch.broken_at.is_some() {
+            return Err(
+                "Timeline is sealed. Use `vlinder session fork` to create a new branch."
+                    .to_string(),
+            );
+        }
+
+        let tip_node = self
+            .store
+            .latest_node_on_branch(branch_id, None)
+            .await
+            .unwrap_or(None);
+        let dag_parent = tip_node
+            .as_ref()
+            .map(|n| n.id.clone())
+            .or_else(|| branch.fork_point.clone())
+            .unwrap_or_else(DagNodeId::root);
+
+        let initial_state = if let Some(node) = tip_node {
+            let state = if node.message_type() == MessageType::Invoke {
+                self.store
+                    .get_invoke_node(&node.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|(_, msg)| msg.state)
+                    .unwrap_or_default()
+            } else if node.message_type() == MessageType::Complete {
+                self.store
+                    .get_complete_node(&node.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|m| m.state)
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if state.is_empty() {
+                None
+            } else {
+                Some(state)
+            }
+        } else {
+            None
+        };
+
+        Ok((branch_id, dag_parent, initial_state))
+    }
+
+    /// Build the conversation history and current input from DAG state.
+    ///
+    /// On the first invocation, history is empty and `current_input` is a single
+    /// user message. On follow-up invocations, prior history is carried forward
+    /// and the last agent response is appended.
+    async fn build_conversation_input(
+        &self,
+        timeline: BranchId,
+        input: &str,
+        initial_state: Option<&str>,
+    ) -> Result<(Vec<Message>, Vec<Message>, Option<String>), String> {
+        let last_invoke_node = self
+            .store
+            .latest_node_on_branch(timeline, Some(MessageType::Invoke))
+            .await
+            .unwrap_or(None);
+        let last_complete_node = self
+            .store
+            .latest_node_on_branch(timeline, Some(MessageType::Complete))
+            .await
+            .unwrap_or(None);
+        let last_complete = match last_complete_node {
+            Some(n) => self.store.get_complete_node(&n.id).await.ok().flatten(),
+            None => None,
+        };
+
+        let last_state = last_complete
+            .as_ref()
+            .and_then(|m| m.state.as_ref().map(std::string::ToString::to_string))
+            .or_else(|| initial_state.map(std::string::ToString::to_string));
+
+        let (history, current_input) =
+            if let (Some(invoke_node), Some(complete)) = (last_invoke_node, last_complete) {
+                let last_invoke = self
+                    .store
+                    .get_invoke_node(&invoke_node.id)
+                    .await
+                    .ok()
+                    .flatten();
+                let (mut new_history, prev_current_input) = match last_invoke {
+                    Some((_, invoke_msg)) => (invoke_msg.history, invoke_msg.current_input),
+                    None => (vec![], vec![]),
+                };
+                new_history.extend(prev_current_input);
+                new_history.push(Message::Agent {
+                    content: complete.content.clone(),
+                    tool_calls: complete.tool_calls.clone(),
+                });
+                (
+                    new_history,
+                    vec![Message::User {
+                        content: input.to_string(),
+                    }],
+                )
+            } else {
+                (
+                    vec![],
+                    vec![Message::User {
+                        content: input.to_string(),
+                    }],
+                )
+            };
+
+        Ok((history, current_input, last_state))
     }
 
     /// Build an invoke from session state and register a job.
@@ -161,54 +331,12 @@ impl CoreHarness {
             );
         }
 
-        let agent = self
-            .registry
-            .get_agent(agent_id)
-            .await
-            .ok_or_else(|| format!("agent not deployed: {agent_id}"))?;
-        let runtime = self
-            .registry
-            .select_runtime(&agent)
-            .ok_or_else(|| format!("no runtime available for agent: {agent_id}"))?;
+        let (_, runtime) = self.resolve_agent_and_runtime(agent_id).await?;
+        let (history, current_input, last_state) = self
+            .build_conversation_input(timeline, input, initial_state)
+            .await?;
 
-        let last_invoke_node = self
-            .store
-            .latest_node_on_branch(timeline, Some(MessageType::Invoke))
-            .await
-            .unwrap_or(None);
-        let last_invoke_payload = match last_invoke_node {
-            Some(n) => self
-                .store
-                .get_invoke_node(&n.id)
-                .await
-                .ok()
-                .flatten()
-                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string()),
-            None => None,
-        };
-        let last_complete_node = self
-            .store
-            .latest_node_on_branch(timeline, Some(MessageType::Complete))
-            .await
-            .unwrap_or(None);
-        let last_complete = match last_complete_node {
-            Some(n) => self.store.get_complete_node(&n.id).await.ok().flatten(),
-            None => None,
-        };
-        let last_complete_payload = last_complete
-            .as_ref()
-            .map(|m| String::from_utf8_lossy(&m.payload).to_string());
-        let enriched_payload = build_payload(
-            last_invoke_payload.as_deref(),
-            last_complete_payload.as_deref(),
-            input,
-        );
         let submission = SubmissionId::new();
-        let last_state = last_complete
-            .as_ref()
-            .and_then(|m| m.state.as_ref().map(std::string::ToString::to_string))
-            .or_else(|| initial_state.map(std::string::ToString::to_string));
-
         let job_id = self
             .registry
             .create_job(submission.clone(), agent_id.clone(), input.to_string())
@@ -233,10 +361,288 @@ impl CoreHarness {
                 harness_version: env!("CARGO_PKG_VERSION").to_string(),
             },
             dag_parent: dag_parent.clone(),
-            payload: enriched_payload.as_bytes().to_vec(),
+            history,
+            current_input,
         };
 
         Ok((key, msg, job_id))
+    }
+
+    /// Dispatch a tool call via the V2 service path (harness‑mediated).
+    ///
+    /// Sends a `RequestV2` to the service worker and waits for a
+    /// `ResponseV2`. The service backend is currently hardcoded to
+    /// `Mcp("server-everything")`.
+    async fn dispatch_service_call(
+        &self,
+        tc: &crate::domain::ToolCall,
+        session_id: &SessionId,
+        timeline: BranchId,
+        submission: &SubmissionId,
+        agent_name: &AgentName,
+        last_state: Option<String>,
+    ) -> crate::domain::ToolResult {
+        let provider = self
+            .registry
+            .get_agent_by_name(agent_name.as_str())
+            .await
+            .and_then(|a| a.requirements.mcp.first().cloned())
+            .unwrap_or_else(|| "server-everything".to_string());
+        let service = ServiceBackendV2::Mcp(provider.clone());
+        let operation = ServiceOperation::new(&tc.name);
+        let sequence = self.next_service_sequence();
+
+        let key = SvcRoutingKey {
+            session: session_id.clone(),
+            branch: timeline,
+            submission: submission.clone(),
+            kind: SvcMessageKind::SvcRequest {
+                agent: agent_name.clone(),
+                service,
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+
+        let arguments_bytes = serde_json::to_vec(&tc.arguments).unwrap_or_default().len() as u64;
+        let sent_at_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+
+        let req = RequestV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: tc.id.clone(),
+            state: last_state,
+            diagnostics: SvcRequestDiagnostics {
+                server: provider,
+                tool: tc.name.clone(),
+                arguments_bytes,
+                sent_at_ms,
+            },
+            payload: self.protocol.encode_tool_call(&tc.name, &tc.arguments),
+        };
+
+        match self.queue.send_svc_request(key.clone(), req).await {
+            Ok(()) => match self.queue.receive_svc_response(&key).await {
+                Ok((_rkey, resp, ack)) => {
+                    let _ = ack().await;
+                    crate::domain::ToolResult {
+                        tool_call_id: tc.id.clone(),
+                        content: resp.payload,
+                    }
+                }
+                Err(e) => crate::domain::ToolResult {
+                    tool_call_id: tc.id.clone(),
+                    content: format!("svc_response receive error: {e}").into_bytes(),
+                },
+            },
+            Err(e) => crate::domain::ToolResult {
+                tool_call_id: tc.id.clone(),
+                content: format!("svc_request send error: {e}").into_bytes(),
+            },
+        }
+    }
+
+    /// Dispatch tool calls from an agent's response.
+    ///
+    /// For `delegate_agent` tool calls, recursively invokes the target agent.
+    /// For unknown tool names, returns a `ToolResult` with `is_error: true`.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_tool_calls(
+        &self,
+        tool_calls: Vec<crate::domain::ToolCall>,
+        session_id: &SessionId,
+        timeline: BranchId,
+        sealed: bool,
+        submission: SubmissionId,
+        agent_name: AgentName,
+        last_state: Option<String>,
+    ) -> Vec<crate::domain::ToolResult> {
+        let mut results = Vec::with_capacity(tool_calls.len());
+        for tc in &tool_calls {
+            let result = match tc.name.as_str() {
+                "delegate_agent" => {
+                    let agent_name = tc
+                        .arguments
+                        .get("agent")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let input = tc
+                        .arguments
+                        .get("input")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let agent_id = self
+                        .registry
+                        .get_agent_by_name(agent_name)
+                        .await
+                        .map_or_else(
+                            || ResourceId::from(format!("agent://{agent_name}")),
+                            |a| a.id,
+                        );
+                    match self
+                        .run_agent(
+                            &agent_id,
+                            input,
+                            session_id.clone(),
+                            timeline,
+                            sealed,
+                            None,
+                            DagNodeId::root(),
+                        )
+                        .await
+                    {
+                        Ok(output) => crate::domain::ToolResult {
+                            tool_call_id: tc.id.clone(),
+                            content: output.into_bytes(),
+                        },
+                        Err(e) => crate::domain::ToolResult {
+                            tool_call_id: tc.id.clone(),
+                            content: e.into_bytes(),
+                        },
+                    }
+                }
+                _ => {
+                    self.dispatch_service_call(
+                        tc,
+                        session_id,
+                        timeline,
+                        &submission,
+                        &agent_name,
+                        last_state.clone(),
+                    )
+                    .await
+                }
+            };
+            results.push(result);
+        }
+        results
+    }
+
+    /// Build a re-invocation from in-memory conversation state (no DAG read).
+    ///
+    /// Called when the orchestration loop re-invokes the agent after
+    /// dispatching tool calls. Uses the conversation state accumulated
+    /// in the loop rather than reading from the `DagStore`.
+    #[allow(clippy::too_many_arguments)]
+    async fn build_reinvoke(
+        &self,
+        agent_id: &ResourceId,
+        session_id: &SessionId,
+        timeline: BranchId,
+        dag_parent: &DagNodeId,
+        state: Option<&str>,
+        history: Vec<Message>,
+        current_input: Vec<Message>,
+    ) -> Result<(DataRoutingKey, InvokeMessage, JobId), String> {
+        let (_, runtime) = self.resolve_agent_and_runtime(agent_id).await?;
+        let submission = SubmissionId::new();
+        let job_id = self
+            .registry
+            .create_job(
+                submission.clone(),
+                agent_id.clone(),
+                current_input
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::User { content } | Message::System { content } => {
+                            Some(content.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+            .await;
+
+        let key = DataRoutingKey {
+            session: session_id.clone(),
+            branch: timeline,
+            submission,
+            kind: DataMessageKind::Invoke {
+                harness: self.harness_type(),
+                runtime,
+                agent: crate::domain::agent_routing_key(agent_id),
+            },
+        };
+
+        let msg = InvokeMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            state: state.map(std::string::ToString::to_string),
+            diagnostics: InvokeDiagnostics {
+                harness_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            dag_parent: dag_parent.clone(),
+            history,
+            current_input,
+        };
+
+        Ok((key, msg, job_id))
+    }
+
+    /// Send an invoke and await its completion, handling timeouts.
+    async fn send_and_await_complete(
+        &self,
+        key: DataRoutingKey,
+        msg: InvokeMessage,
+        job_id: &JobId,
+        agent_id: &ResourceId,
+    ) -> Result<CompleteMessage, String> {
+        self.registry
+            .update_job_status(job_id, JobStatus::Running)
+            .await;
+
+        let harness = self.harness_type();
+        let submission = key.submission.clone();
+        let agent = crate::domain::agent_routing_key(agent_id);
+        self.queue
+            .send_invoke(key, msg)
+            .await
+            .map_err(|e| format!("queue error: {e}"))?;
+
+        loop {
+            match self
+                .queue
+                .receive_complete(&submission, harness, &agent)
+                .await
+            {
+                Ok((_key, v2, ack)) => {
+                    let _ = ack().await;
+                    break Ok(v2);
+                }
+                Err(crate::domain::QueueError::Timeout) => {}
+                Err(e) => break Err(format!("queue error: {e}")),
+            }
+        }
+    }
+
+    /// Prepare the accumulated state for the next turn after tool‑call dispatch.
+    fn prepare_next_turn_state(
+        sent_history: Vec<Message>,
+        sent_current_input: Vec<Message>,
+        complete: CompleteMessage,
+        tool_results: Vec<ToolResult>,
+    ) -> (Vec<Message>, Vec<Message>, Option<String>, DagNodeId) {
+        let mut new_history = sent_history;
+        new_history.extend(sent_current_input);
+        new_history.push(Message::Agent {
+            content: complete.content,
+            tool_calls: complete.tool_calls,
+        });
+        let next_history = new_history;
+        let next_current_input = tool_results
+            .into_iter()
+            .map(|tr| Message::Tool {
+                tool_call_id: tr.tool_call_id,
+                content: tr.content,
+            })
+            .collect();
+        (
+            next_history,
+            next_current_input,
+            complete.state,
+            complete.dag_id,
+        )
     }
 }
 
@@ -246,7 +652,11 @@ impl Harness for CoreHarness {
         self.harness_type
     }
 
-    async fn start_session(&self, agent_name: &str) -> (SessionId, BranchId) {
+    async fn start_session(
+        &self,
+        agent_name: &str,
+        external_id: ExternalSessionId,
+    ) -> (SessionId, BranchId) {
         let session_id = SessionId::new();
         let key = SessionRoutingKey {
             session: session_id.clone(),
@@ -258,7 +668,7 @@ impl Harness for CoreHarness {
         let msg = SessionStartMessage::new();
         let branch_id = self
             .queue
-            .send_session_start(key, msg)
+            .send_session_start(key, msg, external_id)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "Failed to send session start message");
@@ -278,48 +688,88 @@ impl Harness for CoreHarness {
         initial_state: Option<String>,
         dag_parent: DagNodeId,
     ) -> Result<String, String> {
-        let (key, msg, job_id) = self
-            .build_invoke(
-                agent_id,
-                input,
-                &session_id,
-                timeline,
-                sealed,
-                initial_state.as_deref(),
-                &dag_parent,
-            )
-            .await?;
-        self.registry
-            .update_job_status(&job_id, JobStatus::Running)
-            .await;
+        // Outer loop to support multiple turns when agent returns tool_calls.
+        // Accumulate conversation state across re-invocations.
+        let mut invoke_history: Vec<Message> = Vec::new();
+        let mut invoke_current_input: Vec<Message> = Vec::new();
+        let mut invoke_state: Option<String> = initial_state.clone();
+        let mut invoke_dag_parent: DagNodeId = dag_parent.clone();
 
-        let harness = self.harness_type();
-        let submission = key.submission.clone();
-        let agent = crate::domain::agent_routing_key(agent_id);
-        self.queue
-            .send_invoke(key, msg)
-            .await
-            .map_err(|e| format!("queue error: {e}"))?;
-
-        let result = loop {
-            match self
-                .queue
-                .receive_complete(&submission, harness, &agent)
-                .await
+        loop {
+            let (key, msg, job_id) = if invoke_history.is_empty() && invoke_current_input.is_empty()
             {
-                Ok((_key, v2, ack)) => {
-                    let _ = ack().await;
-                    break String::from_utf8_lossy(&v2.payload).to_string();
-                }
-                Err(crate::domain::QueueError::Timeout) => {}
-                Err(e) => return Err(format!("queue error: {e}")),
-            }
-        };
+                // First invocation: use build_invoke (reads DAG for prior history)
+                self.build_invoke(
+                    agent_id,
+                    input,
+                    &session_id,
+                    timeline,
+                    sealed,
+                    invoke_state.as_deref(),
+                    &invoke_dag_parent,
+                )
+                .await?
+            } else {
+                // Re-invocation: use in-memory conversation state
+                self.build_reinvoke(
+                    agent_id,
+                    &session_id,
+                    timeline,
+                    &invoke_dag_parent,
+                    invoke_state.as_deref(),
+                    invoke_history,
+                    invoke_current_input,
+                )
+                .await?
+            };
 
-        self.registry
-            .update_job_status(&job_id, JobStatus::Completed(result.clone()))
-            .await;
-        Ok(result)
+            // Save before msg is moved into send_invoke.
+            let sent_history = msg.history.clone();
+            let sent_current_input = msg.current_input.clone();
+            let saved_submission = key.submission.clone();
+            let saved_agent_name = crate::domain::agent_routing_key(agent_id);
+
+            let complete = self
+                .send_and_await_complete(key, msg, &job_id, agent_id)
+                .await?;
+
+            if complete.tool_calls.is_none() {
+                let result = complete
+                    .content
+                    .unwrap_or_else(|| String::from_utf8_lossy(&complete.payload).to_string());
+                self.registry
+                    .update_job_status(&job_id, JobStatus::Completed(result.clone()))
+                    .await;
+                return Ok(result);
+            }
+
+            // Dispatch tool calls and collect results
+            let tool_results = self
+                .dispatch_tool_calls(
+                    complete.tool_calls.clone().unwrap(),
+                    &session_id,
+                    timeline,
+                    sealed,
+                    saved_submission,
+                    saved_agent_name,
+                    invoke_state.clone(),
+                )
+                .await;
+
+            // Prepare next turn state
+            let (next_history, next_current_input, next_state, next_dag_parent) =
+                Self::prepare_next_turn_state(
+                    sent_history,
+                    sent_current_input,
+                    complete,
+                    tool_results,
+                );
+
+            invoke_history = next_history;
+            invoke_current_input = next_current_input;
+            invoke_state = next_state;
+            invoke_dag_parent = next_dag_parent;
+        }
     }
 
     async fn fork_timeline(
@@ -363,6 +813,82 @@ impl Harness for CoreHarness {
             .await
             .map_err(|e| format!("queue error: {e}"))
     }
+
+    async fn run_agent_with_messages(
+        &self,
+        agent_id: &ResourceId,
+        messages: Vec<Message>,
+        session_id: SessionId,
+    ) -> Result<ParsedResponse, String> {
+        let (branch_id, dag_parent, initial_state) =
+            self.resolve_session_context(&session_id).await?;
+
+        // Split messages: all but last → history, last → current_input.
+        let last_idx = messages.len().saturating_sub(1);
+        let mut invoke_history: Vec<Message> = messages[..last_idx].to_vec();
+        let mut invoke_current_input: Vec<Message> = messages[last_idx..].to_vec();
+        let mut invoke_state: Option<String> = initial_state;
+        let mut invoke_dag_parent: DagNodeId = dag_parent;
+
+        loop {
+            let (key, msg, job_id) = self
+                .build_reinvoke(
+                    agent_id,
+                    &session_id,
+                    branch_id,
+                    &invoke_dag_parent,
+                    invoke_state.as_deref(),
+                    invoke_history,
+                    invoke_current_input,
+                )
+                .await?;
+
+            let sent_history = msg.history.clone();
+            let sent_current_input = msg.current_input.clone();
+            let saved_submission = key.submission.clone();
+            let saved_agent_name = crate::domain::agent_routing_key(agent_id);
+
+            let complete = self
+                .send_and_await_complete(key, msg, &job_id, agent_id)
+                .await?;
+
+            if complete.tool_calls.is_none() {
+                let result = complete.content.clone().unwrap_or_default();
+                self.registry
+                    .update_job_status(&job_id, JobStatus::Completed(result.clone()))
+                    .await;
+                return Ok(ParsedResponse {
+                    content: complete.content,
+                    tool_calls: None,
+                });
+            }
+
+            let tool_results = self
+                .dispatch_tool_calls(
+                    complete.tool_calls.clone().unwrap(),
+                    &session_id,
+                    branch_id,
+                    false, // sealed — always false for API path
+                    saved_submission,
+                    saved_agent_name,
+                    invoke_state.clone(),
+                )
+                .await;
+
+            let (next_history, next_current_input, next_state, next_dag_parent) =
+                Self::prepare_next_turn_state(
+                    sent_history,
+                    sent_current_input,
+                    complete,
+                    tool_results,
+                );
+
+            invoke_history = next_history;
+            invoke_current_input = next_current_input;
+            invoke_state = next_state;
+            invoke_dag_parent = next_dag_parent;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -370,8 +896,23 @@ mod tests {
     use super::*;
     use crate::domain::{
         InMemoryDagStore, InMemoryRegistry, InMemorySecretStore, RuntimeType, SecretStore,
+        ToolCallProtocol,
     };
     use crate::queue::InMemoryQueue;
+    use serde_json::Value;
+
+    /// Test protocol double — serializes arguments as JSON bytes.
+    struct TestProtocol;
+
+    impl ToolCallProtocol for TestProtocol {
+        fn encode_tool_call(&self, _name: &str, arguments: &Value) -> Vec<u8> {
+            serde_json::to_vec(arguments).unwrap_or_default()
+        }
+
+        fn decode_tool_result(&self, payload: &[u8]) -> String {
+            String::from_utf8_lossy(payload).into_owned()
+        }
+    }
 
     #[test]
     fn harness_type_is_cli() {
@@ -382,7 +923,13 @@ mod tests {
         let registry: Arc<dyn Registry> = Arc::new(registry);
         let store: Arc<dyn DagStore> = Arc::new(InMemoryDagStore::new());
 
-        let harness = CoreHarness::new(queue, registry, store, HarnessType::Cli);
+        let harness = CoreHarness::new(
+            queue,
+            registry,
+            store,
+            HarnessType::Cli,
+            Arc::new(TestProtocol),
+        );
 
         assert_eq!(harness.harness_type(), HarnessType::Cli);
     }

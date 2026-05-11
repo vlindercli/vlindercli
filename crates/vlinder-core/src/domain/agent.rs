@@ -5,7 +5,7 @@ use std::str::FromStr;
 use serde::Serialize;
 
 use super::agent_manifest::{
-    AgentManifest, MountConfig, ParseError, PromptsConfig, RequirementsConfig, ServiceConfig,
+    AgentManifest, MountConfig, ParseError, RequirementsConfig, ServiceConfig,
 };
 use super::image_digest::ImageDigest;
 use super::resource_id::ResourceId;
@@ -22,7 +22,6 @@ pub struct Agent {
     pub description: String,
     pub source: Option<String>,
     pub requirements: Requirements,
-    pub prompts: Option<Prompts>,
     /// Registry-assigned identity: `<registry_id>/agents/<name>`.
     /// Set by the registry during registration.
     pub id: ResourceId,
@@ -78,7 +77,6 @@ impl Agent {
             description: manifest.description,
             source: manifest.source,
             requirements: Requirements::from_config(manifest.requirements),
-            prompts: manifest.prompts.map(std::convert::Into::into),
             id: Self::placeholder_id(&manifest.name),
             runtime,
             executable: manifest.executable,
@@ -118,7 +116,6 @@ impl Agent {
             runtime: &self.runtime,
             executable: &self.executable,
             requirements: &self.requirements,
-            prompts: &self.prompts,
             object_storage: &self.object_storage,
             vector_storage: &self.vector_storage,
         }
@@ -149,7 +146,6 @@ pub struct AgentConfig<'a> {
     pub runtime: &'a RuntimeType,
     pub executable: &'a str,
     pub requirements: &'a Requirements,
-    pub prompts: &'a Option<Prompts>,
     pub object_storage: &'a Option<ResourceId>,
     pub vector_storage: &'a Option<ResourceId>,
 }
@@ -184,6 +180,8 @@ pub struct Requirements {
     pub services: HashMap<ServiceType, ServiceConfig>,
     /// S3 mount declarations (ADR 107).
     pub mounts: HashMap<String, MountConfig>,
+    /// MCP provider names (references registered MCP servers by name).
+    pub mcp: Vec<String>,
 }
 
 impl Requirements {
@@ -193,30 +191,7 @@ impl Requirements {
             models: config.models,
             services: config.services,
             mounts: config.mounts,
-        }
-    }
-}
-
-/// Prompt overrides (validated)
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Prompts {
-    pub intent_recognition: Option<String>,
-    pub query_expansion: Option<String>,
-    pub answer_generation: Option<String>,
-    pub map_summarize: Option<String>,
-    pub reduce_summaries: Option<String>,
-    pub direct_summarize: Option<String>,
-}
-
-impl From<PromptsConfig> for Prompts {
-    fn from(config: PromptsConfig) -> Self {
-        Prompts {
-            intent_recognition: config.intent_recognition,
-            query_expansion: config.query_expansion,
-            answer_generation: config.answer_generation,
-            map_summarize: config.map_summarize,
-            reduce_summaries: config.reduce_summaries,
-            direct_summarize: config.direct_summarize,
+            mcp: config.mcp,
         }
     }
 }
@@ -248,7 +223,6 @@ mod tests {
         assert_eq!(agent.description, "Echoes input");
         assert_eq!(agent.runtime, RuntimeType::Container);
         assert_eq!(agent.executable, "localhost/echo:latest");
-        assert!(agent.prompts.is_none());
         assert!(agent.object_storage.is_none());
         assert!(agent.vector_storage.is_none());
         assert!(agent.image_digest.is_none());

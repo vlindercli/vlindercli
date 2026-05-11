@@ -5,8 +5,8 @@ use std::str::FromStr;
 
 use super::runtime::RuntimeType;
 use super::{
-    Agent, ImageDigest, Model, ModelType, MountConfig, Prompts, Provider, Requirements, ResourceId,
-    ServiceConfig, ServiceType,
+    Agent, ImageDigest, McpServer, Model, ModelType, MountConfig, Provider, Requirements,
+    ResourceId, ServiceConfig, ServiceType,
 };
 
 /// Repository for persisting Registry state.
@@ -14,6 +14,30 @@ use super::{
 /// Implementations handle storage (`SQLite`, `Postgres`, etc.).
 /// Registry uses this for save/load operations.
 pub trait RegistryRepository: Send + Sync {
+    // --- MCP Server operations ---
+
+    /// Save an MCP server to the repository.
+    fn save_mcp_server(&self, _server: &McpServer) -> Result<(), RepositoryError> {
+        Err(RepositoryError::Database(
+            "save_mcp_server not implemented".into(),
+        ))
+    }
+
+    /// Load all MCP servers from the repository.
+    fn load_mcp_servers(&self) -> Result<Vec<McpServer>, RepositoryError> {
+        Ok(Vec::new())
+    }
+
+    /// Delete an MCP server by name.
+    fn delete_mcp_server(&self, _name: &str) -> Result<bool, RepositoryError> {
+        Ok(false)
+    }
+
+    /// Check if an MCP server exists.
+    fn mcp_server_exists(&self, _name: &str) -> Result<bool, RepositoryError> {
+        Ok(false)
+    }
+
     /// Save a model to the repository.
     fn save_model(&self, model: &Model) -> Result<(), RepositoryError>;
 
@@ -157,22 +181,10 @@ impl StoredAgent {
             models: agent.requirements.models.clone(),
             services: agent.requirements.services.clone(),
             mounts: agent.requirements.mounts.clone(),
+            mcp: agent.requirements.mcp.clone(),
         };
 
-        let prompts = agent.prompts.as_ref().map(|p| PromptsJson {
-            intent_recognition: p.intent_recognition.clone(),
-            query_expansion: p.query_expansion.clone(),
-            answer_generation: p.answer_generation.clone(),
-            map_summarize: p.map_summarize.clone(),
-            reduce_summaries: p.reduce_summaries.clone(),
-            direct_summarize: p.direct_summarize.clone(),
-        });
-
         let requirements_json = serde_json::to_string(&requirements)
-            .map_err(|e| RepositoryError::Serialization(e.to_string()))?;
-        let prompts_json = prompts
-            .map(|p| serde_json::to_string(&p))
-            .transpose()
             .map_err(|e| RepositoryError::Serialization(e.to_string()))?;
 
         Ok(Self {
@@ -191,7 +203,7 @@ impl StoredAgent {
                 .as_ref()
                 .map(|r| r.as_str().to_string()),
             requirements_json,
-            prompts_json,
+            prompts_json: None,
             public_key: agent
                 .public_key
                 .as_ref()
@@ -212,13 +224,6 @@ impl StoredAgent {
             .map_err(RepositoryError::Serialization)?;
 
         let requirements: RequirementsJson = serde_json::from_str(&self.requirements_json)
-            .map_err(|e| RepositoryError::Serialization(e.to_string()))?;
-
-        let prompts: Option<PromptsJson> = self
-            .prompts_json
-            .as_ref()
-            .map(|s| serde_json::from_str(s))
-            .transpose()
             .map_err(|e| RepositoryError::Serialization(e.to_string()))?;
 
         let models = requirements.models;
@@ -247,15 +252,8 @@ impl StoredAgent {
                 models,
                 services: requirements.services,
                 mounts: requirements.mounts,
+                mcp: requirements.mcp,
             },
-            prompts: prompts.map(|p| Prompts {
-                intent_recognition: p.intent_recognition,
-                query_expansion: p.query_expansion,
-                answer_generation: p.answer_generation,
-                map_summarize: p.map_summarize,
-                reduce_summaries: p.reduce_summaries,
-                direct_summarize: p.direct_summarize,
-            }),
         })
     }
 }
@@ -267,16 +265,8 @@ struct RequirementsJson {
     services: HashMap<ServiceType, ServiceConfig>,
     #[serde(default)]
     mounts: HashMap<String, MountConfig>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PromptsJson {
-    intent_recognition: Option<String>,
-    query_expansion: Option<String>,
-    answer_generation: Option<String>,
-    map_summarize: Option<String>,
-    reduce_summaries: Option<String>,
-    direct_summarize: Option<String>,
+    #[serde(default)]
+    mcp: Vec<String>,
 }
 
 #[cfg(test)]
@@ -300,8 +290,8 @@ mod tests {
                 models: HashMap::new(),
                 services: HashMap::new(),
                 mounts: HashMap::new(),
+                mcp: Vec::new(),
             },
-            prompts: None,
         }
     }
 
@@ -335,15 +325,8 @@ mod tests {
                 models,
                 services,
                 mounts: HashMap::new(),
+                mcp: Vec::new(),
             },
-            prompts: Some(Prompts {
-                intent_recognition: Some("Classify intent".to_string()),
-                query_expansion: None,
-                answer_generation: Some("Generate answer".to_string()),
-                map_summarize: None,
-                reduce_summaries: None,
-                direct_summarize: None,
-            }),
         }
     }
 
@@ -363,7 +346,6 @@ mod tests {
         assert!(restored.vector_storage.is_none());
         assert!(restored.requirements.models.is_empty());
         assert!(restored.requirements.services.is_empty());
-        assert!(restored.prompts.is_none());
     }
 
     #[test]
@@ -419,18 +401,6 @@ mod tests {
         assert_eq!(infer.provider, Provider::Ollama);
         assert_eq!(infer.protocol, Protocol::OpenAi);
         assert_eq!(infer.models, vec!["phi3:latest"]);
-
-        // Prompts
-        let prompts = restored.prompts.unwrap();
-        assert_eq!(
-            prompts.intent_recognition.as_deref(),
-            Some("Classify intent")
-        );
-        assert!(prompts.query_expansion.is_none());
-        assert_eq!(
-            prompts.answer_generation.as_deref(),
-            Some("Generate answer")
-        );
     }
 
     #[test]
@@ -458,5 +428,17 @@ mod tests {
 
         let restored = stored.to_agent().unwrap();
         assert!(restored.public_key.is_none());
+    }
+
+    #[test]
+    fn stored_agent_roundtrips_with_mcp_names() {
+        let mut agent = minimal_agent();
+        agent.requirements.mcp = vec!["brave".to_string()];
+
+        let stored = StoredAgent::from_agent(&agent).unwrap();
+        let restored = stored.to_agent().unwrap();
+
+        assert_eq!(restored.requirements.mcp.len(), 1);
+        assert_eq!(restored.requirements.mcp[0], "brave");
     }
 }

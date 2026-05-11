@@ -49,7 +49,12 @@ impl HarnessService for HarnessServer {
         request: Request<StartSessionRequest>,
     ) -> Result<Response<StartSessionResponse>, Status> {
         let req = request.into_inner();
-        let (session_id, branch_id) = self.harness.start_session(&req.agent_name).await;
+        let external_id = vlinder_core::domain::ExternalSessionId::new(&req.external_id)
+            .map_err(|e| Status::invalid_argument(format!("invalid external_id: {e}")))?;
+        let (session_id, branch_id) = self
+            .harness
+            .start_session(&req.agent_name, external_id)
+            .await;
         Ok(Response::new(StartSessionResponse {
             session_id: session_id.as_str().to_string(),
             default_branch_id: branch_id.as_i64(),

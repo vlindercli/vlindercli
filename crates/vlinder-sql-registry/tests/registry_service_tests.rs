@@ -20,6 +20,7 @@ fn empty_requirements() -> Requirements {
         models: HashMap::new(),
         services: HashMap::new(),
         mounts: HashMap::new(),
+        mcp: Vec::new(),
     }
 }
 
@@ -75,7 +76,6 @@ async fn grpc_register_and_get_agent() {
         vector_storage: None,
 
         source: None,
-        prompts: None,
         image_digest: None,
         public_key: None,
     };
@@ -111,7 +111,6 @@ async fn grpc_list_agents() {
             vector_storage: None,
 
             source: None,
-            prompts: None,
             image_digest: None,
             public_key: None,
         };
@@ -143,7 +142,6 @@ async fn grpc_job_lifecycle() {
         vector_storage: None,
 
         source: None,
-        prompts: None,
         image_digest: None,
         public_key: None,
     };

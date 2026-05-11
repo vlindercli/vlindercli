@@ -45,6 +45,10 @@ service StateService {
   rpc InsertDeployAgentNode(InsertDeployAgentNodeRequest) returns (InsertDeployAgentNodeResponse);
   rpc InsertDeleteAgentNode(InsertDeleteAgentNodeRequest) returns (InsertDeleteAgentNodeResponse);
 
+  // V2 service nodes (MCP)
+  rpc InsertSvcRequestNode(InsertSvcRequestNodeRequest) returns (InsertSvcRequestNodeResponse);
+  rpc InsertSvcResponseNode(InsertSvcResponseNodeRequest) returns (InsertSvcResponseNodeResponse);
+
   // Branch head query
   rpc LatestNodeOnBranch(LatestNodeOnBranchRequest) returns (LatestNodeOnBranchResponse);
 
@@ -136,6 +140,7 @@ message GetBranchResponse { optional Branch branch = 1; }
 
 message SessionProto {
   string id = 1;
+  string external_id = 6;
   string name = 2;
   string agent_name = 3;
   int64 default_branch = 4;
@@ -414,6 +419,58 @@ message InsertDeleteAgentNodeRequest {
   string message_id = 7;
 }
 message InsertDeleteAgentNodeResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+// =============================================================================
+// V2 Service Nodes (MCP)
+// =============================================================================
+
+message InsertSvcRequestNodeRequest {
+  string dag_hash = 1;
+  string parent_hash = 2;
+  string created_at = 3;
+  string snapshot = 4;
+  string session_id = 5;
+  string submission_id = 6;
+  int64 branch_id = 7;
+  string agent = 8;
+  string service_type = 9;
+  string service_backend = 10;
+  string operation = 11;
+  uint32 sequence = 12;
+  string message_id = 13;
+  string tool_call_id = 14;
+  bytes arguments = 15;
+  optional string state = 16;
+  optional string diagnostics = 17;
+}
+message InsertSvcRequestNodeResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message InsertSvcResponseNodeRequest {
+  string dag_hash = 1;
+  string parent_hash = 2;
+  string created_at = 3;
+  string snapshot = 4;
+  string session_id = 5;
+  string submission_id = 6;
+  int64 branch_id = 7;
+  string agent = 8;
+  string service_type = 9;
+  string service_backend = 10;
+  string operation = 11;
+  uint32 sequence = 12;
+  string message_id = 13;
+  string correlation_id = 14;
+  bytes payload = 15;
+  optional string state = 16;
+  optional string diagnostics = 17;
+}
+message InsertSvcResponseNodeResponse {
   bool success = 1;
   optional string error = 2;
 }

@@ -1,5 +1,6 @@
 //! `CompleteMessage`: Runtime → Harness (submission finished).
 
+use crate::domain::ToolCall;
 use serde::{Deserialize, Serialize};
 
 use super::super::diagnostics::RuntimeDiagnostics;
@@ -17,6 +18,16 @@ pub struct CompleteMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     pub diagnostics: RuntimeDiagnostics,
+    /// The agent's text content from this response.
+    /// Populated by the sidecar using the provider's `ToolCallParser`.
+    /// None if the agent returned only tool calls with no text.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Parsed tool calls from the agent's response.
+    /// Populated by the sidecar using the provider's `ToolCallParser`.
+    /// None if the agent returned a final text response (no tool calls).
+    #[serde(default)]
+    pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(with = "super::base64_serde")]
     pub payload: Vec<u8>,
 }
@@ -32,6 +43,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: Some("state-abc".to_string()),
             diagnostics: RuntimeDiagnostics::placeholder(42),
+            content: None,
+            tool_calls: None,
             payload: b"hello world".to_vec(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -46,6 +59,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
             payload: b"hello world".to_vec(),
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -61,6 +76,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
             payload: b"test".to_vec(),
         };
         let json = serde_json::to_string(&msg).unwrap();

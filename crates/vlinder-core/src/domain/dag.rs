@@ -19,8 +19,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
-use super::message::identity::{Instance, StateHash};
+use super::message::identity::{ExternalSessionId, Instance, StateHash};
 use super::session::Session;
+
+#[cfg(test)]
+use super::diagnostics::{SvcRequestDiagnostics, SvcResponseDiagnostics};
 
 /// Snapshot of all store states at a point in the DAG (ADR 116).
 ///
@@ -68,6 +71,8 @@ pub enum MessageType {
     Promote,
     DeployAgent,
     DeleteAgent,
+    SvcRequest,
+    SvcResponse,
 }
 
 impl MessageType {
@@ -81,6 +86,8 @@ impl MessageType {
             MessageType::Promote => "promote",
             MessageType::DeployAgent => "deploy-agent",
             MessageType::DeleteAgent => "delete-agent",
+            MessageType::SvcRequest => "svc_request",
+            MessageType::SvcResponse => "svc_response",
         }
     }
 
@@ -89,7 +96,9 @@ impl MessageType {
             MessageType::Invoke
             | MessageType::Request
             | MessageType::Response
-            | MessageType::Complete => Plane::Data,
+            | MessageType::Complete
+            | MessageType::SvcRequest
+            | MessageType::SvcResponse => Plane::Data,
             MessageType::Fork | MessageType::Promote => Plane::Session,
             MessageType::DeployAgent | MessageType::DeleteAgent => Plane::Infra,
         }
@@ -111,6 +120,8 @@ impl std::str::FromStr for MessageType {
             "promote" => Ok(MessageType::Promote),
             "deploy-agent" => Ok(MessageType::DeployAgent),
             "delete-agent" => Ok(MessageType::DeleteAgent),
+            "svc_request" => Ok(MessageType::SvcRequest),
+            "svc_response" => Ok(MessageType::SvcResponse),
             _ => Err(format!("unknown message type: {s}")),
         }
     }
@@ -282,6 +293,24 @@ pub trait DagWorker: Send {
         _created_at: DateTime<Utc>,
     ) {
     }
+
+    /// Persist a V2 service request (harness-mediated dispatch path).
+    async fn on_svc_request(
+        &mut self,
+        _key: &super::SvcRoutingKey,
+        _msg: &super::RequestV2,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
+
+    /// Persist a V2 service response (harness-mediated dispatch path).
+    async fn on_svc_response(
+        &mut self,
+        _key: &super::SvcRoutingKey,
+        _msg: &super::ResponseV2,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
 }
 
 /// Persistence layer for DAG nodes.
@@ -426,6 +455,54 @@ pub trait DagStore: Send + Sync {
         Err("insert_delete_agent_node not implemented".to_string())
     }
 
+    /// Insert a typed `svc_request` node. Writes to `dag_nodes` + `svc_request_nodes`.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_request_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        agent: &super::AgentName,
+        service: super::ServiceBackendV2,
+        operation: super::ServiceOperation,
+        sequence: super::Sequence,
+        msg: &super::RequestV2,
+    ) -> Result<(), String> {
+        let _ = (
+            dag_id, parent_id, created_at, state, session, submission, branch, agent, service,
+            operation, sequence, msg,
+        );
+        Err("insert_svc_request_node not implemented".into())
+    }
+
+    /// Insert a typed `svc_response` node. Writes to `dag_nodes` + `svc_response_nodes`.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_response_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        agent: &super::AgentName,
+        service: super::ServiceBackendV2,
+        operation: super::ServiceOperation,
+        sequence: super::Sequence,
+        msg: &super::ResponseV2,
+    ) -> Result<(), String> {
+        let _ = (
+            dag_id, parent_id, created_at, state, session, submission, branch, agent, service,
+            operation, sequence, msg,
+        );
+        Err("insert_svc_response_node not implemented".into())
+    }
+
     /// Retrieve a node by its content-addressed ID.
     async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String>;
 
@@ -550,6 +627,14 @@ pub trait DagStore: Send + Sync {
 
     /// Look up a session by its friendly name.
     async fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String>;
+
+    /// Look up a session by its external ID.
+    async fn get_session_by_external_id(
+        &self,
+        _external_id: &ExternalSessionId,
+    ) -> Result<Option<Session>, String> {
+        Err("session lookup by external ID not supported by this store".into())
+    }
 
     // -------------------------------------------------------------------------
     // Idempotency guard (ADR 125)
@@ -723,6 +808,68 @@ impl DagStore for InMemoryDagStore {
             created_at,
             state: state.clone(),
             msg_type: MessageType::Response,
+            session: session.clone(),
+            submission: submission.clone(),
+            branch,
+            protocol_version: "v1".to_string(),
+        };
+        self.insert_node(&node);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_request_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        _agent: &super::AgentName,
+        _service: super::ServiceBackendV2,
+        _operation: super::ServiceOperation,
+        _sequence: super::Sequence,
+        _msg: &super::RequestV2,
+    ) -> Result<(), String> {
+        let node = DagNode {
+            id: dag_id.clone(),
+            parent_id: parent_id.clone(),
+            created_at,
+            state: state.clone(),
+            msg_type: MessageType::SvcRequest,
+            session: session.clone(),
+            submission: submission.clone(),
+            branch,
+            protocol_version: "v1".to_string(),
+        };
+        self.insert_node(&node);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_response_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        _agent: &super::AgentName,
+        _service: super::ServiceBackendV2,
+        _operation: super::ServiceOperation,
+        _sequence: super::Sequence,
+        _msg: &super::ResponseV2,
+    ) -> Result<(), String> {
+        let node = DagNode {
+            id: dag_id.clone(),
+            parent_id: parent_id.clone(),
+            created_at,
+            state: state.clone(),
+            msg_type: MessageType::SvcResponse,
             session: session.clone(),
             submission: submission.clone(),
             branch,
@@ -950,6 +1097,17 @@ impl DagStore for InMemoryDagStore {
         let sessions = self.sessions.lock().unwrap();
         Ok(sessions.iter().find(|s| s.name == name).cloned())
     }
+
+    async fn get_session_by_external_id(
+        &self,
+        external_id: &ExternalSessionId,
+    ) -> Result<Option<Session>, String> {
+        let sessions = self.sessions.lock().unwrap();
+        Ok(sessions
+            .iter()
+            .find(|s| s.external_id == *external_id)
+            .cloned())
+    }
 }
 
 impl super::RegistryRepository for InMemoryDagStore {
@@ -1077,6 +1235,8 @@ mod tests {
             MessageType::Promote,
             MessageType::DeployAgent,
             MessageType::DeleteAgent,
+            MessageType::SvcRequest,
+            MessageType::SvcResponse,
         ] {
             assert_eq!(MessageType::from_str(mt.as_str()), Ok(mt));
         }
@@ -1095,11 +1255,35 @@ mod tests {
         assert_eq!(MessageType::Promote.plane(), Plane::Session);
         assert_eq!(MessageType::DeployAgent.plane(), Plane::Infra);
         assert_eq!(MessageType::DeleteAgent.plane(), Plane::Infra);
+        assert_eq!(MessageType::SvcRequest.plane(), Plane::Data);
+        assert_eq!(MessageType::SvcResponse.plane(), Plane::Data);
+    }
+
+    #[test]
+    fn msg_type_as_str_and_plane_and_fromstr() {
+        // SvcRequest
+        assert_eq!(MessageType::SvcRequest.as_str(), "svc_request");
+        assert_eq!(MessageType::SvcRequest.plane(), Plane::Data);
+        assert_eq!(
+            MessageType::from_str("svc_request"),
+            Ok(MessageType::SvcRequest)
+        );
+
+        // SvcResponse
+        assert_eq!(MessageType::SvcResponse.as_str(), "svc_response");
+        assert_eq!(MessageType::SvcResponse.plane(), Plane::Data);
+        assert_eq!(
+            MessageType::from_str("svc_response"),
+            Ok(MessageType::SvcResponse)
+        );
     }
 
     // --- hash_dag_node tests ---
 
-    use crate::domain::{DagNodeId, SessionId};
+    use crate::domain::{
+        AgentName, BranchId, DagNodeId, MessageId, RequestV2, ResponseV2, Sequence,
+        ServiceBackendV2, ServiceOperation, SessionId, SubmissionId, ToolCallId,
+    };
 
     fn did(s: &str) -> DagNodeId {
         DagNodeId::from(s.to_string())
@@ -1205,5 +1389,86 @@ mod tests {
             &sid(SES_1),
         );
         assert_eq!(h1, h2);
+    }
+
+    // --- InMemoryDagStore tests ---
+
+    #[tokio::test]
+    async fn inmemory_insert_svc_request_and_response_nodes() {
+        let store = InMemoryDagStore::new();
+
+        let dag_id = did("abc");
+        let parent_id = did("parent");
+        let session =
+            SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
+        let submission = SubmissionId::from("sub-1".to_string());
+        let branch = BranchId::from(1);
+        let agent = AgentName::new("test-agent");
+        let service = ServiceBackendV2::Mcp("brave".to_string());
+        let operation = ServiceOperation::new("echo");
+        let sequence = Sequence::first();
+
+        // Insert svc_request node
+        let req_msg = RequestV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
+        };
+        store
+            .insert_svc_request_node(
+                &dag_id,
+                &parent_id,
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service.clone(),
+                operation.clone(),
+                sequence,
+                &req_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&dag_id).await.unwrap().unwrap();
+        assert_eq!(node.msg_type, MessageType::SvcRequest);
+        assert_eq!(node.protocol_version, "v1");
+
+        // Insert svc_response node
+        let response_dag_id = did("xyz");
+        let response_msg = ResponseV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            payload: b"result".to_vec(),
+        };
+        store
+            .insert_svc_response_node(
+                &response_dag_id,
+                &parent_id,
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence.next(),
+                &response_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&response_dag_id).await.unwrap().unwrap();
+        assert_eq!(node.msg_type, MessageType::SvcResponse);
+        assert_eq!(node.protocol_version, "v1");
     }
 }

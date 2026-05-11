@@ -15,10 +15,11 @@ use std::str::FromStr;
 
 use vlinder_core::domain::{
     Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
-    DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType, InfraMessageKind,
-    InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
-    RequestMessage, ResponseMessage, RuntimeType, Sequence, ServiceBackend, ServiceType, SessionId,
-    SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId,
+    DeleteAgentMessage, DeployAgentMessage, ExternalSessionId, ForkMessage, HarnessType,
+    InfraMessageKind, InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage,
+    QueueError, RequestMessage, RequestV2, ResponseMessage, ResponseV2, RuntimeType, Sequence,
+    ServiceBackend, ServiceBackendV2, ServiceOperation, ServiceType, SessionId, SessionMessageKind,
+    SessionRoutingKey, SessionStartMessage, SubmissionId, SvcMessageKind, SvcRoutingKey,
 };
 
 /// NATS queue with `JetStream` durability. Clone is cheap (Arc).
@@ -486,6 +487,7 @@ impl MessageQueue for NatsQueue {
         &self,
         _key: SessionRoutingKey,
         _msg: SessionStartMessage,
+        _external_id: ExternalSessionId,
     ) -> Result<BranchId, QueueError> {
         // Session start is fire-and-forget — no NATS message needed.
         // RecordingQueue handles persistence before this is called.
@@ -577,6 +579,115 @@ impl MessageQueue for NatsQueue {
 
         let (js_msg, ack_fn) = self.fetch_one(filter).await?;
         Ok((js_msg.subject.to_string(), js_msg.payload.to_vec(), ack_fn))
+    }
+    async fn send_svc_request(&self, key: SvcRoutingKey, msg: RequestV2) -> Result<(), QueueError> {
+        let SvcMessageKind::SvcRequest {
+            agent: _agent,
+            service: _service,
+            operation: _operation,
+            sequence: _sequence,
+        } = &key.kind
+        else {
+            return Err(QueueError::SendFailed(
+                "send_svc_request: expected SvcRequest key".into(),
+            ));
+        };
+        let subject = svc_request_subject(&key);
+        let payload = serde_json::to_vec(&msg)
+            .map_err(|e| QueueError::SendFailed(format!("serialize request: {e}")))?;
+
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
+
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, payload.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn receive_svc_request_mcp(
+        &self,
+    ) -> Result<(SvcRoutingKey, RequestV2, Acknowledgement), QueueError> {
+        let filter = svc_request_filter_mcp();
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+
+        let subject = js_msg.subject.as_str();
+        let key = svc_request_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid svc request subject: {subject}"))
+        })?;
+
+        let msg: RequestV2 = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize svc request: {e}")))?;
+
+        Ok((key, msg, ack_fn))
+    }
+
+    async fn send_svc_response(
+        &self,
+        key: SvcRoutingKey,
+        msg: ResponseV2,
+    ) -> Result<(), QueueError> {
+        let SvcMessageKind::SvcResponse {
+            agent: _agent,
+            service: _service,
+            operation: _operation,
+            sequence: _sequence,
+        } = &key.kind
+        else {
+            return Err(QueueError::SendFailed(
+                "send_svc_response: expected SvcResponse key".into(),
+            ));
+        };
+        let subject = svc_response_subject(&key);
+        let payload = serde_json::to_vec(&msg)
+            .map_err(|e| QueueError::SendFailed(format!("serialize response: {e}")))?;
+
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", msg.id.as_str());
+
+        self.inner
+            .jetstream
+            .publish_with_headers(subject, headers, payload.into())
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?
+            .await
+            .map_err(|e| QueueError::SendFailed(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn receive_svc_response(
+        &self,
+        key: &SvcRoutingKey,
+    ) -> Result<(SvcRoutingKey, ResponseV2, Acknowledgement), QueueError> {
+        let SvcMessageKind::SvcRequest {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        else {
+            return Err(QueueError::ReceiveFailed(
+                "receive_svc_response: expected SvcRequest key".into(),
+            ));
+        };
+        let filter = svc_response_filter(&key.submission, agent, service, operation, *sequence);
+        let (js_msg, ack_fn) = self.fetch_one(&filter).await?;
+
+        let subject = js_msg.subject.as_str();
+        let parsed_key = svc_response_parse_subject(subject).ok_or_else(|| {
+            QueueError::ReceiveFailed(format!("invalid svc response subject: {subject}"))
+        })?;
+
+        let msg: ResponseV2 = serde_json::from_slice(&js_msg.payload)
+            .map_err(|e| QueueError::ReceiveFailed(format!("deserialize svc response: {e}")))?;
+
+        Ok((parsed_key, msg, ack_fn))
     }
 }
 
@@ -840,6 +951,161 @@ fn response_filter(
     )
 }
 
+// ============================================================================
+// V2 service subject format (harness‑mediated dispatch)
+//
+// vlinder.data.v1.{session}.{branch}.{sub}.svc_request.{agent}.{svc_type}.{provider}.{operation}.{seq}
+// vlinder.data.v1.{session}.{branch}.{sub}.svc_response.{agent}.{svc_type}.{provider}.{operation}.{seq}
+// ============================================================================
+
+const SVC_REQUEST_PREFIX: &str = "vlinder.data.v1";
+const SVC_REQUEST_KIND: &str = "svc_request";
+const SVC_RESPONSE_PREFIX: &str = "vlinder.data.v1";
+const SVC_RESPONSE_KIND: &str = "svc_response";
+const SVC_SEGMENT_COUNT: usize = 12;
+
+/// Build a NATS subject for a harness‑mediated service request (V2 path).
+fn svc_request_subject(key: &SvcRoutingKey) -> String {
+    let SvcMessageKind::SvcRequest {
+        agent,
+        service,
+        operation,
+        sequence,
+    } = &key.kind
+    else {
+        panic!("svc_request_subject called with non‑request key");
+    };
+    format!(
+        "{SVC_REQUEST_PREFIX}.{}.{}.{}.{SVC_REQUEST_KIND}.{}.{}.{}.{}.{}",
+        key.session,
+        key.branch,
+        key.submission,
+        agent.as_str(),
+        service.service_type_str(),
+        service.backend_str(),
+        operation.as_str(),
+        sequence.as_u32(),
+    )
+}
+
+/// Build a NATS subject for a harness‑mediated service response (V2 path).
+fn svc_response_subject(key: &SvcRoutingKey) -> String {
+    let SvcMessageKind::SvcResponse {
+        agent,
+        service,
+        operation,
+        sequence,
+    } = &key.kind
+    else {
+        panic!("svc_response_subject called with non‑response key");
+    };
+    format!(
+        "{SVC_RESPONSE_PREFIX}.{}.{}.{}.{SVC_RESPONSE_KIND}.{}.{}.{}.{}.{}",
+        key.session,
+        key.branch,
+        key.submission,
+        agent.as_str(),
+        service.service_type_str(),
+        service.backend_str(),
+        operation.as_str(),
+        sequence.as_u32(),
+    )
+}
+
+/// Parse a NATS subject back into a `SvcRoutingKey` for V2 request.
+///
+/// Subject: `vlinder.data.v1.{session}.{branch}.{sub}.svc_request.{agent}.{svc_type}.{provider}.{op}.{seq}`
+/// Index:    0       1    2   3         4        5     6            7       8          9         10   11
+pub fn svc_request_parse_subject(subject: &str) -> Option<SvcRoutingKey> {
+    let s: Vec<&str> = subject.split('.').collect();
+    if s.len() != SVC_SEGMENT_COUNT {
+        return None;
+    }
+    if s[0] != "vlinder" || s[1] != "data" || s[2] != "v1" || s[6] != SVC_REQUEST_KIND {
+        return None;
+    }
+
+    let service = ServiceBackendV2::from_parts(s[8], s[9])?;
+    let operation = ServiceOperation::new(s[10]);
+    let sequence = Sequence::from(s[11].parse::<u32>().ok()?);
+
+    Some(SvcRoutingKey {
+        session: SessionId::try_from(s[3].to_string()).ok()?,
+        branch: BranchId::from(s[4].parse::<i64>().unwrap_or(0)),
+        submission: SubmissionId::from(s[5].to_string()),
+        kind: SvcMessageKind::SvcRequest {
+            agent: AgentName::new(s[7]),
+            service,
+            operation,
+            sequence,
+        },
+    })
+}
+
+/// Parse a NATS subject back into a `SvcRoutingKey` for V2 response.
+///
+/// Subject: `vlinder.data.v1.{session}.{branch}.{sub}.svc_response.{agent}.{svc_type}.{provider}.{op}.{seq}`
+/// Index:    0       1    2   3         4        5     6             7       8          9         10   11
+pub fn svc_response_parse_subject(subject: &str) -> Option<SvcRoutingKey> {
+    let s: Vec<&str> = subject.split('.').collect();
+    if s.len() != SVC_SEGMENT_COUNT {
+        return None;
+    }
+    if s[0] != "vlinder" || s[1] != "data" || s[2] != "v1" || s[6] != SVC_RESPONSE_KIND {
+        return None;
+    }
+
+    let service = ServiceBackendV2::from_parts(s[8], s[9])?;
+    let operation = ServiceOperation::new(s[10]);
+    let sequence = Sequence::from(s[11].parse::<u32>().ok()?);
+
+    Some(SvcRoutingKey {
+        session: SessionId::try_from(s[3].to_string()).ok()?,
+        branch: BranchId::from(s[4].parse::<i64>().unwrap_or(0)),
+        submission: SubmissionId::from(s[5].to_string()),
+        kind: SvcMessageKind::SvcResponse {
+            agent: AgentName::new(s[7]),
+            service,
+            operation,
+            sequence,
+        },
+    })
+}
+
+/// NATS wildcard filter for receiving V2 service requests for all MCP providers and operations.
+fn svc_request_filter_mcp() -> String {
+    format!("{SVC_REQUEST_PREFIX}.*.*.*.{SVC_REQUEST_KIND}.*.mcp.*.*.>")
+}
+
+/// NATS wildcard filter for receiving V2 service requests for a specific service+operation.
+#[allow(dead_code)]
+fn svc_request_filter(service: &ServiceBackendV2, operation: &ServiceOperation) -> String {
+    format!(
+        "{SVC_REQUEST_PREFIX}.*.*.*.{SVC_REQUEST_KIND}.*.{}.{}.{}.>",
+        service.service_type_str(),
+        service.backend_str(),
+        operation.as_str(),
+    )
+}
+
+/// NATS wildcard filter for receiving V2 service responses for a specific submission+service+operation.
+fn svc_response_filter(
+    submission: &SubmissionId,
+    agent: &AgentName,
+    service: &ServiceBackendV2,
+    operation: &ServiceOperation,
+    sequence: Sequence,
+) -> String {
+    format!(
+        "{SVC_RESPONSE_PREFIX}.*.*.{}.{SVC_RESPONSE_KIND}.{}.{}.{}.{}.{}",
+        submission.as_str(),
+        agent.as_str(),
+        service.service_type_str(),
+        service.backend_str(),
+        operation.as_str(),
+        sequence.as_u32(),
+    )
+}
 /// Build a NATS subject for a fork message.
 fn fork_subject(key: &SessionRoutingKey, agent_name: &AgentName) -> String {
     format!(
@@ -1114,5 +1380,143 @@ mod tests {
         assert!(delete_agent_parse_subject("vlinder.infra.v1.sub.deploy-agent").is_none());
         assert!(delete_agent_parse_subject("vlinder.data.v1.sub.delete-agent").is_none());
         assert!(delete_agent_parse_subject("").is_none());
+    }
+    // ========================================================================
+    // V2 service subject format (harness‑mediated dispatch)
+    // ========================================================================
+
+    #[test]
+    fn svc_request_subject_format() {
+        let key = SvcRoutingKey {
+            session: session(),
+            branch: timeline(),
+            submission: submission(),
+            kind: SvcMessageKind::SvcRequest {
+                agent: agent(),
+                service: ServiceBackendV2::Mcp("server-everything".to_string()),
+                operation: ServiceOperation::new("echo"),
+                sequence: Sequence::first(),
+            },
+        };
+        assert_eq!(
+            svc_request_subject(&key),
+            format!(
+                "vlinder.data.v1.{}.{}.{}.svc_request.{}.mcp.server-everything.echo.1",
+                session(),
+                timeline(),
+                submission(),
+                agent().as_str(),
+            ),
+        );
+    }
+
+    #[test]
+    fn svc_request_subject_round_trips() {
+        let key = SvcRoutingKey {
+            session: session(),
+            branch: timeline(),
+            submission: submission(),
+            kind: SvcMessageKind::SvcRequest {
+                agent: agent(),
+                service: ServiceBackendV2::Mcp("brave".to_string()),
+                operation: ServiceOperation::new("search"),
+                sequence: Sequence::first(),
+            },
+        };
+        let subject = svc_request_subject(&key);
+        let recovered = svc_request_parse_subject(&subject)
+            .unwrap_or_else(|| panic!("failed to parse: {subject}"));
+        assert_eq!(recovered, key);
+    }
+
+    #[test]
+    fn svc_response_subject_format() {
+        let key = SvcRoutingKey {
+            session: session(),
+            branch: timeline(),
+            submission: submission(),
+            kind: SvcMessageKind::SvcResponse {
+                agent: agent(),
+                service: ServiceBackendV2::Mcp("jira".to_string()),
+                operation: ServiceOperation::new("get_issue"),
+                sequence: Sequence::first(),
+            },
+        };
+        assert_eq!(
+            svc_response_subject(&key),
+            format!(
+                "vlinder.data.v1.{}.{}.{}.svc_response.{}.mcp.jira.get_issue.1",
+                session(),
+                timeline(),
+                submission(),
+                agent().as_str(),
+            ),
+        );
+    }
+
+    #[test]
+    fn svc_response_subject_round_trips() {
+        let key = SvcRoutingKey {
+            session: session(),
+            branch: timeline(),
+            submission: submission(),
+            kind: SvcMessageKind::SvcResponse {
+                agent: agent(),
+                service: ServiceBackendV2::Mcp("server-everything".to_string()),
+                operation: ServiceOperation::new("echo"),
+                sequence: Sequence::first().next(),
+            },
+        };
+        let subject = svc_response_subject(&key);
+        let recovered = svc_response_parse_subject(&subject)
+            .unwrap_or_else(|| panic!("failed to parse: {subject}"));
+        assert_eq!(recovered, key);
+    }
+
+    #[test]
+    fn svc_request_filter_mcp_matches_all_mcp() {
+        let filter = svc_request_filter_mcp();
+        assert_eq!(filter, "vlinder.data.v1.*.*.*.svc_request.*.mcp.*.*.>");
+    }
+
+    #[test]
+    fn svc_request_filter_specific_service_operation() {
+        let service = ServiceBackendV2::Mcp("server-everything".to_string());
+        let operation = ServiceOperation::new("echo");
+        let filter = svc_request_filter(&service, &operation);
+        assert_eq!(
+            filter,
+            "vlinder.data.v1.*.*.*.svc_request.*.mcp.server-everything.echo.>"
+        );
+    }
+
+    #[test]
+    fn svc_request_parse_rejects_wrong_segment_count() {
+        assert!(svc_request_parse_subject("vlinder.data.v1").is_none());
+        assert!(svc_request_parse_subject("").is_none());
+    }
+
+    #[test]
+    fn svc_request_parse_rejects_wrong_version() {
+        let subject = format!(
+            "vlinder.data.v2.{}.{}.{}.svc_request.{}.mcp.server-everything.echo.1",
+            session(),
+            timeline(),
+            submission(),
+            agent().as_str(),
+        );
+        assert!(svc_request_parse_subject(&subject).is_none());
+    }
+
+    #[test]
+    fn svc_response_parse_rejects_wrong_kind() {
+        let subject = format!(
+            "vlinder.data.v1.{}.{}.{}.request.{}.mcp.server-everything.echo.1",
+            session(),
+            timeline(),
+            submission(),
+            agent().as_str(),
+        );
+        assert!(svc_response_parse_subject(&subject).is_none());
     }
 }

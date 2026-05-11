@@ -19,6 +19,9 @@ use crate::domain::{
     SessionRoutingKey, SessionStartMessage, Snapshot, StateHash, SubmissionId,
 };
 
+#[cfg(test)]
+use crate::domain::{SvcRequestDiagnostics, SvcResponseDiagnostics};
+
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
 ///
 /// Every `send_*` call: clone → convert to `ObservableMessage` → build
@@ -75,8 +78,9 @@ impl RecordingQueue {
             .unwrap_or_else(Snapshot::empty);
 
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
+        let payload_json = serde_json::to_vec(msg).unwrap_or_default();
         let id = hash_dag_node(
-            &msg.payload,
+            &payload_json,
             &parent_id,
             &MessageType::Invoke,
             &diagnostics_json,
@@ -339,6 +343,202 @@ impl RecordingQueue {
             );
         }
     }
+
+    /// Record a DAG node for a harness-mediated service request (V2 path).
+    ///
+    /// Hashes the full message, inherits KV state from the parent,
+    /// stamps `dag_id` on the message, and returns the computed `DagNodeId`.
+    async fn record_svc_request(
+        &self,
+        key: &crate::domain::SvcRoutingKey,
+        msg: &mut crate::domain::RequestV2,
+    ) -> DagNodeId {
+        let branch_id = key.branch;
+
+        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    branch = branch_id.as_i64(),
+                    "Failed to query latest node on branch"
+                );
+                None
+            }
+        };
+
+        let parent_id = parent_node
+            .as_ref()
+            .map_or_else(DagNodeId::root, |n| n.id.clone());
+        let parent_state = parent_node
+            .as_ref()
+            .map(|n| &n.state)
+            .cloned()
+            .unwrap_or_else(Snapshot::empty);
+
+        // Hash the full message (fixes gap 1: was hashing only arguments)
+        let payload_json = serde_json::to_vec(msg).unwrap_or_default();
+        let id = hash_dag_node(
+            &payload_json,
+            &parent_id,
+            &MessageType::SvcRequest,
+            &[],
+            &key.session,
+        );
+
+        // State inheritance (fixes gap 2: was using parent_state directly)
+        let state = match &msg.state {
+            Some(s) if !s.is_empty() => {
+                parent_state.with_state(Instance::from("kv"), StateHash::from(s.clone()))
+            }
+            _ => parent_state,
+        };
+
+        let crate::domain::SvcMessageKind::SvcRequest {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        else {
+            tracing::error!("record_svc_request called with non-SvcRequest key");
+            return DagNodeId::root();
+        };
+
+        // Stamp dag_id on the message (fixes gap 3)
+        msg.dag_id = id.clone();
+
+        if let Err(e) = self
+            .store
+            .insert_svc_request_node(
+                &id,
+                &parent_id,
+                Utc::now(),
+                &state,
+                &key.session,
+                &key.submission,
+                key.branch,
+                agent,
+                service.clone(),
+                operation.clone(),
+                *sequence,
+                msg,
+            )
+            .await
+        {
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                service = %service.service_type_str(),
+                operation = %operation.as_str(),
+                error = %e,
+                "failed to record svc_request node — DAG chain may have a gap"
+            );
+        }
+
+        id
+    }
+
+    /// Record a DAG node for a harness-mediated service response (V2 path).
+    ///
+    /// Hashes the full message, inherits KV state from the parent,
+    /// stamps `dag_id` on the message, and returns the computed `DagNodeId`.
+    async fn record_svc_response(
+        &self,
+        key: &crate::domain::SvcRoutingKey,
+        msg: &mut crate::domain::ResponseV2,
+    ) -> DagNodeId {
+        let branch_id = key.branch;
+
+        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
+            Ok(Some(node)) => Some(node),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    branch = branch_id.as_i64(),
+                    "Failed to query latest node on branch"
+                );
+                None
+            }
+        };
+
+        let parent_id = parent_node
+            .as_ref()
+            .map_or_else(DagNodeId::root, |n| n.id.clone());
+        let parent_state = parent_node
+            .as_ref()
+            .map(|n| &n.state)
+            .cloned()
+            .unwrap_or_else(Snapshot::empty);
+
+        // Hash the full message (fixes gap 1: was hashing only content bytes)
+        let payload_json = serde_json::to_vec(msg).unwrap_or_default();
+        let id = hash_dag_node(
+            &payload_json,
+            &parent_id,
+            &MessageType::SvcResponse,
+            &[],
+            &key.session,
+        );
+
+        // State inheritance (fixes gap 2: was using parent_state directly)
+        let state = match &msg.state {
+            Some(s) if !s.is_empty() => {
+                parent_state.with_state(Instance::from("kv"), StateHash::from(s.clone()))
+            }
+            _ => parent_state,
+        };
+
+        let crate::domain::SvcMessageKind::SvcResponse {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        else {
+            tracing::error!("record_svc_response called with non-SvcResponse key");
+            return DagNodeId::root();
+        };
+
+        // Stamp dag_id on the message (fixes gap 3)
+        msg.dag_id = id.clone();
+
+        if let Err(e) = self
+            .store
+            .insert_svc_response_node(
+                &id,
+                &parent_id,
+                Utc::now(),
+                &state,
+                &key.session,
+                &key.submission,
+                key.branch,
+                agent,
+                service.clone(),
+                operation.clone(),
+                *sequence,
+                msg,
+            )
+            .await
+        {
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                service = %service.service_type_str(),
+                operation = %operation.as_str(),
+                error = %e,
+                "failed to record svc_response node — DAG chain may have a gap"
+            );
+        }
+
+        id
+    }
 }
 
 #[async_trait]
@@ -458,6 +658,56 @@ impl MessageQueue for RecordingQueue {
     }
 
     // -------------------------------------------------------------------------
+    // V2 harness-mediated service dispatch
+    // -------------------------------------------------------------------------
+
+    async fn send_svc_request(
+        &self,
+        key: crate::domain::SvcRoutingKey,
+        mut msg: crate::domain::RequestV2,
+    ) -> Result<(), QueueError> {
+        let _dag_id = self.record_svc_request(&key, &mut msg).await;
+        self.inner.send_svc_request(key, msg).await
+    }
+
+    async fn receive_svc_request_mcp(
+        &self,
+    ) -> Result<
+        (
+            crate::domain::SvcRoutingKey,
+            crate::domain::RequestV2,
+            Acknowledgement,
+        ),
+        QueueError,
+    > {
+        self.inner.receive_svc_request_mcp().await
+    }
+
+    async fn send_svc_response(
+        &self,
+        key: crate::domain::SvcRoutingKey,
+        msg: crate::domain::ResponseV2,
+    ) -> Result<(), QueueError> {
+        self.inner.send_svc_response(key, msg).await
+    }
+
+    async fn receive_svc_response(
+        &self,
+        key: &crate::domain::SvcRoutingKey,
+    ) -> Result<
+        (
+            crate::domain::SvcRoutingKey,
+            crate::domain::ResponseV2,
+            Acknowledgement,
+        ),
+        QueueError,
+    > {
+        let (key, mut response, ack) = self.inner.receive_svc_response(key).await?;
+        let _dag_id = self.record_svc_response(&key, &mut response).await;
+        Ok((key, response, ack))
+    }
+
+    // -------------------------------------------------------------------------
     // Session plane
     // -------------------------------------------------------------------------
 
@@ -540,6 +790,7 @@ impl MessageQueue for RecordingQueue {
         &self,
         key: SessionRoutingKey,
         msg: SessionStartMessage,
+        external_id: crate::domain::ExternalSessionId,
     ) -> Result<crate::domain::BranchId, QueueError> {
         let SessionMessageKind::Start { agent_name } = &key.kind else {
             return Err(QueueError::SendFailed("expected Start kind".into()));
@@ -549,6 +800,7 @@ impl MessageQueue for RecordingQueue {
         let placeholder_branch = crate::domain::BranchId::from(1);
         let session = crate::domain::Session::new(
             key.session.clone(),
+            external_id.clone(),
             agent_name.as_str(),
             placeholder_branch,
         );
@@ -571,7 +823,10 @@ impl MessageQueue for RecordingQueue {
             tracing::warn!(error = %e, "Failed to update session default branch");
         }
 
-        let _ = self.inner.send_session_start(key, msg).await;
+        let _ = self
+            .inner
+            .send_session_start(key, msg, external_id.clone())
+            .await;
         Ok(default_branch)
     }
 
@@ -775,7 +1030,7 @@ mod tests {
     use super::*;
     use crate::domain::{
         AgentName, BranchId, DagNode, DataMessageKind, DataRoutingKey, HarnessType,
-        InMemoryDagStore, InvokeDiagnostics, InvokeMessage, MessageId, MessageType,
+        InMemoryDagStore, InvokeDiagnostics, InvokeMessage, Message, MessageId, MessageType,
         RuntimeDiagnostics, RuntimeType, SessionId, SubmissionId,
     };
     use crate::queue::InMemoryQueue;
@@ -826,7 +1081,10 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello".to_vec(),
+            history: vec![],
+            current_input: vec![Message::User {
+                content: "hello".to_string(),
+            }],
         };
         (key, msg)
     }
@@ -846,6 +1104,8 @@ mod tests {
             dag_id: crate::domain::DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
             payload: b"done".to_vec(),
         };
         (key, msg)
@@ -896,11 +1156,15 @@ mod tests {
 
         let (mut key1, mut msg1) = test_invoke();
         key1.session = ses_aaa.clone();
-        msg1.payload = b"hello-aaa".to_vec();
+        msg1.current_input = vec![Message::User {
+            content: "hello-aaa".to_string(),
+        }];
 
         let (mut key2, mut msg2) = test_invoke();
         key2.session = ses_bbb.clone();
-        msg2.payload = b"hello-bbb".to_vec();
+        msg2.current_input = vec![Message::User {
+            content: "hello-bbb".to_string(),
+        }];
 
         queue.send_invoke(key1, msg1).await.unwrap();
         queue.send_invoke(key2, msg2).await.unwrap();
@@ -1061,7 +1325,9 @@ mod tests {
 
         // Send a second invoke (same session) — normally chains off first
         let (key2, mut msg2) = test_invoke();
-        msg2.payload = b"second".to_vec();
+        msg2.current_input = vec![Message::User {
+            content: "second".to_string(),
+        }];
         queue.send_invoke(key2, msg2).await.unwrap();
 
         let nodes = store.get_session_nodes(&sid).await.unwrap();
@@ -1071,7 +1337,9 @@ mod tests {
         // Send a third invoke with explicit dag_parent pointing to first node,
         // bypassing the chain cache (which would point to second node)
         let (key3, mut msg3) = test_invoke();
-        msg3.payload = b"forked".to_vec();
+        msg3.current_input = vec![Message::User {
+            content: "forked".to_string(),
+        }];
         msg3.dag_parent = first_id.clone();
         queue.send_invoke(key3, msg3).await.unwrap();
 
@@ -1080,6 +1348,214 @@ mod tests {
         assert_eq!(
             nodes[2].parent_id, first_id,
             "dag_parent should override chain cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_svc_request_dag_id_is_non_root() {
+        let store = test_store().await;
+        let inner: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
+        let queue = RecordingQueue::new(Arc::clone(&inner), Arc::clone(&store));
+
+        let session = test_session();
+        let submission = test_submission();
+        let agent = test_agent_id();
+        let branch = BranchId::from(1);
+        let service = crate::domain::ServiceBackendV2::Mcp("brave".to_string());
+        let operation = crate::domain::ServiceOperation::new("echo");
+        let sequence = crate::domain::Sequence::first();
+
+        let svc_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcRequest {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let request_msg = crate::domain::RequestV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: crate::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({})).unwrap(),
+        };
+
+        queue.send_svc_request(svc_key, request_msg).await.unwrap();
+
+        let node = store.get_session_nodes(&session).await.unwrap();
+        assert_eq!(node.len(), 1);
+        assert!(!node[0].id.is_empty(), "dag_id should be a non-empty hash");
+        assert!(
+            node[0].id.as_str().len() > 10,
+            "dag_id should be a full SHA-256 hash, got: {}",
+            node[0].id
+        );
+    }
+
+    #[tokio::test]
+    async fn send_svc_request_and_receive_svc_response_record_nodes() {
+        let store = test_store().await;
+        let inner: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
+        let queue = RecordingQueue::new(Arc::clone(&inner), Arc::clone(&store));
+
+        let session = test_session();
+        let submission = test_submission();
+        let agent = test_agent_id();
+        let branch = BranchId::from(1);
+        let service = crate::domain::ServiceBackendV2::Mcp("brave".to_string());
+        let operation = crate::domain::ServiceOperation::new("echo");
+        let sequence = crate::domain::Sequence::first();
+
+        let svc_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcRequest {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let request_msg = crate::domain::RequestV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: crate::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
+        };
+
+        // send_svc_request — should record node and forward
+        queue
+            .send_svc_request(svc_key.clone(), request_msg)
+            .await
+            .unwrap();
+
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].message_type(), MessageType::SvcRequest);
+        assert_eq!(nodes[0].protocol_version(), "v1");
+
+        // Now send a svc_response into the inner queue and receive it via RecordingQueue
+        let response_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcResponse {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let response_msg = crate::domain::ResponseV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: crate::domain::MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            payload: b"result".to_vec(),
+        };
+
+        // Put response into inner queue first
+        inner
+            .send_svc_response(response_key.clone(), response_msg)
+            .await
+            .unwrap();
+
+        // receive_svc_response — should receive from inner and record node
+        let result = queue.receive_svc_response(&response_key).await;
+        assert!(result.is_ok());
+
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[1].message_type(), MessageType::SvcResponse);
+        assert_eq!(nodes[1].protocol_version(), "v1");
+    }
+
+    #[tokio::test]
+    async fn send_svc_response_and_receive_svc_request_mcp_delegate_no_recording() {
+        let store = test_store().await;
+        let inner: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
+        let queue = RecordingQueue::new(Arc::clone(&inner), Arc::clone(&store));
+
+        let session = test_session();
+        let submission = test_submission();
+        let agent = test_agent_id();
+        let branch = BranchId::from(1);
+        let service = crate::domain::ServiceBackendV2::Mcp("brave".to_string());
+        let operation = crate::domain::ServiceOperation::new("echo");
+        let sequence = crate::domain::Sequence::first();
+
+        // send_svc_response should delegate without recording
+        let response_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcResponse {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let response_msg = crate::domain::ResponseV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: crate::domain::MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            payload: b"result".to_vec(),
+        };
+
+        queue
+            .send_svc_response(response_key, response_msg)
+            .await
+            .unwrap();
+
+        // No nodes should be recorded
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert!(nodes.is_empty(), "send_svc_response should not record");
+
+        // Put a request into inner and verify receive_svc_request_mcp delegates
+        let request_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcRequest {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let request_msg = crate::domain::RequestV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: crate::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
+        };
+        inner
+            .send_svc_request(request_key, request_msg)
+            .await
+            .unwrap();
+
+        let result = queue.receive_svc_request_mcp().await;
+        assert!(result.is_ok());
+
+        // Still no nodes recorded
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert!(
+            nodes.is_empty(),
+            "receive_svc_request_mcp should not record"
         );
     }
 }

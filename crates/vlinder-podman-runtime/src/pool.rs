@@ -140,8 +140,12 @@ impl ContainerRuntime {
         // All *.vlinder.local hostnames are added unconditionally — the sidecar
         // only binds the ones the agent needs. Extra entries are harmless.
         // See #34 for replacing this with a sidecar DNS resolver.
+        //
+        // `metadata.vlinder.local` is the platform metadata endpoint (serves /v1/tools
+        // and future endpoints such as /v1/history and /v1/memory).
         let host_aliases = vec![
             "vlinder.local:127.0.0.1".to_string(),
+            "metadata.vlinder.local:127.0.0.1".to_string(),
             "runtime.vlinder.local:127.0.0.1".to_string(),
             "ollama.vlinder.local:127.0.0.1".to_string(),
             "openrouter.vlinder.local:127.0.0.1".to_string(),
@@ -749,8 +753,8 @@ mod tests {
                 models: HashMap::new(),
                 services: HashMap::new(),
                 mounts: HashMap::new(),
+                mcp: Vec::new(),
             },
-            prompts: None,
             object_storage: None,
             vector_storage: None,
         };

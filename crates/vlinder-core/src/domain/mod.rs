@@ -12,6 +12,7 @@ mod agent_manifest;
 mod agent_state;
 mod catalog;
 mod container_id;
+mod conversation;
 mod dag;
 mod diagnostics;
 mod fleet;
@@ -20,6 +21,8 @@ pub mod harness;
 mod identity;
 mod image_digest;
 mod image_ref;
+mod mcp_manifest;
+mod mcp_server;
 mod message;
 mod message_queue;
 mod model;
@@ -36,9 +39,15 @@ mod resource_id;
 mod routing_key;
 mod runtime;
 mod secret_store;
+mod service_backend_v2;
 mod service_type;
 pub mod session;
 mod storage;
+mod svc_routing_key;
+mod tool_call;
+mod tool_call_parser;
+mod tool_call_protocol;
+mod tool_result;
 pub mod wire;
 pub mod workers;
 
@@ -46,15 +55,20 @@ pub mod workers;
 // Agent & Fleet
 // ============================================================================
 
-pub use agent::{Agent, LoadError as AgentLoadError, Prompts, Requirements};
+pub use agent::{Agent, LoadError as AgentLoadError, Requirements};
 pub use agent_state::AgentStatus;
 pub use container_id::ContainerId;
+pub use conversation::Message;
 pub use image_digest::ImageDigest;
 pub use image_ref::ImageRef;
-pub use operation::Operation;
+pub use operation::{Operation, ServiceOperation};
 pub use pod_id::PodId;
 pub use readiness::{derive_status, ReadinessCheck, ReadinessStatus};
 pub use service_type::ServiceType;
+pub use tool_call::ToolCall;
+pub use tool_call_parser::{ParseError, ParsedResponse, ToolCallParser};
+pub use tool_call_protocol::ToolCallProtocol;
+pub use tool_result::ToolResult;
 
 // ============================================================================
 // Message Queue (protocol types + trait)
@@ -62,19 +76,22 @@ pub use service_type::ServiceType;
 
 pub use diagnostics::{
     HealthSnapshot, HealthWindow, InvokeDiagnostics, RequestDiagnostics, RuntimeDiagnostics,
-    RuntimeInfo, ServiceDiagnostics, ServiceMetrics,
+    RuntimeInfo, ServiceDiagnostics, ServiceMetrics, SvcRequestDiagnostics, SvcResponseDiagnostics,
 };
 pub use message::{
-    BranchId, CompleteMessage, DagNodeId, DeleteAgentMessage, DeployAgentMessage, ForkMessage,
-    HarnessType, Instance, InvokeMessage, MessageId, PromoteMessage, RequestMessage,
-    ResponseMessage, Sequence, SequenceCounter, SessionId, SessionStartMessage, StateHash,
-    SubmissionId, PROTOCOL_VERSION,
+    BranchId, CompleteMessage, DagNodeId, DeleteAgentMessage, DeployAgentMessage,
+    ExternalSessionId, ForkMessage, HarnessType, Instance, InvokeMessage, MessageId,
+    PromoteMessage, RequestMessage, RequestV2, ResponseMessage, ResponseV2, Sequence,
+    SequenceCounter, SessionId, SessionStartMessage, StateHash, SubmissionId, ToolCallId,
+    PROTOCOL_VERSION,
 };
 pub use message_queue::{agent_routing_key, noop_ack, Acknowledgement, MessageQueue, QueueError};
 pub use routing_key::{
     AgentName, DataMessageKind, DataRoutingKey, EmbeddingBackendType, InferenceBackendType,
     InfraMessageKind, InfraRoutingKey, ServiceBackend, SessionMessageKind, SessionRoutingKey,
 };
+pub use service_backend_v2::ServiceBackendV2;
+pub use svc_routing_key::{SvcMessageKind, SvcRoutingKey};
 
 // ============================================================================
 // DAG (content-addressed Merkle DAG)
@@ -115,6 +132,13 @@ pub use resource_id::ResourceId;
 
 pub use model::{LoadError as ModelLoadError, Model, ModelType};
 pub use model_manifest::{ModelManifest, ModelTypeConfig};
+
+// ============================================================================
+// MCP Server
+// ============================================================================
+
+pub use mcp_manifest::McpManifest;
+pub use mcp_server::McpServer;
 
 // ============================================================================
 // Model Catalog (trait)

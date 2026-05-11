@@ -80,9 +80,8 @@ fn agent_domain_to_proto_preserves_fields() {
             models: HashMap::from([("phi3".to_string(), "phi3".to_string())]),
             services,
             mounts: HashMap::new(),
+            mcp: Vec::new(),
         },
-        prompts: None,
-
         object_storage: Some(ResourceId::new("sqlite:///data/obj.db")),
         vector_storage: None,
     };
@@ -128,6 +127,7 @@ fn agent_proto_to_domain_round_trip() {
 
         models: vec![],
         mounts: vec![],
+        mcp: vec![],
         object_storage: None,
         vector_storage: None,
     };
@@ -169,9 +169,8 @@ fn agent_models_survive_proto_round_trip() {
             ]),
             services,
             mounts: HashMap::new(),
+            mcp: Vec::new(),
         },
-        prompts: None,
-
         object_storage: None,
         vector_storage: None,
     };
@@ -212,12 +211,40 @@ fn agent_proto_missing_id_fails() {
 
         models: vec![],
         mounts: vec![],
+        mcp: vec![],
         object_storage: None,
         vector_storage: None,
     };
 
     let result: Result<Agent, String> = proto_agent.try_into();
     assert!(result.is_err());
+}
+
+#[test]
+fn agent_mcp_survives_proto_round_trip() {
+    let agent = Agent {
+        name: "mcp-echo".to_string(),
+        description: "Uses MCP".to_string(),
+        source: None,
+        id: ResourceId::new("http://localhost:9000/agents/mcp-echo"),
+        runtime: RuntimeType::Container,
+        executable: "localhost/mcp-echo:latest".to_string(),
+        image_digest: None,
+        public_key: None,
+        requirements: Requirements {
+            models: HashMap::new(),
+            services: HashMap::new(),
+            mounts: HashMap::new(),
+            mcp: vec!["brave".to_string(), "fetch".to_string()],
+        },
+        object_storage: None,
+        vector_storage: None,
+    };
+
+    let proto_agent: proto::Agent = agent.into();
+    let back: Agent = proto_agent.try_into().unwrap();
+
+    assert_eq!(back.requirements.mcp, vec!["brave", "fetch"]);
 }
 
 // ============================================================================

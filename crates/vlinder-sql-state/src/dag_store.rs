@@ -15,8 +15,8 @@ use diesel::sqlite::SqliteConnection;
 use async_trait::async_trait;
 use vlinder_core::domain::session::Session;
 use vlinder_core::domain::{
-    Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, SessionId, SessionSummary,
-    SubmissionId,
+    Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, ServiceBackendV2,
+    ServiceOperation, SessionId, SessionSummary, SubmissionId,
 };
 
 /// SQLite-backed `DagStore`.
@@ -42,11 +42,13 @@ impl SqliteDagStore {
 
              CREATE TABLE IF NOT EXISTS sessions (
                  id TEXT PRIMARY KEY,
+                 external_id TEXT NOT NULL,
                  name TEXT NOT NULL UNIQUE,
                  agent_name TEXT NOT NULL,
                  default_branch INTEGER NOT NULL DEFAULT 1,
                  created_at TEXT NOT NULL
              );
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external_id ON sessions(external_id);
              CREATE TABLE IF NOT EXISTS branches (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  name TEXT NOT NULL,
@@ -169,6 +171,37 @@ impl SqliteDagStore {
                  agent_name TEXT NOT NULL,
                  message_id TEXT NOT NULL UNIQUE
              );
+             CREATE TABLE IF NOT EXISTS svc_request_nodes (
+                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
+                 agent TEXT NOT NULL,
+                 service_type TEXT NOT NULL,
+                 service_backend TEXT NOT NULL,
+                 operation TEXT NOT NULL,
+                 sequence INTEGER NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE,
+                 tool_call_id TEXT NOT NULL,
+                 state TEXT,
+                 diagnostics TEXT,
+                 arguments BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS svc_response_nodes (
+                 dag_hash TEXT PRIMARY KEY REFERENCES dag_nodes(hash),
+                 agent TEXT NOT NULL,
+                 service_type TEXT NOT NULL,
+                 service_backend TEXT NOT NULL,
+                 operation TEXT NOT NULL,
+                 sequence INTEGER NOT NULL,
+                 message_id TEXT NOT NULL UNIQUE,
+                 correlation_id TEXT NOT NULL,
+                 state TEXT,
+                 diagnostics TEXT,
+                 payload BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS mcp_servers (
+                 name TEXT PRIMARY KEY,
+                 url TEXT NOT NULL,
+                 tools_json TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS readiness_checks (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  agent_name TEXT NOT NULL,
@@ -212,20 +245,23 @@ fn branch_row_to_domain(r: crate::models::BranchRow) -> Branch {
     }
 }
 
-/// Convert a Diesel `SessionRow` to the domain `Session`.
-fn session_row_to_domain(r: crate::models::SessionRow) -> Session {
+/// Convert a Diesel `SessionRow` to the domain `Session`, returning an error
+/// on corrupt data (invalid `id`, `external_id`, or `created_at`).
+fn session_row_to_domain(r: crate::models::SessionRow) -> Result<Session, String> {
     let created_at = DateTime::parse_from_rfc3339(&r.created_at)
         .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_default();
-    Session {
-        id: SessionId::try_from(r.id).unwrap_or_else(|_| {
-            SessionId::try_from("00000000-0000-4000-8000-000000000000".to_string()).unwrap()
-        }),
+        .map_err(|e| format!("invalid created_at in session row: {e}"))?;
+    let external_id = vlinder_core::domain::ExternalSessionId::new(&r.external_id)
+        .map_err(|e| format!("invalid external_id in session row: {e}"))?;
+    let id = SessionId::try_from(r.id).map_err(|e| format!("invalid id in session row: {e}"))?;
+    Ok(Session {
+        id,
+        external_id,
         name: r.name,
         agent: r.agent_name,
         default_branch: BranchId::from(r.default_branch),
         created_at,
-    }
+    })
 }
 
 /// Convert a `DagNodeId` to an `Option<&str>` for SQL storage.
@@ -340,7 +376,7 @@ impl DagStore for SqliteDagStore {
                 message_id: msg.id.as_str(),
                 state: msg.state.as_deref(),
                 diagnostics: &diagnostics_json,
-                payload: &msg.payload,
+                payload: &serde_json::to_vec(msg).unwrap_or_default(),
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert invoke_nodes failed: {e}"))?;
@@ -393,7 +429,7 @@ impl DagStore for SqliteDagStore {
                 message_id: msg.id.as_str(),
                 state: msg.state.as_deref(),
                 diagnostics: &diagnostics_json,
-                payload: &msg.payload,
+                payload: &serde_json::to_vec(msg).unwrap_or_default(),
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert complete_nodes failed: {e}"))?;
@@ -519,6 +555,133 @@ impl DagStore for SqliteDagStore {
             })
             .execute(&mut *conn)
             .map_err(|e| format!("insert response_nodes failed: {e}"))?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_request_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        session: &SessionId,
+        submission: &vlinder_core::domain::SubmissionId,
+        branch: BranchId,
+        agent: &vlinder_core::domain::AgentName,
+        service: ServiceBackendV2,
+        operation: ServiceOperation,
+        sequence: vlinder_core::domain::Sequence,
+        msg: &vlinder_core::domain::RequestV2,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewSvcRequestNode};
+        use crate::schema::{dag_nodes, svc_request_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let payload_bytes = msg.payload.clone();
+        let state_json = msg.state.as_deref().map(String::from);
+        let diagnostics_json = serde_json::to_string(&msg.diagnostics).unwrap_or_default();
+        let created_at_str = created_at.to_rfc3339();
+        let service_type = service.service_type_str();
+        let service_backend = service.backend_str();
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
+                message_type: "svc_request",
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
+                created_at: &created_at_str,
+                protocol_version: "v2",
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(svc_request_nodes::table)
+            .values(&NewSvcRequestNode {
+                dag_hash: dag_id.as_str(),
+                agent: agent.as_str(),
+                service_type,
+                service_backend,
+                operation: operation.as_str(),
+                sequence: i32::try_from(sequence.as_u32()).unwrap_or(0),
+                message_id: msg.id.as_str(),
+                tool_call_id: msg.tool_call_id.as_str(),
+                state: state_json.as_deref(),
+                diagnostics: Some(&diagnostics_json),
+                payload: &payload_bytes,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert svc_request_nodes failed: {e}"))?;
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_response_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        session: &SessionId,
+        submission: &vlinder_core::domain::SubmissionId,
+        branch: BranchId,
+        agent: &vlinder_core::domain::AgentName,
+        service: ServiceBackendV2,
+        operation: ServiceOperation,
+        sequence: vlinder_core::domain::Sequence,
+        msg: &vlinder_core::domain::ResponseV2,
+    ) -> Result<(), String> {
+        use crate::models::{NewDagNode, NewSvcResponseNode};
+        use crate::schema::{dag_nodes, svc_response_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot failed: {e}"))?;
+        let state_json = msg.state.as_deref().map(String::from);
+        let diagnostics_json = serde_json::to_string(&msg.diagnostics).unwrap_or_default();
+        let created_at_str = created_at.to_rfc3339();
+        let service_type = service.service_type_str();
+        let service_backend = service.backend_str();
+
+        diesel::insert_or_ignore_into(dag_nodes::table)
+            .values(&NewDagNode {
+                hash: dag_id.as_str(),
+                parent_hash: parent_hash_for_sql(parent_id),
+                message_type: "svc_response",
+                session_id: Some(session.as_str()),
+                submission_id: Some(submission.as_str()),
+                branch_id: Some(branch.as_i64()),
+                created_at: &created_at_str,
+                protocol_version: "v2",
+                snapshot: &snapshot_json,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert dag_nodes failed: {e}"))?;
+
+        diesel::insert_or_ignore_into(svc_response_nodes::table)
+            .values(&NewSvcResponseNode {
+                dag_hash: dag_id.as_str(),
+                agent: agent.as_str(),
+                service_type,
+                service_backend,
+                operation: operation.as_str(),
+                sequence: i32::try_from(sequence.as_u32()).unwrap_or(0),
+                message_id: msg.id.as_str(),
+                correlation_id: msg.correlation_id.as_str(),
+                state: state_json.as_deref(),
+                diagnostics: Some(&diagnostics_json),
+                payload: &msg.payload,
+            })
+            .execute(&mut *conn)
+            .map_err(|e| format!("insert svc_response_nodes failed: {e}"))?;
 
         Ok(())
     }
@@ -783,14 +946,16 @@ impl DagStore for SqliteDagStore {
                     }
                 });
 
-            let msg = vlinder_core::domain::InvokeMessage {
-                id: vlinder_core::domain::MessageId::from(inv.message_id),
-                dag_id: dag_hash.clone(),
-                state: inv.state,
-                diagnostics,
-                dag_parent: parent_hash.map_or_else(DagNodeId::root, DagNodeId::from),
-                payload: inv.payload,
-            };
+            let msg: vlinder_core::domain::InvokeMessage = serde_json::from_slice(&inv.payload)
+                .unwrap_or_else(|_| vlinder_core::domain::InvokeMessage {
+                    id: vlinder_core::domain::MessageId::from(inv.message_id.clone()),
+                    dag_id: dag_hash.clone(),
+                    state: inv.state.clone(),
+                    diagnostics,
+                    dag_parent: parent_hash.map_or_else(DagNodeId::root, DagNodeId::from),
+                    history: vec![],
+                    current_input: vec![],
+                });
 
             (key, msg)
         });
@@ -816,13 +981,17 @@ impl DagStore for SqliteDagStore {
             let diagnostics: vlinder_core::domain::RuntimeDiagnostics =
                 serde_json::from_slice(&r.diagnostics)
                     .unwrap_or_else(|_| vlinder_core::domain::RuntimeDiagnostics::placeholder(0));
-            vlinder_core::domain::CompleteMessage {
-                id: vlinder_core::domain::MessageId::from(r.message_id),
-                dag_id: dag_hash.clone(),
-                state: r.state,
-                diagnostics,
-                payload: r.payload,
-            }
+            serde_json::from_slice(&r.payload).unwrap_or_else(|_| {
+                vlinder_core::domain::CompleteMessage {
+                    id: vlinder_core::domain::MessageId::from(r.message_id),
+                    dag_id: dag_hash.clone(),
+                    state: r.state,
+                    diagnostics,
+                    content: None,
+                    tool_calls: None,
+                    payload: vec![],
+                }
+            })
         }))
     }
 
@@ -1008,6 +1177,7 @@ impl DagStore for SqliteDagStore {
         diesel::insert_or_ignore_into(sessions::table)
             .values(&crate::models::NewSession {
                 id: session.id.as_str(),
+                external_id: session.external_id.as_str(),
                 name: &session.name,
                 agent_name: &session.agent,
                 default_branch: session.default_branch.as_i64(),
@@ -1029,7 +1199,7 @@ impl DagStore for SqliteDagStore {
             .optional()
             .map_err(|e| format!("get_session failed: {e}"))?;
 
-        Ok(row.map(session_row_to_domain))
+        Ok(row.map(session_row_to_domain).transpose()?)
     }
 
     async fn insert_fork_node(
@@ -1241,7 +1411,24 @@ impl DagStore for SqliteDagStore {
             .optional()
             .map_err(|e| format!("get_session_by_name failed: {e}"))?;
 
-        Ok(row.map(session_row_to_domain))
+        Ok(row.map(session_row_to_domain).transpose()?)
+    }
+
+    async fn get_session_by_external_id(
+        &self,
+        external_id: &vlinder_core::domain::ExternalSessionId,
+    ) -> Result<Option<Session>, String> {
+        use crate::schema::sessions;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+        let row: Option<crate::models::SessionRow> = sessions::table
+            .filter(sessions::external_id.eq(external_id.as_str()))
+            .select(crate::models::SessionRow::as_select())
+            .first(&mut *conn)
+            .optional()
+            .map_err(|e| format!("get_session_by_external_id failed: {e}"))?;
+
+        Ok(row.map(session_row_to_domain).transpose()?)
     }
 
     async fn exists_in_submission(
@@ -1308,8 +1495,10 @@ mod tests {
         let path = dir.path().join("test.db");
         let store = SqliteDagStore::open(&path).unwrap();
         // Create session + default branch to satisfy FK constraints.
+        let external_id = vlinder_core::domain::ExternalSessionId::new("test-ext-id").unwrap();
         let session = vlinder_core::domain::session::Session {
             id: sess(),
+            external_id,
             name: "test-session".to_string(),
             agent: "agent-a".to_string(),
             default_branch: BranchId::from(1),
@@ -1423,8 +1612,10 @@ mod tests {
             SessionId::try_from("e2660cff-33d6-4428-acca-2d297dcc1cad".to_string()).unwrap();
 
         // Create second session + branch for FK constraints
+        let ext_id2 = vlinder_core::domain::ExternalSessionId::new("test-ext-id-2").unwrap();
         let session2 = vlinder_core::domain::session::Session {
             id: sess2.clone(),
+            external_id: ext_id2,
             name: "test-session-2".to_string(),
             agent: "agent-b".to_string(),
             default_branch: BranchId::from(1),
@@ -1577,8 +1768,10 @@ mod tests {
     #[tokio::test]
     async fn create_and_get_session() {
         let (store, _dir) = test_store().await;
+        let ext_id = vlinder_core::domain::ExternalSessionId::new("a1b2-ext").unwrap();
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
+            ext_id.clone(),
             "pensieve",
             BranchId::from(1),
         );
@@ -1593,13 +1786,16 @@ mod tests {
         );
         assert_eq!(retrieved.agent, "pensieve");
         assert_eq!(retrieved.name, session.name);
+        assert_eq!(retrieved.external_id, ext_id);
     }
 
     #[tokio::test]
     async fn get_session_by_name() {
         let (store, _dir) = test_store().await;
+        let ext_id = vlinder_core::domain::ExternalSessionId::new("a1b2-name-ext").unwrap();
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
+            ext_id.clone(),
             "pensieve",
             BranchId::from(1),
         );
@@ -1613,6 +1809,7 @@ mod tests {
             "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         );
         assert_eq!(retrieved.agent, "pensieve");
+        assert_eq!(retrieved.external_id, ext_id);
     }
 
     #[tokio::test]
@@ -1635,8 +1832,10 @@ mod tests {
     #[tokio::test]
     async fn create_session_is_idempotent() {
         let (store, _dir) = test_store().await;
+        let ext_id = vlinder_core::domain::ExternalSessionId::new("idempotent-ext").unwrap();
         let session = Session::new(
             SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap(),
+            ext_id.clone(),
             "pensieve",
             BranchId::from(1),
         );
@@ -1647,6 +1846,7 @@ mod tests {
         let sid = SessionId::try_from("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string()).unwrap();
         let retrieved = store.get_session(&sid).await.unwrap().unwrap();
         assert_eq!(retrieved.agent, "pensieve");
+        assert_eq!(retrieved.external_id, ext_id);
     }
 
     #[tokio::test]
@@ -1688,8 +1888,8 @@ mod tests {
                 models: std::collections::HashMap::new(),
                 services: std::collections::HashMap::new(),
                 mounts: std::collections::HashMap::new(),
+                mcp: Vec::new(),
             },
-            prompts: None,
             object_storage: None,
             vector_storage: None,
         };
@@ -1815,5 +2015,88 @@ mod tests {
             .exists_in_submission(&other_sub, BranchId::from(1), MessageType::Complete)
             .await
             .unwrap());
+    }
+
+    // ========================================================================
+    // V2 service nodes
+    // ========================================================================
+
+    #[tokio::test]
+    async fn insert_svc_request_and_response_nodes_round_trip() {
+        let (store, _dir) = test_store().await;
+
+        let session = sess();
+        let submission = sub();
+        let branch = BranchId::from(1);
+        let agent = vlinder_core::domain::AgentName::new("test-agent");
+        let service = ServiceBackendV2::Mcp("brave".to_string());
+        let operation = ServiceOperation::new("echo");
+        let sequence = vlinder_core::domain::Sequence::first();
+
+        // Insert svc_request node
+        let request_msg = vlinder_core::domain::RequestV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            tool_call_id: vlinder_core::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
+        };
+        let request_dag_id = DagNodeId::from("svc-req-hash-1".to_string());
+
+        store
+            .insert_svc_request_node(
+                &request_dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service.clone(),
+                operation.clone(),
+                sequence,
+                &request_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&request_dag_id).await.unwrap().unwrap();
+        assert_eq!(node.message_type(), MessageType::SvcRequest);
+        assert_eq!(node.protocol_version(), "v2");
+
+        // Insert svc_response node
+        let response_msg = vlinder_core::domain::ResponseV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: vlinder_core::domain::MessageId::new(),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
+            payload: b"result".to_vec(),
+        };
+        let response_dag_id = DagNodeId::from("svc-res-hash-1".to_string());
+
+        store
+            .insert_svc_response_node(
+                &response_dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence.next(),
+                &response_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&response_dag_id).await.unwrap().unwrap();
+        assert_eq!(node.message_type(), MessageType::SvcResponse);
+        assert_eq!(node.protocol_version(), "v2");
     }
 }

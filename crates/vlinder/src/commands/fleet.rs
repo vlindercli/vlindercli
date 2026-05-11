@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 
 use crate::config::CliConfig;
-use vlinder_core::domain::{agent_routing_key, DagNodeId, Fleet, FleetManifest, Registry};
+use vlinder_core::domain::{
+    agent_routing_key, DagNodeId, ExternalSessionId, Fleet, FleetManifest, Registry, SessionId,
+};
 
 use super::connect::{connect_harness, connect_registry};
 use super::repl;
@@ -193,7 +195,11 @@ pub async fn run(name: &str, prompt: Option<&str>) {
     let harness = connect_harness(&config).await;
 
     // New session — start fresh, no prior state
-    let (session_id, branch_id) = harness.start_session(entry_agent_name.as_str()).await;
+    let ext_id = ExternalSessionId::new(SessionId::new().as_str())
+        .expect("UUID is always a valid ExternalSessionId");
+    let (session_id, branch_id) = harness
+        .start_session(entry_agent_name.as_str(), ext_id)
+        .await;
 
     tracing::debug!(fleet = %fleet.name, "Fleet session started");
 

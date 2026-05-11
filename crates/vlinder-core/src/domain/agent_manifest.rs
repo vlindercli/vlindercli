@@ -27,8 +27,6 @@ pub struct AgentManifest {
     /// File paths are resolved to absolute during loading.
     pub executable: String,
     pub requirements: RequirementsConfig,
-    #[serde(default)]
-    pub prompts: Option<PromptsConfig>,
     /// Object storage resource ID (e.g., `<sqlite:///path/to/objects.db>`)
     #[serde(default)]
     pub object_storage: Option<ResourceId>,
@@ -188,6 +186,9 @@ pub struct RequirementsConfig {
     /// S3 mount declarations (ADR 107).
     #[serde(default)]
     pub mounts: HashMap<String, MountConfig>,
+    /// MCP provider names (references registered MCP servers by name).
+    #[serde(default)]
+    pub mcp: Vec<String>,
 }
 
 /// Deserialize models from either table or array form.
@@ -229,17 +230,6 @@ pub enum Protocol {
     OpenAi,
     /// Anthropic Messages API
     Anthropic,
-}
-
-/// Prompt overrides as declared in agent.toml
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct PromptsConfig {
-    pub intent_recognition: Option<String>,
-    pub query_expansion: Option<String>,
-    pub answer_generation: Option<String>,
-    pub map_summarize: Option<String>,
-    pub reduce_summaries: Option<String>,
-    pub direct_summarize: Option<String>,
 }
 
 #[cfg(test)]
@@ -643,5 +633,57 @@ mod tests {
         let mount = &manifest.requirements.mounts["knowledge"];
         assert_eq!(mount.s3, "vlinder-support/v0.1.0/");
         assert_eq!(mount.path, "/knowledge");
+    }
+    // ========================================================================
+    // MCP provider parsing (now Vec<String> of names)
+    // ========================================================================
+
+    #[test]
+    fn parse_manifest_with_mcp_names() {
+        let toml = r#"
+            name = "mcp-agent"
+            description = "MCP agent"
+            runtime = "container"
+            executable = "localhost/mcp-agent:latest"
+
+            [requirements]
+            mcp = ["brave", "jira"]
+        "#;
+
+        let manifest: AgentManifest = toml::from_str(toml).unwrap();
+        assert_eq!(manifest.requirements.mcp.len(), 2);
+        assert_eq!(manifest.requirements.mcp[0], "brave");
+        assert_eq!(manifest.requirements.mcp[1], "jira");
+    }
+
+    #[test]
+    fn parse_manifest_without_mcp() {
+        let toml = r#"
+            name = "simple"
+            description = "No MCP"
+            runtime = "container"
+            executable = "localhost/simple:latest"
+
+            [requirements]
+        "#;
+
+        let manifest: AgentManifest = toml::from_str(toml).unwrap();
+        assert!(manifest.requirements.mcp.is_empty());
+    }
+
+    #[test]
+    fn parse_manifest_single_mcp() {
+        let toml = r#"
+            name = "mcp-agent"
+            description = "Single MCP"
+            runtime = "container"
+            executable = "localhost/mcp-agent:latest"
+
+            [requirements]
+            mcp = ["brave"]
+        "#;
+
+        let manifest: AgentManifest = toml::from_str(toml).unwrap();
+        assert_eq!(manifest.requirements.mcp, vec!["brave"]);
     }
 }

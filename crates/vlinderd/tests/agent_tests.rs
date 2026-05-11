@@ -120,7 +120,6 @@ fn manifest_defaults_empty_optional_fields() {
     .unwrap();
 
     assert!(manifest.source.is_none());
-    assert!(manifest.prompts.is_none());
     assert!(manifest.requirements.models.is_empty());
 }
 
