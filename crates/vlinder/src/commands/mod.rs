@@ -6,7 +6,6 @@ mod fleet;
 mod help;
 mod mcp;
 mod model;
-mod repl;
 mod secret;
 mod session;
 

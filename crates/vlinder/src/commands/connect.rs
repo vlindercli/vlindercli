@@ -46,13 +46,13 @@ pub async fn open_registry(config: &CliConfig) -> Option<Arc<dyn Registry>> {
 }
 
 /// Connect to the harness via gRPC, exiting on failure.
-pub async fn connect_harness(config: &CliConfig) -> Box<dyn Harness> {
+pub async fn connect_harness(config: &CliConfig) -> Arc<dyn Harness + Send + Sync> {
     let harness_addr = normalize_addr(&config.daemon.harness_addr);
     if ping_harness_async(&harness_addr).await.is_none() {
         eprintln!("Cannot reach harness at {harness_addr}. Is the daemon running?");
         std::process::exit(1);
     }
-    Box::new(
+    Arc::new(
         GrpcHarnessClient::connect(&harness_addr)
             .await
             .expect("Failed to connect to harness"),

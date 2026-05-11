@@ -1,0 +1,118 @@
+//! Visual theme: colors, style constructors, spinner cadence, and the
+//! styling applied to the input editor. The single source of truth for
+//! "how the TUI looks." Tweak appearance here, not in render code.
+
+use std::time::Duration;
+
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Block, BorderType, Borders};
+use ratatui_textarea::TextArea;
+
+// ── Spinner ──────────────────────────────────────────────────────────────
+
+/// Braille spinner frames (10-frame cycle).
+pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Tick interval for the spinner animation.
+pub const SPINNER_TICK: Duration = Duration::from_millis(80);
+
+/// How long the splash screen displays before auto-dismissing. Any keypress
+/// dismisses it earlier.
+pub const SPLASH_DURATION: Duration = Duration::from_millis(1800);
+
+// ── Color palette ────────────────────────────────────────────────────────
+
+/// Background tint for user-message rows. Dracula-ish dark blue-gray.
+const USER_BG: Color = Color::Rgb(40, 42, 54);
+
+/// Accent color — prompt marker, spinner, welcome heading.
+const ACCENT: Color = Color::Cyan;
+
+/// Muted color — hints, borders, secondary text.
+const DIM: Color = Color::DarkGray;
+
+/// Warning color — used for the "scrolled up" status indicator.
+const WARN: Color = Color::Yellow;
+
+// ── Style constructors ───────────────────────────────────────────────────
+
+/// Style for the cyan `>` prompt marker on a user message.
+pub fn user_prompt_style() -> Style {
+    Style::default()
+        .bg(USER_BG)
+        .fg(ACCENT)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Style for the body text of a user message.
+pub fn user_text_style() -> Style {
+    Style::default().bg(USER_BG).add_modifier(Modifier::BOLD)
+}
+
+/// Style for the trailing space-padding that extends the user-row bar to
+/// the right margin.
+pub fn user_pad_style() -> Style {
+    Style::default().bg(USER_BG)
+}
+
+/// Style for the welcome heading shown in an empty transcript.
+pub fn welcome_title_style() -> Style {
+    Style::default().fg(ACCENT)
+}
+
+/// Style for the welcome body text.
+pub fn welcome_body_style() -> Style {
+    Style::default().fg(DIM)
+}
+
+/// Style for the spinner glyph and "thinking..." label.
+pub fn spinner_style() -> Style {
+    Style::default().fg(ACCENT)
+}
+
+/// Style for the "(scrolled up — press Ctrl+End to jump to latest)" status.
+pub fn scrolled_up_style() -> Style {
+    Style::default().fg(WARN)
+}
+
+/// Style for the keybinding hint at the bottom of the screen.
+pub fn hint_style() -> Style {
+    Style::default().fg(DIM)
+}
+
+// ── Splash screen ────────────────────────────────────────────────────────
+
+/// Style for the big ASCII wordmark on the splash.
+pub fn logo_style() -> Style {
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+}
+
+/// Style for the tagline below the wordmark.
+pub fn tagline_style() -> Style {
+    Style::default().add_modifier(Modifier::BOLD)
+}
+
+/// Style for the motto line.
+pub fn motto_style() -> Style {
+    Style::default().fg(DIM)
+}
+
+/// Style for the "(press any key)" hint on the splash.
+pub fn splash_hint_style() -> Style {
+    Style::default().fg(DIM)
+}
+
+// ── Input editor ─────────────────────────────────────────────────────────
+
+/// Apply the input-editor theme: rounded dim border, default cursor line,
+/// and placeholder copy.
+pub fn configure_input(textarea: &mut TextArea<'static>) {
+    textarea.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(DIM)),
+    );
+    textarea.set_cursor_line_style(Style::default());
+    textarea.set_placeholder_text("Type a message, then press Enter...");
+}

@@ -11,13 +11,12 @@ vlinder-nats = { path = "../vlinder-nats", default-features = false, features = 
 vlinder-harness = { path = "../vlinder-harness", default-features = false, features = ["client"] }
 vlinder-sql-registry = { path = "../vlinder-sql-registry", default-features = false, features = ["client"] }
 vlinder-sql-state = { path = "../vlinder-sql-state", default-features = false, features = ["client"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
-indicatif = "0.17"
-reedline = "0.37"
+ratatui = "0.30"
+ratatui-textarea = "0.9"
 serde = { version = "1", features = ["derive"] }
-termimad = "0.30"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }

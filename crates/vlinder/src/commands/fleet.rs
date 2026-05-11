@@ -8,7 +8,7 @@ use vlinder_core::domain::{
 };
 
 use super::connect::{connect_harness, connect_registry};
-use super::repl;
+use crate::tui;
 
 #[derive(Subcommand, Debug, PartialEq)]
 pub enum FleetCommand {
@@ -208,26 +208,32 @@ pub async fn run(name: &str, prompt: Option<&str>) {
         fleet.name, entry_agent_name
     );
 
-    let invoke = |input: &str| -> String {
-        let enriched_input = format!("{fleet_context}\n\n{input}");
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(harness.run_agent(
-                &entry_agent_id,
-                &enriched_input,
-                session_id.clone(),
-                branch_id,
-                false,
-                None,
-                DagNodeId::root(),
-            ))
-        })
-        .unwrap_or_else(|e| format!("[error] {e}"))
+    let invoke = |input: String| {
+        let harness = harness.clone();
+        let entry_agent_id = entry_agent_id.clone();
+        let session_id = session_id.clone();
+        let fleet_context = fleet_context.clone();
+        async move {
+            let enriched_input = format!("{fleet_context}\n\n{input}");
+            harness
+                .run_agent(
+                    &entry_agent_id,
+                    &enriched_input,
+                    session_id,
+                    branch_id,
+                    false,
+                    None,
+                    DagNodeId::root(),
+                )
+                .await
+                .unwrap_or_else(|e| format!("[error] {e}"))
+        }
     };
 
     if let Some(message) = prompt {
-        println!("{}", invoke(message));
+        println!("{}", invoke(message.to_string()).await);
     } else {
-        repl::run(invoke);
+        tui::run(invoke).await;
     }
 }
 

@@ -11,7 +11,7 @@ use vlinder_core::domain::{
 use vlinder_sql_registry::registry_service::GrpcRegistryClient;
 
 use super::connect::{connect_harness, connect_registry, open_dag_store};
-use super::repl;
+use crate::tui;
 
 #[derive(Clone, Debug, PartialEq, ValueEnum)]
 pub enum Language {
@@ -302,27 +302,34 @@ async fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Op
         }
     };
 
-    let invoke = |input: &str| -> String {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(harness.run_agent(
-                &agent_id,
-                input,
-                session_id.clone(),
-                branch_id,
-                sealed,
-                initial_state.clone(),
-                dag_parent.clone(),
-            ))
-        })
-        .unwrap_or_else(|e| format!("[error] {e}"))
+    let invoke = |input: String| {
+        let harness = harness.clone();
+        let agent_id = agent_id.clone();
+        let session_id = session_id.clone();
+        let initial_state = initial_state.clone();
+        let dag_parent = dag_parent.clone();
+        async move {
+            harness
+                .run_agent(
+                    &agent_id,
+                    &input,
+                    session_id,
+                    branch_id,
+                    sealed,
+                    initial_state,
+                    dag_parent,
+                )
+                .await
+                .unwrap_or_else(|e| format!("[error] {e}"))
+        }
     };
 
     if let Some(message) = prompt {
         // Non-interactive: send single message, print response, exit.
-        println!("{}", invoke(message));
+        println!("{}", invoke(message.to_string()).await);
     } else {
         // Interactive REPL.
-        repl::run(invoke);
+        tui::run(invoke).await;
     }
 }
 
