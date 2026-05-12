@@ -151,7 +151,7 @@ async fn deploy(path: Option<PathBuf>) {
     let manifest_path = resolve_manifest_path(&absolute_path);
     let manifest = AgentManifest::load(&manifest_path).unwrap_or_else(|e| {
         eprintln!("Failed to load agent manifest: {e:?}");
-        eprintln!("Check if the directory `{}` contains a valid `agent.toml` file. If you want to pass a different directory, please use `vlinder agent deploy --path /path/to/your/toml/file`",
+        eprintln!("Check if `{}` points to a valid agent.toml file. If you want to pass a different directory, please use `vlinder agent deploy --path /path/to/your/toml/file`",
         manifest_path.display());
         std::process::exit(1);
     });
