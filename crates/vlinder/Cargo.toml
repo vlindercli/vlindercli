@@ -28,6 +28,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
 tempfile = "3"
+chrono = { version = "0.4", features = ["serde"] }
 
 [lints]
 workspace = true

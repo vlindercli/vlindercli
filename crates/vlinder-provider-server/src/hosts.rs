@@ -13,6 +13,9 @@ use vlinder_core::domain::{Provider, ServiceType};
 pub fn build_hosts(agent: &Agent) -> Vec<ProviderHost> {
     let mut hosts = Vec::new();
     hosts.push(ProviderHost::new("vlinder.local", vec![]));
+    // Platform metadata endpoint — serves /v1/tools and future endpoints (history, memory).
+    // Agent does not need this host; it is used by infrastructure components.
+    hosts.push(ProviderHost::new("metadata.vlinder.local", vec![]));
 
     #[cfg(feature = "openrouter")]
     {

@@ -110,6 +110,7 @@ diesel::table! {
 diesel::table! {
     sessions (id) {
         id -> Text,
+        external_id -> Text,
         name -> Text,
         agent_name -> Text,
         default_branch -> BigInt,
@@ -151,12 +152,52 @@ diesel::table! {
 }
 
 diesel::table! {
+    svc_request_nodes (dag_hash) {
+        dag_hash -> Text,
+        agent -> Text,
+        service_type -> Text,
+        service_backend -> Text,
+        operation -> Text,
+        sequence -> Integer,
+        message_id -> Text,
+        tool_call_id -> Text,
+        state -> Nullable<Text>,
+        diagnostics -> Nullable<Text>,
+        arguments -> Binary,
+    }
+}
+
+diesel::table! {
+    svc_response_nodes (dag_hash) {
+        dag_hash -> Text,
+        agent -> Text,
+        service_type -> Text,
+        service_backend -> Text,
+        operation -> Text,
+        sequence -> Integer,
+        message_id -> Text,
+        correlation_id -> Text,
+        state -> Nullable<Text>,
+        diagnostics -> Nullable<Text>,
+        payload -> Binary,
+    }
+}
+
+diesel::table! {
     models (name) {
         name -> Text,
         model_type -> Text,
         provider -> Text,
         model_path -> Text,
         digest -> Text,
+    }
+}
+
+diesel::table! {
+    mcp_servers (name) {
+        name -> Text,
+        url -> Text,
+        tools_json -> Text,
     }
 }
 
@@ -180,6 +221,8 @@ diesel::joinable!(fork_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(promote_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(deploy_agent_nodes -> dag_nodes (dag_hash));
 diesel::joinable!(delete_agent_nodes -> dag_nodes (dag_hash));
+diesel::joinable!(svc_request_nodes -> dag_nodes (dag_hash));
+diesel::joinable!(svc_response_nodes -> dag_nodes (dag_hash));
 diesel::allow_tables_to_appear_in_same_query!(
     dag_nodes,
     invoke_nodes,
@@ -193,6 +236,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     agents,
     deploy_agent_nodes,
     delete_agent_nodes,
+    svc_request_nodes,
+    svc_response_nodes,
     models,
+    mcp_servers,
     readiness_checks,
 );

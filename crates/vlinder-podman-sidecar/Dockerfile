@@ -1,8 +1,8 @@
 # Multi-stage build for vlinder-podman-sidecar.
 # Build context: workspace root (sidecar depends on sibling crates).
 #
-# Only the 10 crates in the sidecar's dependency chain get real Cargo.toml
-# files. The remaining 8 workspace members get minimal stubs (no deps) so
+# Only the 12 crates in the sidecar's dependency chain get real Cargo.toml
+# files. The remaining 10 workspace members get minimal stubs (no deps) so
 # Cargo can resolve the workspace without triggering feature unification
 # on shared dependencies like tonic.
 #
@@ -10,7 +10,7 @@
 #   podman build -t localhost/vlinder-podman-sidecar:latest -f crates/vlinder-podman-sidecar/Dockerfile .
 
 # ── Build stage ──────────────────────────────────────────────────────
-FROM rust:1.90-bookworm AS builder
+FROM rust:1.95-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler && \
     rm -rf /var/lib/apt/lists/*
@@ -20,7 +20,7 @@ WORKDIR /build
 # Copy workspace manifest
 COPY Cargo.toml ./
 
-# Copy real Cargo.toml for the 11 crates in the sidecar's dep chain
+# Copy real Cargo.toml for the 12 crates in the sidecar's dep chain
 COPY crates/vlinder-podman-sidecar/Cargo.toml crates/vlinder-podman-sidecar/
 COPY crates/vlinder-provider-server/Cargo.toml crates/vlinder-provider-server/
 COPY crates/vlinder-core/Cargo.toml crates/vlinder-core/
@@ -32,6 +32,7 @@ COPY crates/vlinder-ollama/Cargo.toml crates/vlinder-ollama/
 COPY crates/vlinder-infer-openrouter/Cargo.toml crates/vlinder-infer-openrouter/
 COPY crates/vlinder-sqlite-kv/Cargo.toml crates/vlinder-sqlite-kv/
 COPY crates/vlinder-sqlite-vec/Cargo.toml crates/vlinder-sqlite-vec/
+COPY crates/vlinder-mcp/Cargo.toml crates/vlinder-mcp/
 
 # Stub Cargo.toml for workspace members NOT in the dep chain.
 # No [dependencies] avoids Cargo feature unification on tonic etc.
@@ -43,6 +44,9 @@ COPY crates/vlinder-podman-sidecar/stubs/vlinder-catalog.toml crates/vlinder-cat
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-podman-runtime.toml crates/vlinder-podman-runtime/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-lambda-runtime.toml crates/vlinder-lambda-runtime/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-git-dag.toml crates/vlinder-git-dag/Cargo.toml
+COPY crates/vlinder-podman-sidecar/stubs/vlinder-s3-storage.toml crates/vlinder-s3-storage/Cargo.toml
+COPY crates/vlinder-podman-sidecar/stubs/vlinder-openai-server.toml crates/vlinder-openai-server/Cargo.toml
+
 
 # Stub out src directories so Cargo can resolve the workspace
 RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs && \
@@ -50,6 +54,7 @@ RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs
     mkdir -p crates/vlinder-infer-openrouter/src && echo "" > crates/vlinder-infer-openrouter/src/lib.rs && \
     mkdir -p crates/vlinder-sqlite-vec/src && echo "" > crates/vlinder-sqlite-vec/src/lib.rs && \
     mkdir -p crates/vlinder-sqlite-kv/src && echo "" > crates/vlinder-sqlite-kv/src/lib.rs && \
+    mkdir -p crates/vlinder-mcp/src && echo "" > crates/vlinder-mcp/src/lib.rs && \
     mkdir -p crates/vlinder-amqp/src && echo "" > crates/vlinder-amqp/src/lib.rs && \
     mkdir -p crates/vlinder-nats/src && echo "" > crates/vlinder-nats/src/lib.rs && \
     mkdir -p crates/vlinder-sql-state/src && echo "" > crates/vlinder-sql-state/src/lib.rs && \
@@ -63,7 +68,9 @@ RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs
     mkdir -p crates/vlinder-catalog/src && echo "" > crates/vlinder-catalog/src/lib.rs && \
     mkdir -p crates/vlinder-podman-runtime/src && echo "" > crates/vlinder-podman-runtime/src/lib.rs && \
     mkdir -p crates/vlinder-lambda-runtime/src && echo "" > crates/vlinder-lambda-runtime/src/lib.rs && \
-    mkdir -p crates/vlinder-git-dag/src && echo "" > crates/vlinder-git-dag/src/lib.rs
+    mkdir -p crates/vlinder-git-dag/src && echo "" > crates/vlinder-git-dag/src/lib.rs && \
+    mkdir -p crates/vlinder-s3-storage/src && echo "" > crates/vlinder-s3-storage/src/lib.rs && \
+    mkdir -p crates/vlinder-openai-server/src && echo "" > crates/vlinder-openai-server/src/lib.rs
 
 # Proto build dependencies (only for dep-chain crates with gRPC)
 COPY crates/vlinder-nats/build.rs crates/vlinder-nats/
@@ -82,6 +89,7 @@ COPY crates/vlinder-ollama/src crates/vlinder-ollama/src
 COPY crates/vlinder-infer-openrouter/src crates/vlinder-infer-openrouter/src
 COPY crates/vlinder-sqlite-vec/src crates/vlinder-sqlite-vec/src
 COPY crates/vlinder-sqlite-kv/src crates/vlinder-sqlite-kv/src
+COPY crates/vlinder-mcp/src crates/vlinder-mcp/src
 COPY crates/vlinder-nats/src crates/vlinder-nats/src
 COPY crates/vlinder-amqp/src crates/vlinder-amqp/src
 COPY crates/vlinder-sql-state/src crates/vlinder-sql-state/src
@@ -95,6 +103,7 @@ RUN touch crates/vlinder-core/src/lib.rs \
           crates/vlinder-infer-openrouter/src/lib.rs \
           crates/vlinder-sqlite-vec/src/lib.rs \
           crates/vlinder-sqlite-kv/src/lib.rs \
+          crates/vlinder-mcp/src/lib.rs \
           crates/vlinder-amqp/src/lib.rs \
           crates/vlinder-nats/src/lib.rs \
           crates/vlinder-sql-state/src/lib.rs \

@@ -28,6 +28,12 @@ service Registry {
   rpc GetFleet(GetFleetRequest) returns (GetFleetResponse);
   rpc ListFleets(ListFleetsRequest) returns (ListFleetsResponse);
 
+  // MCP server operations
+  rpc RegisterMcpServer(RegisterMcpServerRequest) returns (RegisterMcpServerResponse);
+  rpc GetMcpServer(GetMcpServerRequest) returns (GetMcpServerResponse);
+  rpc ListMcpServers(ListMcpServersRequest) returns (ListMcpServersResponse);
+  rpc DeleteMcpServer(DeleteMcpServerRequest) returns (DeleteMcpServerResponse);
+
   // Job operations
   rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
   rpc GetJob(GetJobRequest) returns (GetJobResponse);
@@ -79,6 +85,7 @@ message Agent {
   string executable = 9;  // Native artifact ref (e.g., OCI image)
   repeated MountEntry mounts = 10;  // S3-backed read-only mounts (ADR 107)
   repeated ModelAlias models = 11;  // Agent's model alias → URI map
+  repeated string mcp = 12;  // MCP provider names
 }
 
 message ModelAlias {
@@ -248,6 +255,48 @@ message DeleteModelRequest {
 }
 
 message DeleteModelResponse {
+  bool deleted = 1;
+  optional string error = 2;
+}
+
+// =============================================================================
+// MCP Server
+// =============================================================================
+
+message McpServer {
+  string name = 1;
+  string url = 2;
+  string tools_json = 3;
+}
+
+message RegisterMcpServerRequest {
+  McpServer server = 1;
+}
+
+message RegisterMcpServerResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message GetMcpServerRequest {
+  string name = 1;
+}
+
+message GetMcpServerResponse {
+  optional McpServer server = 1;
+}
+
+message ListMcpServersRequest {}
+
+message ListMcpServersResponse {
+  repeated McpServer servers = 1;
+}
+
+message DeleteMcpServerRequest {
+  string name = 1;
+}
+
+message DeleteMcpServerResponse {
   bool deleted = 1;
   optional string error = 2;
 }

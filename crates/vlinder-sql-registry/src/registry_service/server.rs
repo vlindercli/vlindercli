@@ -5,14 +5,16 @@ use tonic::{Request, Response, Status};
 
 use super::proto::{
     self, registry_server::Registry as RegistryService, CreateJobRequest, CreateJobResponse,
-    DeleteAgentRequest, DeleteAgentResponse, DeleteModelRequest, DeleteModelResponse,
-    DeployAgentRequest, DeployAgentResponse, GetAgentByNameRequest, GetAgentRequest,
-    GetAgentResponse, GetAgentStateRequest, GetAgentStateResponse, GetFleetRequest,
-    GetFleetResponse, GetJobRequest, GetJobResponse, GetModelRequest, GetModelResponse,
+    DeleteAgentRequest, DeleteAgentResponse, DeleteMcpServerRequest, DeleteMcpServerResponse,
+    DeleteModelRequest, DeleteModelResponse, DeployAgentRequest, DeployAgentResponse,
+    GetAgentByNameRequest, GetAgentRequest, GetAgentResponse, GetAgentStateRequest,
+    GetAgentStateResponse, GetFleetRequest, GetFleetResponse, GetJobRequest, GetJobResponse,
+    GetMcpServerRequest, GetMcpServerResponse, GetModelRequest, GetModelResponse,
     ListAgentsRequest, ListAgentsResponse, ListFleetsRequest, ListFleetsResponse,
-    ListModelsRequest, ListModelsResponse, ListPendingJobsRequest, ListPendingJobsResponse,
-    PingRequest, RegisterAgentRequest, RegisterAgentResponse, RegisterFleetRequest,
-    RegisterFleetResponse, RegisterModelRequest, RegisterModelResponse, SemVer,
+    ListMcpServersRequest, ListMcpServersResponse, ListModelsRequest, ListModelsResponse,
+    ListPendingJobsRequest, ListPendingJobsResponse, PingRequest, RegisterAgentRequest,
+    RegisterAgentResponse, RegisterFleetRequest, RegisterFleetResponse, RegisterMcpServerRequest,
+    RegisterMcpServerResponse, RegisterModelRequest, RegisterModelResponse, SemVer,
     SubmitDeleteAgentRequest, SubmitDeleteAgentResponse, UpdateJobStatusRequest,
     UpdateJobStatusResponse,
 };
@@ -279,6 +281,78 @@ impl RegistryService for RegistryServer {
                 error: None,
             })),
             Err(e) => Ok(Response::new(DeleteModelResponse {
+                deleted: false,
+                error: Some(e.to_string()),
+            })),
+        }
+    }
+
+    async fn register_mcp_server(
+        &self,
+        request: Request<RegisterMcpServerRequest>,
+    ) -> Result<Response<RegisterMcpServerResponse>, Status> {
+        let req = request.into_inner();
+        let server = req
+            .server
+            .ok_or_else(|| Status::invalid_argument("missing mcp server"))?;
+
+        let domain_server = server
+            .try_into()
+            .map_err(|e: String| Status::invalid_argument(e))?;
+
+        match self.registry.register_mcp_server(domain_server).await {
+            Ok(()) => Ok(Response::new(RegisterMcpServerResponse {
+                success: true,
+                error: None,
+            })),
+            Err(e) => Ok(Response::new(RegisterMcpServerResponse {
+                success: false,
+                error: Some(e.to_string()),
+            })),
+        }
+    }
+
+    async fn get_mcp_server(
+        &self,
+        request: Request<GetMcpServerRequest>,
+    ) -> Result<Response<GetMcpServerResponse>, Status> {
+        let req = request.into_inner();
+        let server = self
+            .registry
+            .get_mcp_server(&req.name)
+            .await
+            .map(std::convert::Into::into);
+
+        Ok(Response::new(GetMcpServerResponse { server }))
+    }
+
+    async fn list_mcp_servers(
+        &self,
+        _request: Request<ListMcpServersRequest>,
+    ) -> Result<Response<ListMcpServersResponse>, Status> {
+        let servers = self
+            .registry
+            .get_mcp_servers()
+            .await
+            .into_iter()
+            .map(std::convert::Into::into)
+            .collect();
+
+        Ok(Response::new(ListMcpServersResponse { servers }))
+    }
+
+    async fn delete_mcp_server(
+        &self,
+        request: Request<DeleteMcpServerRequest>,
+    ) -> Result<Response<DeleteMcpServerResponse>, Status> {
+        let req = request.into_inner();
+
+        match self.registry.delete_mcp_server(&req.name).await {
+            Ok(deleted) => Ok(Response::new(DeleteMcpServerResponse {
+                deleted,
+                error: None,
+            })),
+            Err(e) => Ok(Response::new(DeleteMcpServerResponse {
                 deleted: false,
                 error: Some(e.to_string()),
             })),

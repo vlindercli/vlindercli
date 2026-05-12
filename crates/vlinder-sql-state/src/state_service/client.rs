@@ -204,7 +204,7 @@ impl DagStore for GrpcStateClient {
             message_id: msg.id.to_string(),
             state: msg.state.clone(),
             diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
-            payload: msg.payload.clone(),
+            payload: serde_json::to_vec(msg).unwrap_or_default(),
             dag_parent: msg.dag_parent.to_string(),
             dag_hash: dag_id.to_string(),
         };
@@ -262,7 +262,7 @@ impl DagStore for GrpcStateClient {
             message_id: msg.id.to_string(),
             state: msg.state.clone(),
             diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
-            payload: msg.payload.clone(),
+            payload: serde_json::to_vec(msg).unwrap_or_default(),
         };
 
         let mut client = self.client.clone();
@@ -299,13 +299,17 @@ impl DagStore for GrpcStateClient {
                     serde_json::from_slice(&n.diagnostics).unwrap_or_else(|_| {
                         vlinder_core::domain::RuntimeDiagnostics::placeholder(0)
                     });
-                Ok(Some(vlinder_core::domain::CompleteMessage {
-                    id: vlinder_core::domain::MessageId::from(n.message_id),
-                    dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
-                    state: n.state,
-                    diagnostics,
-                    payload: n.payload,
-                }))
+                Ok(Some(serde_json::from_slice(&n.payload).unwrap_or_else(
+                    |_| vlinder_core::domain::CompleteMessage {
+                        id: vlinder_core::domain::MessageId::from(n.message_id),
+                        dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
+                        state: n.state,
+                        diagnostics,
+                        content: None,
+                        tool_calls: None,
+                        payload: vec![],
+                    },
+                )))
             }
             None => Ok(None),
         }
@@ -660,6 +664,110 @@ impl DagStore for GrpcStateClient {
         }
     }
 
+    async fn insert_svc_request_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        session: &vlinder_core::domain::SessionId,
+        submission: &vlinder_core::domain::SubmissionId,
+        branch: vlinder_core::domain::BranchId,
+        agent: &vlinder_core::domain::AgentName,
+        service: vlinder_core::domain::ServiceBackendV2,
+        operation: vlinder_core::domain::ServiceOperation,
+        sequence: vlinder_core::domain::Sequence,
+        msg: &vlinder_core::domain::RequestV2,
+    ) -> Result<(), String> {
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot: {e}"))?;
+
+        let request = proto::InsertSvcRequestNodeRequest {
+            dag_hash: dag_id.to_string(),
+            parent_hash: parent_id.to_string(),
+            created_at: created_at.to_rfc3339(),
+            snapshot: snapshot_json,
+            session_id: session.as_str().to_string(),
+            submission_id: submission.as_str().to_string(),
+            branch_id: branch.as_i64(),
+            agent: agent.to_string(),
+            service_type: service.service_type_str().to_string(),
+            service_backend: service.backend_str().to_string(),
+            operation: operation.as_str().to_string(),
+            sequence: sequence.as_u32(),
+            message_id: msg.id.to_string(),
+            tool_call_id: msg.tool_call_id.to_string(),
+            arguments: msg.payload.clone(),
+            state: msg.state.clone(),
+            diagnostics: Some(serde_json::to_string(&msg.diagnostics).unwrap_or_default()),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .insert_svc_request_node(request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let resp = response.into_inner();
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_else(|| "unknown error".to_string()))
+        }
+    }
+
+    async fn insert_svc_response_node(
+        &self,
+        dag_id: &DagNodeId,
+        parent_id: &DagNodeId,
+        created_at: chrono::DateTime<chrono::Utc>,
+        state: &vlinder_core::domain::Snapshot,
+        session: &vlinder_core::domain::SessionId,
+        submission: &vlinder_core::domain::SubmissionId,
+        branch: vlinder_core::domain::BranchId,
+        agent: &vlinder_core::domain::AgentName,
+        service: vlinder_core::domain::ServiceBackendV2,
+        operation: vlinder_core::domain::ServiceOperation,
+        sequence: vlinder_core::domain::Sequence,
+        msg: &vlinder_core::domain::ResponseV2,
+    ) -> Result<(), String> {
+        let snapshot_json =
+            serde_json::to_string(state).map_err(|e| format!("serialize snapshot: {e}"))?;
+
+        let request = proto::InsertSvcResponseNodeRequest {
+            dag_hash: dag_id.to_string(),
+            parent_hash: parent_id.to_string(),
+            created_at: created_at.to_rfc3339(),
+            snapshot: snapshot_json,
+            session_id: session.as_str().to_string(),
+            submission_id: submission.as_str().to_string(),
+            branch_id: branch.as_i64(),
+            agent: agent.to_string(),
+            service_type: service.service_type_str().to_string(),
+            service_backend: service.backend_str().to_string(),
+            operation: operation.as_str().to_string(),
+            sequence: sequence.as_u32(),
+            message_id: msg.id.to_string(),
+            correlation_id: msg.correlation_id.to_string(),
+            payload: msg.payload.clone(),
+            state: msg.state.clone(),
+            diagnostics: Some(serde_json::to_string(&msg.diagnostics).unwrap_or_default()),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .insert_svc_response_node(request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let resp = response.into_inner();
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_else(|| "unknown error".to_string()))
+        }
+    }
+
     async fn get_invoke_node(
         &self,
         dag_hash: &DagNodeId,
@@ -702,14 +810,16 @@ impl DagStore for GrpcStateClient {
                             harness_version: String::new(),
                         }
                     });
-                let msg = vlinder_core::domain::InvokeMessage {
-                    id: vlinder_core::domain::MessageId::from(n.message_id),
-                    dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
-                    state: n.state,
-                    diagnostics,
-                    dag_parent: vlinder_core::domain::DagNodeId::from(n.dag_parent),
-                    payload: n.payload,
-                };
+                let msg: vlinder_core::domain::InvokeMessage = serde_json::from_slice(&n.payload)
+                    .unwrap_or_else(|_| vlinder_core::domain::InvokeMessage {
+                        id: vlinder_core::domain::MessageId::from(n.message_id.clone()),
+                        dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash.clone()),
+                        state: n.state.clone(),
+                        diagnostics,
+                        dag_parent: vlinder_core::domain::DagNodeId::from(n.dag_parent.clone()),
+                        history: vec![],
+                        current_input: vec![],
+                    });
                 Ok(Some((key, msg)))
             }
             None => Ok(None),
@@ -847,6 +957,7 @@ impl DagStore for GrpcStateClient {
         let req = proto::CreateSessionRequest {
             session: Some(proto::SessionProto {
                 id: session.id.as_str().to_string(),
+                external_id: session.external_id.as_str().to_string(),
                 name: session.name.clone(),
                 agent_name: session.agent.clone(),
                 default_branch: session.default_branch.as_i64(),
@@ -900,12 +1011,15 @@ impl DagStore for GrpcStateClient {
 
 fn proto_to_session(s: proto::SessionProto) -> Result<vlinder_core::domain::Session, String> {
     let id = vlinder_core::domain::SessionId::try_from(s.id)?;
+    let external_id = vlinder_core::domain::ExternalSessionId::new(&s.external_id)
+        .map_err(|e| format!("invalid external_id: {e}"))?;
     let created_at: chrono::DateTime<chrono::Utc> = s
         .created_at
         .parse()
         .map_err(|e| format!("invalid created_at: {e}"))?;
     Ok(vlinder_core::domain::Session {
         id,
+        external_id,
         name: s.name,
         agent: s.agent_name,
         default_branch: BranchId::from(s.default_branch),

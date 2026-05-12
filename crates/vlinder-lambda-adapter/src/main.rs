@@ -138,11 +138,13 @@ async fn send_error_result(
     let error_queue = create_invocation_queue(queue_backend, secret_url, store).await;
     match error_queue {
         Ok(eq) => {
-            shared::send_complete(
+            shared::send_complete_with_parsed(
                 eq.as_ref(),
                 key,
                 agent,
                 format!("[error] {error}").into_bytes(),
+                None,
+                None,
                 None,
                 vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
             )
@@ -296,11 +298,13 @@ async fn dispatch_loop(
                                 &region,
                                 result.duration_ms,
                             );
-                            shared::send_complete(
+                            shared::send_complete_with_parsed(
                                 queue.as_ref(),
                                 &key,
                                 agent,
                                 result.output,
+                                result.content,
+                                result.tool_calls,
                                 final_state,
                                 diagnostics,
                             )

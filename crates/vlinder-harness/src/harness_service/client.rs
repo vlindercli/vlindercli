@@ -5,7 +5,8 @@ use tonic::transport::Channel;
 
 use super::proto::{self, harness_client::HarnessClient};
 use vlinder_core::domain::{
-    BranchId, DagNodeId, ForkParams, Harness, HarnessType, PromoteParams, ResourceId, SessionId,
+    BranchId, DagNodeId, ExternalSessionId, ForkParams, Harness, HarnessType, Message,
+    ParsedResponse, PromoteParams, ResourceId, SessionId,
 };
 
 pub async fn ping_harness_async(addr: &str) -> Option<(u32, u32, u32)> {
@@ -38,9 +39,14 @@ impl Harness for GrpcHarnessClient {
         HarnessType::Grpc
     }
 
-    async fn start_session(&self, agent_name: &str) -> (SessionId, BranchId) {
+    async fn start_session(
+        &self,
+        agent_name: &str,
+        external_id: ExternalSessionId,
+    ) -> (SessionId, BranchId) {
         let request = proto::StartSessionRequest {
             agent_name: agent_name.to_string(),
+            external_id: external_id.as_str().to_string(),
         };
 
         let mut client = self.client.clone();
@@ -141,5 +147,15 @@ impl Harness for GrpcHarnessClient {
         } else {
             Ok(())
         }
+    }
+
+    async fn run_agent_with_messages(
+        &self,
+        _agent_id: &ResourceId,
+        _messages: Vec<Message>,
+        _session_id: SessionId,
+    ) -> Result<ParsedResponse, String> {
+        // Used by the OpenAI-compatible API server, not via gRPC.
+        Err("run_agent_with_messages is not supported via gRPC".to_string())
     }
 }

@@ -54,9 +54,9 @@ test-podman-runtime:
 # the Dockerfile itself). The hash is stored in target/.sidecar-hash.
 # If the hash matches AND the image exists, we skip the build.
 #
-# The 10 crates in the sidecar's dependency chain:
+# The 11 crates in the sidecar's dependency chain:
 #   vlinder-podman-sidecar, vlinder-provider-server, vlinder-core,
-#   vlinder-nats, vlinder-sql-registry, vlinder-sql-state,
+#   vlinder-nats, vlinder-amqp, vlinder-sql-registry, vlinder-sql-state,
 #   vlinder-ollama, vlinder-infer-openrouter, vlinder-sqlite-kv,
 #   vlinder-sqlite-vec
 #
@@ -86,6 +86,8 @@ build-sidecar:
         crates/vlinder-nats/src \
         crates/vlinder-nats/build.rs \
         crates/vlinder-nats/proto \
+        crates/vlinder-amqp/Cargo.toml \
+        crates/vlinder-amqp/src \
         crates/vlinder-sql-registry/Cargo.toml \
         crates/vlinder-sql-registry/src \
         crates/vlinder-sql-registry/build.rs \

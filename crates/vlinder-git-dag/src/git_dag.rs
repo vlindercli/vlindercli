@@ -50,8 +50,8 @@ use git2::{FileMode, Oid, Repository, RepositoryInitOptions, Signature, TreeBuil
 
 use vlinder_core::domain::{
     hash_dag_node, DagNodeId, DagWorker, DataMessageKind, DataRoutingKey, ForkMessage,
-    InvokeMessage, MessageType, Model, PromoteMessage, Registry, SessionMessageKind,
-    SessionRoutingKey,
+    InvokeMessage, MessageType, Model, PromoteMessage, Registry, RequestV2, ResponseV2,
+    SessionMessageKind, SessionRoutingKey, SvcMessageKind, SvcRoutingKey,
 };
 
 /// DAG worker that writes commits to a git repository.
@@ -243,6 +243,48 @@ impl GitDagWorker {
         let oid = self.write_blob(toml_str.as_bytes())?;
         tb.insert("diagnostics.toml", oid, FileMode::Blob.into())
             .map_err(|e| format!("insert diagnostics.toml failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Resolve the canonical parent node from HEAD's tree.
+    /// Returns `DagNodeId::root()` when there are no prior commits or no
+    /// session tree exists.
+    fn resolve_canonical_parent(
+        &self,
+        agent_name: &str,
+        session_id: &str,
+    ) -> Result<DagNodeId, String> {
+        let parent_commit_oid = self.head_commit();
+        match parent_commit_oid {
+            Some(oid) => {
+                let commit = self
+                    .repo
+                    .find_commit(oid)
+                    .map_err(|e| format!("find commit failed: {e}"))?;
+                let tree = commit
+                    .tree()
+                    .map_err(|e| format!("tree lookup failed: {e}"))?;
+                Ok(DagNodeId::from(self.session_canonical_hash_from_tree(
+                    &tree, agent_name, session_id,
+                )))
+            }
+            None => Ok(DagNodeId::root()),
+        }
+    }
+
+    /// Insert common scalar fields shared by all message types.
+    fn insert_common_fields(
+        &self,
+        tb: &mut TreeBuilder<'_>,
+        session_id: &str,
+        submission_id: &str,
+        created_at: &DateTime<Utc>,
+    ) -> Result<(), String> {
+        let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        self.insert_field(tb, "session_id", session_id)?;
+        self.insert_field(tb, "submission_id", submission_id)?;
+        self.insert_field(tb, "protocol_version", "v1")?;
+        self.insert_field(tb, "created_at", &created_at_str)?;
         Ok(())
     }
 
@@ -536,23 +578,7 @@ impl DagWorker for GitDagWorker {
             let agent_str = agent_name.to_string();
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(self.session_canonical_hash_from_tree(
-                        &tree,
-                        &agent_str,
-                        &session_id,
-                    ))
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(&agent_str, &session_id)?;
 
             // Build fork subtree
             let mut tb = self
@@ -620,23 +646,7 @@ impl DagWorker for GitDagWorker {
             let agent_str = agent_name.to_string();
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(self.session_canonical_hash_from_tree(
-                        &tree,
-                        &agent_str,
-                        &session_id,
-                    ))
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(&agent_str, &session_id)?;
 
             // Build promote subtree
             let mut tb = self
@@ -688,7 +698,6 @@ impl DagWorker for GitDagWorker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn on_invoke(
         &mut self,
         key: &DataRoutingKey,
@@ -714,21 +723,7 @@ impl DagWorker for GitDagWorker {
 
             // Resolve canonical parent from HEAD
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             // Build message subtree inline
             let mut tb = self
@@ -736,14 +731,10 @@ impl DagWorker for GitDagWorker {
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
-
-            let payload_oid = self.write_blob(&invoke.payload)?;
+            let payload_bytes = serde_json::to_vec(invoke).unwrap_or_default();
+            let payload_oid = self.write_blob(&payload_bytes)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
                 .map_err(|e| format!("insert payload failed: {e}"))?;
 
@@ -759,7 +750,7 @@ impl DagWorker for GitDagWorker {
             // Compute canonical hash
             let diagnostics_json = serde_json::to_vec(&invoke.diagnostics).unwrap_or_default();
             let canonical_hash = hash_dag_node(
-                &invoke.payload,
+                &payload_bytes,
                 &canonical_parent,
                 &MessageType::Invoke,
                 &diagnostics_json,
@@ -816,33 +807,14 @@ impl DagWorker for GitDagWorker {
             let msg_type = "complete";
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             let mut tb = self
                 .repo
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
             let payload_oid = self.write_blob(&complete.payload)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
@@ -895,7 +867,6 @@ impl DagWorker for GitDagWorker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn on_request(
         &mut self,
         key: &DataRoutingKey,
@@ -921,33 +892,14 @@ impl DagWorker for GitDagWorker {
             let msg_type = "request";
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             let mut tb = self
                 .repo
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
             let payload_oid = self.write_blob(&request.payload)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
@@ -1006,7 +958,6 @@ impl DagWorker for GitDagWorker {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn on_response(
         &mut self,
         key: &DataRoutingKey,
@@ -1032,33 +983,14 @@ impl DagWorker for GitDagWorker {
             let msg_type = "response";
 
             let parent_commit_oid = self.head_commit();
-            let canonical_parent = match parent_commit_oid {
-                Some(oid) => {
-                    let commit = self
-                        .repo
-                        .find_commit(oid)
-                        .map_err(|e| format!("find commit failed: {e}"))?;
-                    let tree = commit
-                        .tree()
-                        .map_err(|e| format!("tree lookup failed: {e}"))?;
-                    DagNodeId::from(
-                        self.session_canonical_hash_from_tree(&tree, agent_name, session_id),
-                    )
-                }
-                None => DagNodeId::root(),
-            };
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
 
             let mut tb = self
                 .repo
                 .treebuilder(None)
                 .map_err(|e| format!("treebuilder failed: {e}"))?;
 
-            let created_at_str = created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-            self.insert_field(&mut tb, "session_id", session_id)?;
-            self.insert_field(&mut tb, "submission_id", key.submission.as_str())?;
-            self.insert_field(&mut tb, "protocol_version", "v1")?;
-            self.insert_field(&mut tb, "created_at", &created_at_str)?;
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
 
             let payload_oid = self.write_blob(&response.payload)?;
             tb.insert("payload", payload_oid, FileMode::Blob.into())
@@ -1117,6 +1049,187 @@ impl DagWorker for GitDagWorker {
             tracing::error!(error = %e, "Failed to write git commit for response");
         }
     }
+
+    async fn on_svc_request(
+        &mut self,
+        key: &SvcRoutingKey,
+        request: &RequestV2,
+        created_at: DateTime<Utc>,
+    ) {
+        let SvcMessageKind::SvcRequest {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        else {
+            tracing::error!("on_svc_request called with non-SvcRequest key");
+            return;
+        };
+
+        let result: Result<(), String> = async {
+            let session_id = key.session.as_str();
+            let agent_name = agent.as_str();
+            let from = agent_name;
+            let to = &format!("{}.{}", service.service_type_str(), service.backend_str());
+            let msg_type = "svc_request";
+
+            let parent_commit_oid = self.head_commit();
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
+
+            let mut tb = self
+                .repo
+                .treebuilder(None)
+                .map_err(|e| format!("treebuilder failed: {e}"))?;
+
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
+
+            let payload_bytes = request.payload.clone();
+            let payload_oid = self.write_blob(&payload_bytes)?;
+            tb.insert("payload", payload_oid, FileMode::Blob.into())
+                .map_err(|e| format!("insert payload failed: {e}"))?;
+
+            self.insert_field(&mut tb, "type", "svc_request")?;
+            self.insert_field(&mut tb, "agent_id", agent_name)?;
+            self.insert_field(&mut tb, "service", service.service_type_str())?;
+            self.insert_field(&mut tb, "backend", service.backend_str())?;
+            self.insert_field(&mut tb, "operation", operation.as_str())?;
+            self.insert_field(&mut tb, "sequence", &sequence.as_u32().to_string())?;
+            self.insert_field(&mut tb, "tool_call_id", request.tool_call_id.as_str())?;
+            if let Some(ref state) = request.state {
+                self.insert_field(&mut tb, "state", state)?;
+            }
+            self.insert_diagnostics_toml(&mut tb, &request.diagnostics)?;
+
+            let diagnostics_json = serde_json::to_vec(&request.diagnostics).unwrap_or_default();
+            let canonical_hash = hash_dag_node(
+                &payload_bytes,
+                &canonical_parent,
+                &MessageType::SvcRequest,
+                &diagnostics_json,
+                &key.session,
+            );
+            self.insert_field(&mut tb, "hash", canonical_hash.as_str())?;
+
+            let msg_tree_oid = tb
+                .write()
+                .map_err(|e| format!("write message subtree failed: {e}"))?;
+
+            self.nest_and_commit(
+                msg_tree_oid,
+                agent_name,
+                session_id,
+                from,
+                to,
+                msg_type,
+                "main",
+                parent_commit_oid,
+                created_at,
+                key.submission.as_str(),
+                request.state.as_deref(),
+                None,
+                "v1",
+                None,
+            )
+            .await
+        }
+        .await;
+
+        if let Err(e) = result {
+            tracing::error!(error = %e, "Failed to write git commit for svc_request");
+        }
+    }
+
+    async fn on_svc_response(
+        &mut self,
+        key: &SvcRoutingKey,
+        response: &ResponseV2,
+        created_at: DateTime<Utc>,
+    ) {
+        let SvcMessageKind::SvcResponse {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        else {
+            tracing::error!("on_svc_response called with non-SvcResponse key");
+            return;
+        };
+
+        let result: Result<(), String> = async {
+            let session_id = key.session.as_str();
+            let agent_name = agent.as_str();
+            let from = &format!("{}.{}", service.service_type_str(), service.backend_str());
+            let to = agent_name;
+            let msg_type = "svc_response";
+
+            let parent_commit_oid = self.head_commit();
+            let canonical_parent = self.resolve_canonical_parent(agent_name, session_id)?;
+
+            let mut tb = self
+                .repo
+                .treebuilder(None)
+                .map_err(|e| format!("treebuilder failed: {e}"))?;
+
+            self.insert_common_fields(&mut tb, session_id, key.submission.as_str(), &created_at)?;
+
+            let payload_bytes = &response.payload;
+            let payload_oid = self.write_blob(payload_bytes)?;
+            tb.insert("payload", payload_oid, FileMode::Blob.into())
+                .map_err(|e| format!("insert payload failed: {e}"))?;
+
+            self.insert_field(&mut tb, "type", "svc_response")?;
+            self.insert_field(&mut tb, "agent_id", agent_name)?;
+            self.insert_field(&mut tb, "service", service.service_type_str())?;
+            self.insert_field(&mut tb, "backend", service.backend_str())?;
+            self.insert_field(&mut tb, "operation", operation.as_str())?;
+            self.insert_field(&mut tb, "sequence", &sequence.as_u32().to_string())?;
+            self.insert_field(&mut tb, "correlation_id", response.correlation_id.as_str())?;
+
+            if let Some(ref state) = response.state {
+                self.insert_field(&mut tb, "state", state)?;
+            }
+            self.insert_diagnostics_toml(&mut tb, &response.diagnostics)?;
+
+            let diagnostics_json = serde_json::to_vec(&response.diagnostics).unwrap_or_default();
+            let canonical_hash = hash_dag_node(
+                payload_bytes,
+                &canonical_parent,
+                &MessageType::SvcResponse,
+                &diagnostics_json,
+                &key.session,
+            );
+            self.insert_field(&mut tb, "hash", canonical_hash.as_str())?;
+
+            let msg_tree_oid = tb
+                .write()
+                .map_err(|e| format!("write message subtree failed: {e}"))?;
+
+            self.nest_and_commit(
+                msg_tree_oid,
+                agent_name,
+                session_id,
+                from,
+                to,
+                msg_type,
+                "main",
+                parent_commit_oid,
+                created_at,
+                key.submission.as_str(),
+                response.state.as_deref(),
+                None,
+                "v1",
+                None,
+            )
+            .await
+        }
+        .await;
+
+        if let Err(e) = result {
+            tracing::error!(error = %e, "Failed to write git commit for svc_response");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1126,8 +1239,10 @@ mod tests {
     use vlinder_core::domain::{
         Agent, AgentName, BranchId, CompleteMessage, ContainerId, DagNodeId, DataMessageKind,
         DataRoutingKey, ForkMessage, HarnessType, InMemoryRegistry, InMemorySecretStore,
-        InvokeDiagnostics, InvokeMessage, MessageId, RuntimeDiagnostics, RuntimeInfo, RuntimeType,
-        SecretStore, SessionId, SessionRoutingKey, SubmissionId,
+        InvokeDiagnostics, InvokeMessage, Message, MessageId, RequestV2, ResponseV2,
+        RuntimeDiagnostics, RuntimeInfo, RuntimeType, SecretStore, Sequence, ServiceBackendV2,
+        ServiceOperation, SessionId, SessionRoutingKey, SubmissionId, SvcMessageKind,
+        SvcRequestDiagnostics, SvcResponseDiagnostics, SvcRoutingKey, ToolCallId,
     };
 
     fn test_agent_id() -> AgentName {
@@ -1152,6 +1267,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
             payload: payload.to_vec(),
         }
     }
@@ -1288,6 +1405,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: Some("state-abc123".to_string()),
             diagnostics: RuntimeDiagnostics::placeholder(100),
+            content: None,
+            tool_calls: None,
             payload: b"answer".to_vec(),
         };
         let ts2 = DateTime::from_timestamp(1001, 0).unwrap();
@@ -1386,6 +1505,8 @@ mod tests {
                 duration_ms: 2300,
                 health: None,
             },
+            content: None,
+            tool_calls: None,
             payload: b"done".to_vec(),
         };
         let ts = DateTime::from_timestamp(1003, 0).unwrap();
@@ -1415,6 +1536,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: Some("abc123state".to_string()),
             diagnostics: RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
             payload: b"hello".to_vec(),
         };
         let ts = DateTime::from_timestamp(1000, 0).unwrap();
@@ -1442,6 +1565,8 @@ mod tests {
             dag_id: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(100),
+            content: None,
+            tool_calls: None,
             payload: b"done".to_vec(),
         };
         let ts = DateTime::from_timestamp(1000, 0).unwrap();
@@ -1736,6 +1861,7 @@ mod tests {
         payload: &[u8],
         epoch_secs: i64,
     ) -> (DataRoutingKey, InvokeMessage, DateTime<Utc>) {
+        let content = String::from_utf8_lossy(payload).to_string();
         let key = DataRoutingKey {
             session: SessionId::try_from(SESSION.to_string()).unwrap(),
             branch: BranchId::from(1),
@@ -1754,7 +1880,8 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: payload.to_vec(),
+            history: vec![],
+            current_input: vec![Message::User { content }],
         };
         let created_at = DateTime::from_timestamp(epoch_secs, 0).unwrap();
         (key, msg, created_at)
@@ -1807,7 +1934,11 @@ mod tests {
         assert_eq!(show("harness"), "cli");
         assert_eq!(show("runtime"), "container");
         assert_eq!(show("agent_id"), "support-agent");
-        assert_eq!(show("payload"), "payload data");
+        // Payload now contains the full serialized InvokeMessage JSON
+        // (history + current_input replaced the old flat text payload)
+        let payload_json = show("payload");
+        let parsed: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
+        assert_eq!(parsed["current_input"][0]["content"], "payload data");
         assert_eq!(show("protocol_version"), "v1");
         assert!(!show("hash").is_empty());
     }
@@ -1832,5 +1963,239 @@ mod tests {
         // Complete should parent on invoke
         let parents = git(tmp.path(), &["log", "--format=%P", "-1", "main"]).unwrap();
         assert!(!parents.is_empty(), "complete should have a parent");
+    }
+    // ========================================================================
+    // SvcRequest message tests
+    // ========================================================================
+
+    fn test_svc_request_key(session: &str) -> SvcRoutingKey {
+        SvcRoutingKey {
+            session: SessionId::try_from(session.to_string()).unwrap(),
+            branch: BranchId::from(1),
+            submission: SubmissionId::from("sub-1".to_string()),
+            kind: SvcMessageKind::SvcRequest {
+                agent: test_agent_id(),
+                service: ServiceBackendV2::from_parts("mcp", "brave").unwrap(),
+                operation: ServiceOperation::new("web_search"),
+                sequence: Sequence::from(1u32),
+            },
+        }
+    }
+
+    fn test_svc_request_msg() -> RequestV2 {
+        RequestV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            tool_call_id: ToolCallId::from("call_abc123".to_string()),
+            payload: serde_json::to_vec(&serde_json::json!({"query": "test"})).unwrap(),
+        }
+    }
+
+    async fn send_svc_request(worker: &mut GitDagWorker, epoch_secs: i64) {
+        let key = test_svc_request_key(SESSION);
+        let msg = test_svc_request_msg();
+        let ts = DateTime::from_timestamp(epoch_secs, 0).unwrap();
+        worker.on_svc_request(&key, &msg, ts).await;
+    }
+
+    #[tokio::test]
+    async fn svc_request_creates_commit() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_request(&mut worker, 1000).await;
+
+        let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
+        assert_eq!(count, "2"); // initial + svc_request
+    }
+
+    #[tokio::test]
+    async fn svc_request_directory_has_per_field_files() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_request(&mut worker, 1000).await;
+
+        let dir = "001-support-agent-svc_request";
+        let show = |field: &str| show_session_file(tmp.path(), dir, field);
+
+        assert_eq!(show("type").unwrap(), "svc_request");
+        assert_eq!(show("session_id").unwrap(), SESSION);
+        assert_eq!(show("submission_id").unwrap(), "sub-1");
+        assert_eq!(show("agent_id").unwrap(), "support-agent");
+        assert_eq!(show("service").unwrap(), "mcp");
+        assert_eq!(show("backend").unwrap(), "brave");
+        assert_eq!(show("operation").unwrap(), "web_search");
+        assert_eq!(show("sequence").unwrap(), "1");
+        assert_eq!(show("tool_call_id").unwrap(), "call_abc123");
+        assert_eq!(show("protocol_version").unwrap(), "v1");
+        let payload_json = show("payload").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&payload_json).unwrap();
+        assert_eq!(parsed["query"], "test");
+        assert!(!show("hash").unwrap().is_empty());
+        let diag = show("diagnostics.toml").unwrap();
+        assert!(diag.contains("server"), "diag: {diag}");
+        // state should be absent when None
+        let result = show("state");
+        assert!(result.is_err(), "should not have state file when None");
+    }
+
+    #[tokio::test]
+    async fn svc_request_state_file_present_when_set() {
+        let (mut worker, tmp) = test_worker();
+        let key = test_svc_request_key(SESSION);
+        let msg = RequestV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            state: Some("state-abc123".to_string()),
+            diagnostics: SvcRequestDiagnostics::default(),
+            tool_call_id: ToolCallId::from("call_abc123".to_string()),
+            payload: serde_json::to_vec(&serde_json::json!({"query": "test"})).unwrap(),
+        };
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        worker.on_svc_request(&key, &msg, ts).await;
+
+        let state =
+            show_session_file(tmp.path(), "001-support-agent-svc_request", "state").unwrap();
+        assert_eq!(state, "state-abc123");
+    }
+
+    #[tokio::test]
+    async fn svc_request_commit_message_format() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_request(&mut worker, 1000).await;
+
+        let subject = git(tmp.path(), &["log", "-1", "--format=%s", "main"]).unwrap();
+        assert_eq!(subject, "svc_request: support-agent \u{2192} mcp.brave");
+    }
+
+    // ========================================================================
+    // SvcResponse message tests
+    // ========================================================================
+
+    fn test_svc_response_key(session: &str) -> SvcRoutingKey {
+        SvcRoutingKey {
+            session: SessionId::try_from(session.to_string()).unwrap(),
+            branch: BranchId::from(1),
+            submission: SubmissionId::from("sub-1".to_string()),
+            kind: SvcMessageKind::SvcResponse {
+                agent: test_agent_id(),
+                service: ServiceBackendV2::from_parts("mcp", "brave").unwrap(),
+                operation: ServiceOperation::new("web_search"),
+                sequence: Sequence::from(1u32),
+            },
+        }
+    }
+
+    fn test_svc_response_msg() -> ResponseV2 {
+        ResponseV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            payload: b"result text".to_vec(),
+        }
+    }
+
+    async fn send_svc_response(worker: &mut GitDagWorker, epoch_secs: i64) {
+        let key = test_svc_response_key(SESSION);
+        let msg = test_svc_response_msg();
+        let ts = DateTime::from_timestamp(epoch_secs, 0).unwrap();
+        worker.on_svc_response(&key, &msg, ts).await;
+    }
+
+    #[tokio::test]
+    async fn svc_response_creates_commit() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_response(&mut worker, 1000).await;
+
+        let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
+        assert_eq!(count, "2"); // initial + svc_response
+    }
+
+    #[tokio::test]
+    async fn svc_response_directory_has_per_field_files() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_response(&mut worker, 1000).await;
+
+        let dir = "001-mcp.brave-svc_response";
+        let show = |field: &str| show_session_file(tmp.path(), dir, field);
+
+        assert_eq!(show("type").unwrap(), "svc_response");
+        assert_eq!(show("session_id").unwrap(), SESSION);
+        assert_eq!(show("submission_id").unwrap(), "sub-1");
+        assert_eq!(show("agent_id").unwrap(), "support-agent");
+        assert_eq!(show("service").unwrap(), "mcp");
+        assert_eq!(show("backend").unwrap(), "brave");
+        assert_eq!(show("operation").unwrap(), "web_search");
+        assert_eq!(show("sequence").unwrap(), "1");
+        assert!(!show("correlation_id").unwrap().is_empty());
+        assert_eq!(show("protocol_version").unwrap(), "v1");
+        assert!(
+            !show("payload").unwrap().is_empty(),
+            "payload should not be empty"
+        );
+        assert_eq!(show("payload").unwrap(), "result text");
+        assert!(!show("hash").unwrap().is_empty());
+        let diag = show("diagnostics.toml").unwrap();
+        assert!(diag.contains("server"), "diag: {diag}");
+        // state should be absent when None
+        let result = show("state");
+        assert!(result.is_err(), "should not have state file when None");
+    }
+
+    #[tokio::test]
+    async fn svc_response_error_has_no_is_error_file() {
+        let (mut worker, tmp) = test_worker();
+        let key = test_svc_response_key(SESSION);
+        let msg = ResponseV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            correlation_id: MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            payload: b"error occurred".to_vec(),
+        };
+        let ts = DateTime::from_timestamp(1000, 0).unwrap();
+        worker.on_svc_response(&key, &msg, ts).await;
+
+        // is_error was removed from ResponseV2; verify no is_error file in git
+        let result = show_session_file(tmp.path(), "001-mcp.brave-svc_response", "is_error");
+        assert!(
+            result.is_err(),
+            "is_error should not have a file when removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn svc_response_commit_message_format() {
+        let (mut worker, tmp) = test_worker();
+        send_svc_response(&mut worker, 1000).await;
+
+        let subject = git(tmp.path(), &["log", "-1", "--format=%s", "main"]).unwrap();
+        assert_eq!(subject, "svc_response: mcp.brave \u{2192} support-agent");
+    }
+
+    #[tokio::test]
+    async fn svc_request_response_chain() {
+        let (mut worker, tmp) = test_worker();
+
+        // Send svc_request, then svc_response for the same session
+        let req_key = test_svc_request_key(SESSION);
+        let req_msg = test_svc_request_msg();
+        let t1 = DateTime::from_timestamp(1000, 0).unwrap();
+        worker.on_svc_request(&req_key, &req_msg, t1).await;
+
+        let resp_key = test_svc_response_key(SESSION);
+        let resp_msg = test_svc_response_msg();
+        let t2 = DateTime::from_timestamp(1001, 0).unwrap();
+        worker.on_svc_response(&resp_key, &resp_msg, t2).await;
+
+        // commit count = 3 (initial + request + response)
+        let count = git(tmp.path(), &["rev-list", "--count", "main"]).unwrap();
+        assert_eq!(count, "3");
+
+        // Response should parent on request
+        let parents = git(tmp.path(), &["log", "--format=%P", "-1", "main"]).unwrap();
+        assert!(!parents.is_empty(), "response should have a parent");
     }
 }

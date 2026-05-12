@@ -26,6 +26,8 @@ pub struct ProviderServer {
 struct ServerState {
     handler: InvokeHandler,
     hosts: Vec<ProviderHost>,
+    /// Pre-computed tool definitions (`OpenAI` format) for the agent's MCP servers.
+    tools: Vec<serde_json::Value>,
 }
 
 impl ProviderServer {
@@ -39,6 +41,7 @@ impl ProviderServer {
         hosts: Vec<ProviderHost>,
         state: Arc<RwLock<Option<String>>>,
         port: u16,
+        tools: Vec<serde_json::Value>,
     ) -> Self {
         let hosts: Vec<ProviderHost> = hosts
             .into_iter()
@@ -48,7 +51,11 @@ impl ProviderServer {
             })
             .collect();
 
-        let server_state = Arc::new(ServerState { handler, hosts });
+        let server_state = Arc::new(ServerState {
+            handler,
+            hosts,
+            tools,
+        });
 
         let router = axum::Router::new()
             .fallback(handle_request)
@@ -113,6 +120,23 @@ async fn handle_request(
         host = %host, path = %path, method = %method,
         "Provider server received request"
     );
+
+    // Metadata endpoints — serve from local state (no body read needed)
+    if host.starts_with("metadata.vlinder.local") {
+        if method == Method::GET && path == "/v1/tools" {
+            let tools_json =
+                serde_json::to_string(&state.tools).unwrap_or_else(|_| "[]".to_string());
+            return axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(tools_json))
+                .unwrap();
+        }
+        return axum::response::Response::builder()
+            .status(404)
+            .body(axum::body::Body::from("not found"))
+            .unwrap();
+    }
 
     let Ok(body) = axum::body::to_bytes(request.into_body(), usize::MAX).await else {
         return axum::response::Response::builder()
@@ -275,5 +299,136 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(err.0, 404);
+    }
+
+    // ── Metadata endpoint (`metadata.vlinder.local/v1/tools`) ──
+
+    fn metadata_tools_state() -> Arc<ServerState> {
+        use crate::handler::InvokeHandler;
+        use std::sync::RwLock;
+        use vlinder_core::domain::{AgentName, BranchId, SessionId, SubmissionId};
+        use vlinder_core::queue::InMemoryQueue;
+
+        let queue = Arc::new(InMemoryQueue::new());
+        let state = Arc::new(RwLock::new(None::<String>));
+        let handler = InvokeHandler::new(
+            queue,
+            BranchId::from(1),
+            SubmissionId::new(),
+            SessionId::new(),
+            AgentName::new("test-agent"),
+            state,
+        );
+        Arc::new(ServerState {
+            handler,
+            hosts: vec![],
+            tools: vec![serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "test_tool",
+                    "description": "A test tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    }
+                }
+            })],
+        })
+    }
+
+    #[tokio::test]
+    async fn metadata_tools_returns_tools() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = metadata_tools_state();
+        let router = axum::Router::new()
+            .fallback(handle_request)
+            .with_state(state);
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/v1/tools")
+            .header("host", "metadata.vlinder.local:3544")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON");
+        assert!(parsed.is_array());
+        assert_eq!(parsed.as_array().unwrap().len(), 1);
+        assert_eq!(parsed[0]["function"]["name"].as_str().unwrap(), "test_tool");
+    }
+
+    #[tokio::test]
+    async fn metadata_wrong_host_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = metadata_tools_state();
+        let router = axum::Router::new()
+            .fallback(handle_request)
+            .with_state(state);
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/v1/tools")
+            .header("host", "other.vlinder.local:3544")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn metadata_wrong_path_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = metadata_tools_state();
+        let router = axum::Router::new()
+            .fallback(handle_request)
+            .with_state(state);
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/v1/other")
+            .header("host", "metadata.vlinder.local:3544")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn old_tools_path_returns_404() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = metadata_tools_state();
+        let router = axum::Router::new()
+            .fallback(handle_request)
+            .with_state(state);
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/tools")
+            .header("host", "metadata.vlinder.local:3544")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -67,6 +67,59 @@ impl std::fmt::Display for Operation {
     }
 }
 
+/// Service operation for V2 service dispatch — arbitrary string
+/// enabling tool names ("`charge_money`"), service-specific
+/// operations, and per-operation observability.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ServiceOperation(pub String);
+
+impl ServiceOperation {
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ServiceOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for ServiceOperation {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+mod service_operation_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip() {
+        let op = ServiceOperation::new("test");
+        assert_eq!(op.as_str(), "test");
+        assert_eq!(op.0, "test");
+    }
+
+    #[test]
+    fn display() {
+        let op = ServiceOperation::new("echo");
+        assert_eq!(format!("{op}"), "echo");
+    }
+
+    #[test]
+    fn as_ref() {
+        let op = ServiceOperation::new("foo");
+        let s: &str = op.as_ref();
+        assert_eq!(s, "foo");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

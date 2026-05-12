@@ -47,11 +47,13 @@ pub async fn handle_invoke(
                 ctx.image_ref.as_ref(),
                 ctx.image_digest.as_ref(),
             );
-            shared::send_complete(
+            shared::send_complete_with_parsed(
                 ctx.queue.as_ref(),
                 key,
                 agent,
                 result.output,
+                result.content,
+                result.tool_calls,
                 result.state,
                 diagnostics,
             )
@@ -59,11 +61,13 @@ pub async fn handle_invoke(
         }
         Err(e) => {
             tracing::warn!(event = "dispatch.error", error = %e, "Dispatch failed");
-            shared::send_complete(
+            shared::send_complete_with_parsed(
                 ctx.queue.as_ref(),
                 key,
                 agent,
                 format!("[error] {e}").into_bytes(),
+                None,
+                None,
                 None,
                 RuntimeDiagnostics::placeholder(0),
             )

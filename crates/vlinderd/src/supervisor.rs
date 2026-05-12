@@ -180,6 +180,9 @@ impl Supervisor {
             counts.storage.vector.sqlite
         );
 
+        // MCP service worker
+        spawn_n!(WorkerRole::Mcp, counts.mcp);
+
         // Infra plane worker
         spawn_n!(WorkerRole::Infra, counts.infra);
 
@@ -204,6 +207,9 @@ impl Supervisor {
 
         // Session viewer
         spawn_n!(WorkerRole::SessionViewer, counts.session_viewer);
+
+        // OpenAI-compatible API server
+        spawn_n!(WorkerRole::ApiServer, counts.api_server);
 
         tracing::info!(
             task_count = handles.len(),

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::super::diagnostics::InvokeDiagnostics;
 use super::identity::{DagNodeId, MessageId};
+use crate::domain::Message;
 
 /// Data-plane invoke payload — everything NOT in the subject.
 ///
@@ -21,8 +22,12 @@ pub struct InvokeMessage {
     pub state: Option<String>,
     pub diagnostics: InvokeDiagnostics,
     pub dag_parent: DagNodeId,
-    #[serde(with = "super::base64_serde")]
-    pub payload: Vec<u8>,
+    /// Prior conversation context from previous invocations.
+    /// Empty on the first invocation of a round.
+    #[serde(default)]
+    pub history: Vec<Message>,
+    /// The new input that triggered this invocation.
+    pub current_input: Vec<Message>,
 }
 
 #[cfg(test)]
@@ -39,33 +44,18 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello world".to_vec(),
+            history: vec![Message::User {
+                content: "hi".to_string(),
+            }],
+            current_input: vec![Message::User {
+                content: "hello world".to_string(),
+            }],
         };
 
         let json = serde_json::to_string(&msg).unwrap();
         let back: InvokeMessage = serde_json::from_str(&json).unwrap();
 
         assert_eq!(back, msg);
-    }
-
-    #[test]
-    fn invoke_message_payload_is_base64() {
-        let msg = InvokeMessage {
-            id: MessageId::from("msg-1".to_string()),
-            dag_id: DagNodeId::root(),
-            state: None,
-            diagnostics: InvokeDiagnostics {
-                harness_version: "0.1.0".to_string(),
-            },
-            dag_parent: DagNodeId::root(),
-            payload: b"hello world".to_vec(),
-        };
-
-        let json = serde_json::to_string(&msg).unwrap();
-        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
-
-        assert!(raw["payload"].is_string());
-        assert_eq!(raw["payload"].as_str().unwrap(), "aGVsbG8gd29ybGQ=");
     }
 
     #[test]
@@ -78,7 +68,10 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"test".to_vec(),
+            history: vec![],
+            current_input: vec![Message::User {
+                content: "test".to_string(),
+            }],
         };
 
         let json = serde_json::to_string(&msg).unwrap();
