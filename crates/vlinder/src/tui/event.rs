@@ -2,9 +2,7 @@
 //! state mutations on `App` and high-level outcomes for the run loop.
 //! Knows nothing about rendering.
 
-use ratatui::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
-};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::App;
 
@@ -22,19 +20,7 @@ pub enum EventOutcome {
 pub fn handle_event(ev: &Event, app: &mut App) -> EventOutcome {
     match ev {
         Event::Key(key) => handle_key(*key, app),
-        Event::Mouse(mouse) => {
-            handle_mouse(*mouse, app);
-            EventOutcome::Continue
-        }
         _ => EventOutcome::Continue,
-    }
-}
-
-fn handle_mouse(mouse: MouseEvent, app: &mut App) {
-    match mouse.kind {
-        MouseEventKind::ScrollUp => app.scroll_up(3),
-        MouseEventKind::ScrollDown => app.scroll_down(3),
-        _ => {}
     }
 }
 
@@ -73,6 +59,15 @@ fn handle_key(key: KeyEvent, app: &mut App) -> EventOutcome {
         KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
             app.tools_expanded = !app.tools_expanded;
             app.jump_bottom();
+            EventOutcome::Continue
+        }
+
+        KeyCode::Up if key.modifiers.is_empty() && app.textarea.lines().len() <= 1 => {
+            app.scroll_up(1);
+            EventOutcome::Continue
+        }
+        KeyCode::Down if key.modifiers.is_empty() && app.textarea.lines().len() <= 1 => {
+            app.scroll_down(1);
             EventOutcome::Continue
         }
 

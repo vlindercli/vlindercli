@@ -4,11 +4,9 @@
 //! painted — only when to do each.
 
 use std::future::Future;
-use std::io::stdout;
 use std::time::Duration;
 
-use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
-use ratatui::crossterm::execute;
+use ratatui::crossterm::event;
 use ratatui::prelude::Backend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
@@ -36,8 +34,6 @@ where
     Fut: Future<Output = RunResult>,
 {
     let mut terminal = ratatui::init();
-    let _ = execute!(stdout(), EnableMouseCapture);
-
     splash_phase(&mut terminal);
 
     let mut app = App::new();
@@ -59,7 +55,6 @@ where
         }
     }
 
-    let _ = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
 }
 
