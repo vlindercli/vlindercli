@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Borders};
-use ratatui_textarea::TextArea;
+use ratatui_textarea::{TextArea, WrapMode};
 
 // ── Spinner ──────────────────────────────────────────────────────────────
 
@@ -157,4 +157,5 @@ pub fn configure_input(textarea: &mut TextArea<'static>) {
     );
     textarea.set_cursor_line_style(Style::default());
     textarea.set_placeholder_text("Type a message, then press Enter...");
+    textarea.set_wrap_mode(WrapMode::WordOrGlyph);
 }

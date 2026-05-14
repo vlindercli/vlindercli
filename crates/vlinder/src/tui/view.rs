@@ -66,7 +66,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
 
     // Input height grows with content (+2 for the rounded border).
-    let input_inner = u16::try_from(app.textarea.lines().len().max(1)).unwrap_or(u16::MAX);
+    let inner_w = (frame.area().width.saturating_sub(2)).max(1) as usize;
+    let visual_rows: usize = app
+        .textarea
+        .lines()
+        .iter()
+        .map(|line| line.chars().count().max(1).div_ceil(inner_w))
+        .sum();
+    let input_inner = u16::try_from(visual_rows.max(1)).unwrap_or(u16::MAX);
     let input_height = input_inner.saturating_add(2).clamp(3, 10);
 
     let chunks = Layout::vertical([
@@ -297,4 +304,72 @@ fn count_wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
         })
         .sum();
     u16::try_from(total).unwrap_or(u16::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    use super::super::app::App;
+    use super::draw;
+
+    #[test]
+    fn test_input_soft_wrap_grows_box() {
+        let mut app = App::new();
+        // 300 'A's in an 80-wide terminal -> wraps to ~4 visual rows
+        // at 78-wide inner width (80 - 2 for borders).
+        let long_str = "A".repeat(300);
+        app.textarea.insert_str(&long_str);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // Find the input box via its rounded border characters.
+        let mut top_y = None;
+        let mut bot_y = None;
+        for y in 0..40u16 {
+            let cell = &buffer[(0, y)];
+            let ch = cell.symbol().chars().next().unwrap_or(' ');
+            if ch == '\u{256d}' {
+                top_y = Some(y);
+            }
+            if ch == '\u{2570}' {
+                bot_y = Some(y);
+            }
+        }
+
+        let top = top_y.expect("input box top border not found");
+        let bot = bot_y.expect("input box bottom border not found");
+        let height = bot - top + 1;
+
+        // Without soft-wrap, the box would be 3 rows (1 logical line + 2
+        // border). With wrap enabled and 300 chars at 78-wide inner width,
+        // it wraps to ceil(300/78) = 4 visual rows + 2 border = 6 rows.
+        assert!(
+            height > 3,
+            "input box height {height} should grow beyond 3 with long input",
+        );
+
+        // Verify that content actually wraps: the first character 'A' should
+        // appear on the first content row (rather than being scrolled away by
+        // horizontal scrolling).
+        let first_content_row = top + 1;
+        let first_char = buffer[(1, first_content_row)].symbol();
+        assert_eq!(
+            first_char, "A",
+            "first char should be visible with soft-wrap"
+        );
+
+        // Verify that characters from a wrapped portion appear on a
+        // subsequent row. With 78-wide inner, index 78 lands on row 2 of
+        // the content area.
+        let second_content_row = first_content_row + 1;
+        let char_on_wrapped = buffer[(1, second_content_row)].symbol();
+        assert_eq!(
+            char_on_wrapped, "A",
+            "wrapped content should appear on row below"
+        );
+    }
 }
