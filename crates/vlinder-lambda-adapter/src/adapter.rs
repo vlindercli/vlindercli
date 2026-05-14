@@ -162,6 +162,7 @@ mod tests {
         let complete = vlinder_core::domain::CompleteMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: Some("final-state-hash".to_string()),
             diagnostics: diag,
             content: None,
@@ -188,6 +189,7 @@ mod tests {
         let complete = vlinder_core::domain::CompleteMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: None,
             diagnostics: diag,
             content: None,

@@ -17,6 +17,7 @@ use crate::domain::SvcRequestDiagnostics;
 pub struct RequestV2 {
     pub id: MessageId,
     pub dag_id: DagNodeId,
+    pub dag_parent: DagNodeId,
     pub tool_call_id: ToolCallId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
@@ -36,6 +37,7 @@ mod tests {
         let msg = RequestV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             tool_call_id: ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
@@ -51,6 +53,7 @@ mod tests {
         let msg = RequestV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             tool_call_id: ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
@@ -66,6 +69,7 @@ mod tests {
         let msg = RequestV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             tool_call_id: ToolCallId::new(),
             state: Some("state-hash-abc".to_string()),
             diagnostics: SvcRequestDiagnostics::default(),
@@ -85,6 +89,7 @@ mod tests {
         let msg = RequestV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             tool_call_id: ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),

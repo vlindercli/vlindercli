@@ -3,11 +3,11 @@
 #[cfg(test)]
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
-    noop_ack, Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind,
+    noop_ack, Acknowledgement, AgentName, BranchId, CompleteMessage, DagNodeId, DataMessageKind,
     DataRoutingKey, DeleteAgentMessage, DeployAgentMessage, ExternalSessionId, ForkMessage,
     HarnessType, InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage,
     QueueError, RequestMessage, RequestV2, ResponseMessage, ResponseV2, Sequence, ServiceBackend,
-    SessionRoutingKey, SessionStartMessage, SubmissionId, SvcRoutingKey,
+    SessionRoutingKey, SessionStartMessage, SubmissionId, SvcMessageKind, SvcRoutingKey,
 };
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
@@ -50,13 +50,18 @@ impl Default for InMemoryQueue {
 
 #[async_trait]
 impl MessageQueue for InMemoryQueue {
-    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(
+        &self,
+        key: DataRoutingKey,
+        msg: InvokeMessage,
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .invokes
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_invoke(
@@ -87,13 +92,14 @@ impl MessageQueue for InMemoryQueue {
         &self,
         key: DataRoutingKey,
         msg: CompleteMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .completes
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_complete(
@@ -127,13 +133,14 @@ impl MessageQueue for InMemoryQueue {
         &self,
         key: DataRoutingKey,
         msg: RequestMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .requests
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_request(
@@ -170,13 +177,14 @@ impl MessageQueue for InMemoryQueue {
         &self,
         key: DataRoutingKey,
         msg: ResponseMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .responses
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_response(
@@ -261,13 +269,18 @@ impl MessageQueue for InMemoryQueue {
         Ok(())
     }
 
-    async fn send_svc_request(&self, key: SvcRoutingKey, msg: RequestV2) -> Result<(), QueueError> {
+    async fn send_svc_request(
+        &self,
+        key: SvcRoutingKey,
+        msg: RequestV2,
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .svc_requests
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_svc_request_mcp(
@@ -292,13 +305,14 @@ impl MessageQueue for InMemoryQueue {
         &self,
         key: SvcRoutingKey,
         msg: ResponseV2,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .svc_responses
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_svc_response(
@@ -310,10 +324,39 @@ impl MessageQueue for InMemoryQueue {
             .lock()
             .map_err(|e| QueueError::ReceiveFailed(format!("lock poisoned: {e}")))?;
 
+        // First try exact key match (response key directly)
         if let Some(queue) = q.get_mut(key) {
             if let Some(msg) = queue.pop_front() {
                 let key = key.clone();
                 return Ok((key, msg, noop_ack()));
+            }
+        }
+
+        // For SvcRequest keys, also look up the corresponding SvcResponse key.
+        // This mirrors NATS semantics where receive_svc_response takes a request
+        // key and the worker sends on a SvcResponse subject.
+        if let SvcMessageKind::SvcRequest {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        {
+            let response_key = SvcRoutingKey {
+                session: key.session.clone(),
+                branch: key.branch,
+                submission: key.submission.clone(),
+                kind: SvcMessageKind::SvcResponse {
+                    agent: agent.clone(),
+                    service: service.clone(),
+                    operation: operation.clone(),
+                    sequence: *sequence,
+                },
+            };
+            if let Some(queue) = q.get_mut(&response_key) {
+                if let Some(msg) = queue.pop_front() {
+                    return Ok((response_key, msg, noop_ack()));
+                }
             }
         }
 

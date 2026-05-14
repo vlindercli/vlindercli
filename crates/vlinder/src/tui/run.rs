@@ -11,7 +11,9 @@ use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use ratatui::prelude::Backend;
 use ratatui::Terminal;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
+use vlinder_core::domain::{HarnessEvent, RunResult};
 
 use super::app::App;
 use super::event::{handle_event, EventOutcome};
@@ -21,13 +23,17 @@ use super::view::{draw, draw_splash};
 /// Run an interactive REPL loop using ratatui.
 ///
 /// `process` is invoked once per submitted line and yields a future whose
-/// output is appended to the transcript. The future is polled concurrently
-/// with a spinner-animation timer so "thinking..." animates while a response
-/// is in flight.
-pub async fn run<F, Fut>(mut process: F)
+/// output is appended to the transcript. `event_rx` receives `HarnessEvent`
+/// messages during execution — the caller constructs the channel and captures
+/// the sender in the `process` closure.
+///
+/// The future is polled concurrently with a spinner-animation timer and the
+/// event channel so "thinking..." animates while a response is in flight and
+/// tool-call entries appear incrementally.
+pub async fn run<F, Fut>(mut process: F, mut event_rx: mpsc::Receiver<HarnessEvent>)
 where
     F: FnMut(String) -> Fut,
-    Fut: Future<Output = String>,
+    Fut: Future<Output = RunResult>,
 {
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableMouseCapture);
@@ -48,7 +54,7 @@ where
                 if input == "exit" || input == "quit" {
                     break 'main;
                 }
-                run_turn(&mut terminal, &mut app, &mut process, input).await;
+                run_turn(&mut terminal, &mut app, &mut process, input, &mut event_rx).await;
             }
         }
     }
@@ -58,17 +64,19 @@ where
 }
 
 /// Execute one user → response turn. Pushes the user message, drives
-/// `process` to completion while animating the spinner, and pushes the
-/// response. Drains events during the wait so scroll / quit work in flight.
+/// `process` to completion while animating the spinner and draining the
+/// event channel, and pushes the response. Drains events during the wait
+/// so scroll / quit work in flight.
 async fn run_turn<B, F, Fut>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     process: &mut F,
     input: String,
+    event_rx: &mut mpsc::Receiver<HarnessEvent>,
 ) where
     B: Backend,
     F: FnMut(String) -> Fut,
-    Fut: Future<Output = String>,
+    Fut: Future<Output = RunResult>,
 {
     app.push_user(input.clone());
     app.clear_input();
@@ -82,11 +90,23 @@ async fn run_turn<B, F, Fut>(
 
     let mut next_tick = Instant::now() + SPINNER_TICK;
 
+    let mut pending_call_indices: Vec<usize> = Vec::new();
+    let mut received_assistant_content = false;
+
     let response = loop {
         // biased: poll the response first so a ready future preempts a stale tick.
         let outcome = tokio::select! {
             biased;
             response = &mut fut => Some(response),
+            Some(event) = event_rx.recv() => {
+                handle_harness_event(
+                    app,
+                    event,
+                    &mut pending_call_indices,
+                    &mut received_assistant_content,
+                );
+                None
+            },
             () = tokio::time::sleep_until(next_tick) => None,
         };
 
@@ -106,8 +126,52 @@ async fn run_turn<B, F, Fut>(
     };
 
     app.spinning = false;
-    app.push_assistant(response);
+
+    // Events are authoritative during streaming — assistant content and tool
+    // calls were already rendered as they arrived. The fallback only fires for
+    // the error path: agent.rs synthesizes a RunResult with `content: Some("[error] ...")`
+    // when the harness call fails, without emitting any events.
+    if !received_assistant_content {
+        if let Some(text) = response.content {
+            app.push_assistant(text);
+        }
+    }
     app.jump_bottom();
+}
+
+/// Process a `HarnessEvent` from the event channel, mutating `App` state.
+fn handle_harness_event(
+    app: &mut App,
+    event: HarnessEvent,
+    pending_indices: &mut Vec<usize>,
+    received_assistant_content: &mut bool,
+) {
+    match event {
+        HarnessEvent::AssistantContent { text, .. } => {
+            *received_assistant_content = true;
+            app.push_assistant(text);
+        }
+        HarnessEvent::ToolCallStarted { tool_call } => {
+            let idx = app.push_tool_call_pending(&tool_call);
+            pending_indices.push(idx);
+        }
+        HarnessEvent::ToolCallCompleted { trace } => {
+            if pending_indices.is_empty() {
+                // No pending index — push as completed directly.
+                app.push_tool_call(&trace);
+            } else {
+                // Update the oldest pending entry.
+                let idx = pending_indices.remove(0);
+                app.finalize_tool_call(idx, &trace);
+            }
+        }
+        // Other events are not wired in this branch.
+        HarnessEvent::RunStarted { .. }
+        | HarnessEvent::TurnStarted { .. }
+        | HarnessEvent::ToolCallApprovalRequired { .. }
+        | HarnessEvent::TurnCompleted { .. }
+        | HarnessEvent::RunCompleted { .. } => {}
+    }
 }
 
 /// Show the splash screen until either a key is pressed or

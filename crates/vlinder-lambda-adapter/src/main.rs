@@ -147,6 +147,7 @@ async fn send_error_result(
                 None,
                 None,
                 vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
+                vlinder_core::domain::DagNodeId::root(),
             )
             .await;
         }
@@ -307,6 +308,7 @@ async fn dispatch_loop(
                                 result.tool_calls,
                                 final_state,
                                 diagnostics,
+                                result.chain_head,
                             )
                             .await;
                             Ok(())

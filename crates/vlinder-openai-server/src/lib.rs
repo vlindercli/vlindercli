@@ -17,7 +17,9 @@ use axum::{
 use serde_json::Value;
 use uuid::Uuid;
 
-use vlinder_core::domain::{DagStore, ExternalSessionId, Harness, Message, Registry, SessionId};
+use vlinder_core::domain::{
+    DagStore, ExternalSessionId, Harness, Message, Registry, RunCtl, SessionId,
+};
 
 /// Server handle for shutdown coordination.
 pub struct ServerHandle {
@@ -187,9 +189,10 @@ fn messages_from_json(msgs: &[Value]) -> Vec<Message> {
     result
 }
 
-/// Convert Vlinder `ParsedResponse` to an `OpenAI` `choices` JSON array.
-fn choices_to_json(parsed: &vlinder_core::domain::ParsedResponse) -> Value {
-    let message = match (&parsed.content, &parsed.tool_calls) {
+/// Convert Vlinder `RunResult` to an `OpenAI` `choices` JSON array.
+/// Convert Vlinder `RunResult` to an `OpenAI` `choices` JSON array.
+fn choices_to_json(result: &vlinder_core::domain::RunResult) -> Value {
+    let message = match (&result.content, &result.pending_tool_calls) {
         (Some(content), Some(tool_calls)) => {
             let tool_calls_json: Value = tool_calls
                 .iter()
@@ -244,7 +247,7 @@ fn choices_to_json(parsed: &vlinder_core::domain::ParsedResponse) -> Value {
         }
     };
 
-    let finish_reason = if parsed.tool_calls.is_some() {
+    let finish_reason = if result.pending_tool_calls.is_some() {
         "tool_calls"
     } else {
         "stop"
@@ -384,7 +387,7 @@ async fn resolve_or_create_session(
 /// Build the standard `OpenAI` chat completion JSON response body.
 fn build_chat_completion_response(
     model_str: &str,
-    parsed: &vlinder_core::domain::ParsedResponse,
+    result: &vlinder_core::domain::RunResult,
 ) -> Value {
     let created = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -394,17 +397,21 @@ fn build_chat_completion_response(
         "object": "chat.completion",
         "created": created,
         "model": model_str,
-        "choices": choices_to_json(parsed),
+        "choices": choices_to_json(result),
         "usage": {
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
         },
+        "vlinder": {
+            "turns": result.turns,
+            "state_snapshot": result.state_snapshot,
+        },
     })
 }
 
 /// Build an SSE (`text/event-stream`) response body for the given response.
-fn build_sse_response(model_str: &str, parsed: &vlinder_core::domain::ParsedResponse) -> String {
+fn build_sse_response(model_str: &str, result: &vlinder_core::domain::RunResult) -> String {
     let id = format!("chatcmpl-{}", Uuid::new_v4());
     let created = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -415,7 +422,7 @@ fn build_sse_response(model_str: &str, parsed: &vlinder_core::domain::ParsedResp
         "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]
     });
 
-    let content_delta = match (&parsed.content, &parsed.tool_calls) {
+    let content_delta = match (&result.content, &result.pending_tool_calls) {
         (Some(content), Some(tcs)) => {
             let tc_json: Vec<Value> = tcs.iter().map(|tc| serde_json::json!({
                 "index": 0, "id": tc.id.to_string(), "type": "function",
@@ -438,7 +445,7 @@ fn build_sse_response(model_str: &str, parsed: &vlinder_core::domain::ParsedResp
         "choices": [{"index": 0, "delta": content_delta, "finish_reason": null}]
     });
 
-    let finish_reason = if parsed.tool_calls.is_some() {
+    let finish_reason = if result.pending_tool_calls.is_some() {
         "tool_calls"
     } else {
         "stop"
@@ -458,6 +465,17 @@ fn build_sse_response(model_str: &str, parsed: &vlinder_core::domain::ParsedResp
     sse.push_str("\n\n");
     sse.push_str("data: ");
     sse.push_str(&finish_event.to_string());
+    sse.push_str("\n\n");
+    // Vlinder enrichment — comes before [DONE] so strict OpenAI clients
+    // that stop at [DONE] skip our extra data cleanly.
+    let vlinder_event = serde_json::json!({
+        "vlinder": {
+            "turns": result.turns,
+            "state_snapshot": result.state_snapshot,
+        }
+    });
+    sse.push_str("data: ");
+    sse.push_str(&vlinder_event.to_string());
     sse.push_str("\n\n");
     sse.push_str("data: [DONE]\n\n");
     sse
@@ -514,12 +532,13 @@ async fn chat_completions(
         .map_or(&[], Vec::as_slice);
     let messages = messages_from_json(messages_json);
 
-    let parsed = match server
+    let ctl = RunCtl::quiet();
+    let result = match server
         .harness
-        .run_agent_with_messages(&agent_id, messages, session_id)
+        .run_agent_with_messages(&agent_id, messages, session_id, &ctl)
         .await
     {
-        Ok(p) => p,
+        Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "harness error in chat completions");
             return (
@@ -537,7 +556,7 @@ async fn chat_completions(
 
     let model_str = req.get("model").and_then(|v| v.as_str()).unwrap_or(&model);
     if stream {
-        let body = build_sse_response(model_str, &parsed);
+        let body = build_sse_response(model_str, &result);
         (
             StatusCode::OK,
             [
@@ -550,7 +569,7 @@ async fn chat_completions(
     } else {
         (
             StatusCode::OK,
-            Json(build_chat_completion_response(model_str, &parsed)),
+            Json(build_chat_completion_response(model_str, &result)),
         )
             .into_response()
     }
@@ -708,12 +727,14 @@ mod tests {
 
     #[test]
     fn build_sse_response_content_only() {
-        use vlinder_core::domain::ParsedResponse;
-        let parsed = ParsedResponse {
+        use vlinder_core::domain::RunResult;
+        let result = RunResult {
             content: Some("hello".to_string()),
-            tool_calls: None,
+            pending_tool_calls: None,
+            turns: Vec::new(),
+            state_snapshot: None,
         };
-        let body = build_sse_response("test-agent", &parsed);
+        let body = build_sse_response("test-agent", &result);
         assert!(body.contains(r#""content":"hello""#));
         assert!(body.contains(r#""finish_reason":"stop""#));
         assert!(body.contains("[DONE]"));
@@ -722,17 +743,19 @@ mod tests {
     #[test]
     fn build_sse_response_with_tool_calls() {
         use serde_json::json;
-        use vlinder_core::domain::{ParsedResponse, ToolCall, ToolCallId};
+        use vlinder_core::domain::{RunResult, ToolCall, ToolCallId};
 
-        let parsed = ParsedResponse {
+        let result = RunResult {
             content: None,
-            tool_calls: Some(vec![ToolCall {
+            pending_tool_calls: Some(vec![ToolCall {
                 id: ToolCallId::new(),
                 name: "get_weather".to_string(),
                 arguments: json!({"city": "NYC"}),
             }]),
+            turns: Vec::new(),
+            state_snapshot: None,
         };
-        let body = build_sse_response("test-agent", &parsed);
+        let body = build_sse_response("test-agent", &result);
         assert!(body.contains("tool_calls"));
         assert!(body.contains(r#""finish_reason":"tool_calls""#));
         assert!(body.contains("[DONE]"));
@@ -768,29 +791,33 @@ mod tests {
 
     #[test]
     fn choices_to_json_content_only() {
-        use vlinder_core::domain::ParsedResponse;
-        let parsed = ParsedResponse {
+        use vlinder_core::domain::RunResult;
+        let result = RunResult {
             content: Some("hello".to_string()),
-            tool_calls: None,
+            pending_tool_calls: None,
+            turns: Vec::new(),
+            state_snapshot: None,
         };
-        let choices = choices_to_json(&parsed);
+        let choices = choices_to_json(&result);
         assert_eq!(choices.as_array().unwrap()[0]["finish_reason"], "stop");
     }
 
     #[test]
     fn choices_to_json_with_tool_calls() {
         use serde_json::json;
-        use vlinder_core::domain::{ParsedResponse, ToolCall, ToolCallId};
+        use vlinder_core::domain::{RunResult, ToolCall, ToolCallId};
 
-        let parsed = ParsedResponse {
+        let result = RunResult {
             content: None,
-            tool_calls: Some(vec![ToolCall {
+            pending_tool_calls: Some(vec![ToolCall {
                 id: ToolCallId::new(),
                 name: "get_weather".to_string(),
                 arguments: json!({"city": "NYC"}),
             }]),
+            turns: Vec::new(),
+            state_snapshot: None,
         };
-        let choices = choices_to_json(&parsed);
+        let choices = choices_to_json(&result);
         let choice = &choices[0];
         assert_eq!(choice["finish_reason"], "tool_calls");
         assert_eq!(
@@ -948,5 +975,191 @@ mod tests {
         let result = resolve_or_create_session(&server, &headers, "test-agent").await;
         let found = result.expect("UUID fallback should find the session");
         assert_eq!(found, sid);
+    }
+
+    // ======================================================================
+    // vlinder namespace + finish_reason mapping (Commit 4)
+    // ======================================================================
+
+    #[test]
+    fn build_chat_completion_response_has_vlinder_namespace() {
+        use serde_json::json;
+        use vlinder_core::domain::{
+            RunResult, ToolCall, ToolCallId, ToolResult, ToolTrace, TurnTrace,
+        };
+
+        let result = RunResult {
+            content: Some("The weather is 62°F.".to_string()),
+            pending_tool_calls: None,
+            turns: vec![TurnTrace {
+                assistant_content: None,
+                tool_calls: vec![ToolTrace {
+                    tool_call: ToolCall {
+                        id: ToolCallId::from("call-1".to_string()),
+                        name: "get_weather".to_string(),
+                        arguments: json!({"location": "SF"}),
+                    },
+                    result: ToolResult {
+                        tool_call_id: ToolCallId::from("call-1".to_string()),
+                        content: b"62F".to_vec(),
+                    },
+                    duration_ms: 203,
+                }],
+            }],
+            state_snapshot: None,
+        };
+
+        let body = build_chat_completion_response("test-agent", &result);
+
+        // choices[0].message.content matches RunResult.content
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "The weather is 62°F."
+        );
+        // finish_reason is "stop" when content.is_some() and pending_tool_calls.is_none()
+        assert_eq!(body["choices"][0]["finish_reason"], "stop");
+        // vlinder namespace present
+        assert!(
+            body.get("vlinder").is_some(),
+            "vlinder field must be present"
+        );
+        // vlinder.turns[0].tool_calls[0].duration_ms is a number
+        assert!(body["vlinder"]["turns"][0]["tool_calls"][0]["duration_ms"].is_number());
+        assert_eq!(
+            body["vlinder"]["turns"][0]["tool_calls"][0]["duration_ms"],
+            203
+        );
+        // state_snapshot is None → JSON null in the vlinder object
+        assert!(body["vlinder"]["state_snapshot"].is_null());
+        // pending_tool_calls is None → omitted from top level via skip_serializing_if
+        assert!(body.get("pending_tool_calls").is_none());
+        // turns.len() matches
+        assert_eq!(body["vlinder"]["turns"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn build_sse_response_has_vlinder_event() {
+        use vlinder_core::domain::RunResult;
+
+        let result = RunResult {
+            content: Some("hello".to_string()),
+            pending_tool_calls: None,
+            turns: vec![],
+            state_snapshot: None,
+        };
+        let body = build_sse_response("test-agent", &result);
+
+        // vlinder event appears before [DONE]
+        let vlinder_pos = body.find(r#""vlinder""#);
+        let done_pos = body.find("[DONE]");
+        assert!(
+            vlinder_pos.is_some(),
+            "vlinder event must be present in SSE"
+        );
+        assert!(done_pos.is_some(), "[DONE] must be present in SSE");
+        assert!(
+            vlinder_pos.unwrap() < done_pos.unwrap(),
+            "vlinder event must appear before [DONE]"
+        );
+
+        // Parse the vlinder event
+        assert!(body.contains(r#""turns":[]"#));
+    }
+
+    #[test]
+    fn choices_to_json_finish_reason_stop_when_content_present() {
+        use vlinder_core::domain::RunResult;
+
+        let result = RunResult {
+            content: Some("hello".to_string()),
+            pending_tool_calls: None,
+            turns: vec![],
+            state_snapshot: None,
+        };
+        let choices = choices_to_json(&result);
+        assert_eq!(choices[0]["finish_reason"], "stop");
+    }
+
+    #[test]
+    fn choices_to_json_finish_reason_tool_calls_when_pending() {
+        use serde_json::json;
+        use vlinder_core::domain::{RunResult, ToolCall, ToolCallId};
+
+        let result = RunResult {
+            content: None,
+            pending_tool_calls: Some(vec![ToolCall {
+                id: ToolCallId::new(),
+                name: "get_weather".to_string(),
+                arguments: json!({"city": "NYC"}),
+            }]),
+            turns: vec![],
+            state_snapshot: None,
+        };
+        let choices = choices_to_json(&result);
+        assert_eq!(choices[0]["finish_reason"], "tool_calls");
+    }
+
+    #[test]
+    fn openai_tolerance_ignores_vlinder_field() {
+        // A strict schema that only knows the standard OpenAI fields must
+        // succeed even when the response contains an unknown "vlinder" field.
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code, clippy::struct_field_names)]
+        struct OpenAIResponse {
+            id: String,
+            object: String,
+            created: i64,
+            model: String,
+            choices: Vec<OpenAIChoice>,
+            usage: OpenAIUsage,
+            system_fingerprint: Option<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct OpenAIChoice {
+            index: u32,
+            finish_reason: String,
+            message: OpenAIMessage,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct OpenAIMessage {
+            role: String,
+            content: Option<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code, clippy::struct_field_names)]
+        struct OpenAIUsage {
+            prompt_tokens: u32,
+            completion_tokens: u32,
+            total_tokens: u32,
+        }
+
+        use vlinder_core::domain::RunResult;
+
+        let result = RunResult {
+            content: Some("hello".to_string()),
+            pending_tool_calls: None,
+            turns: vec![],
+            state_snapshot: None,
+        };
+        let body = build_chat_completion_response("test-agent", &result);
+
+        let json_str = serde_json::to_string(&body).unwrap();
+        let parsed: OpenAIResponse = serde_json::from_str(&json_str)
+            .expect("strict OpenAI schema must deserialize even with extra vlinder field");
+
+        assert!(
+            parsed.id.starts_with("chatcmpl-"),
+            "id should start with chatcmpl-"
+        );
+        assert!(parsed.id.len() > 30, "id should contain a UUID");
+        assert_eq!(parsed.object, "chat.completion");
+        assert_eq!(parsed.model, "test-agent");
+        assert_eq!(parsed.choices[0].message.content, Some("hello".to_string()));
+        assert_eq!(parsed.choices[0].finish_reason, "stop");
     }
 }

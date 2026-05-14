@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
+use tokio::sync::mpsc;
 
 use crate::config::CliConfig;
 use vlinder_core::domain::{
-    agent_routing_key, DagNodeId, ExternalSessionId, Fleet, FleetManifest, Registry, SessionId,
+    agent_routing_key, DagNodeId, ExternalSessionId, Fleet, FleetManifest, HarnessEvent, Registry,
+    RunCtl, RunResult, SessionId,
 };
 
 use super::connect::{connect_harness, connect_registry};
@@ -208,32 +210,64 @@ pub async fn run(name: &str, prompt: Option<&str>) {
         fleet.name, entry_agent_name
     );
 
-    let invoke = |input: String| {
-        let harness = harness.clone();
-        let entry_agent_id = entry_agent_id.clone();
-        let session_id = session_id.clone();
-        let fleet_context = fleet_context.clone();
-        async move {
-            let enriched_input = format!("{fleet_context}\n\n{input}");
-            harness
-                .run_agent(
-                    &entry_agent_id,
-                    &enriched_input,
-                    session_id,
-                    branch_id,
-                    false,
-                    None,
-                    DagNodeId::root(),
-                )
-                .await
-                .unwrap_or_else(|e| format!("[error] {e}"))
-        }
-    };
-
     if let Some(message) = prompt {
-        println!("{}", invoke(message.to_string()).await);
+        // Non-interactive: send single message, print response, exit.
+        let context_input = format!("{fleet_context}\n\n{message}");
+        let ctl = RunCtl::quiet();
+        let result = harness
+            .run_agent(
+                &entry_agent_id,
+                &context_input,
+                session_id,
+                branch_id,
+                false,
+                None,
+                DagNodeId::root(),
+                &ctl,
+            )
+            .await
+            .unwrap_or_else(|e| RunResult {
+                content: Some(format!("[error] {e}")),
+                pending_tool_calls: None,
+                turns: Vec::new(),
+                state_snapshot: None,
+            });
+        println!("{}", result.content.unwrap_or_default());
     } else {
-        tui::run(invoke).await;
+        // Interactive REPL — create event channel for streaming tool traces.
+        let (event_tx, event_rx) = mpsc::channel::<HarnessEvent>(32);
+
+        let invoke = move |input: String| {
+            let harness = harness.clone();
+            let entry_agent_id = entry_agent_id.clone();
+            let session_id = session_id.clone();
+            let fleet_context = fleet_context.clone();
+            let ctl_tx = event_tx.clone();
+            async move {
+                let enriched_input = format!("{fleet_context}\n\n{input}");
+                let ctl = RunCtl::streaming(ctl_tx);
+                harness
+                    .run_agent(
+                        &entry_agent_id,
+                        &enriched_input,
+                        session_id,
+                        branch_id,
+                        false,
+                        None,
+                        DagNodeId::root(),
+                        &ctl,
+                    )
+                    .await
+                    .unwrap_or_else(|e| RunResult {
+                        content: Some(format!("[error] {e}")),
+                        pending_tool_calls: None,
+                        turns: Vec::new(),
+                        state_snapshot: None,
+                    })
+            }
+        };
+
+        tui::run(invoke, event_rx).await;
     }
 }
 

@@ -48,6 +48,8 @@ service StateService {
   // V2 service nodes (MCP)
   rpc InsertSvcRequestNode(InsertSvcRequestNodeRequest) returns (InsertSvcRequestNodeResponse);
   rpc InsertSvcResponseNode(InsertSvcResponseNodeRequest) returns (InsertSvcResponseNodeResponse);
+  rpc GetSvcRequestNode(GetSvcRequestNodeRequest) returns (GetSvcRequestNodeResponse);
+  rpc GetSvcResponseNode(GetSvcResponseNodeRequest) returns (GetSvcResponseNodeResponse);
 
   // Branch head query
   rpc LatestNodeOnBranch(LatestNodeOnBranchRequest) returns (LatestNodeOnBranchResponse);
@@ -276,11 +278,18 @@ message GetCompleteNodeResponse {
 }
 
 message CompleteNodeProto {
-  string message_id = 1;
-  optional string state = 2;
-  bytes diagnostics = 3;
-  bytes payload = 4;
-  string dag_hash = 5;
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string harness = 5;
+  // Payload
+  string message_id = 6;
+  optional string state = 7;
+  bytes diagnostics = 8;
+  bytes payload = 9;
+  string dag_hash = 10;
 }
 
 message GetRequestNodeRequest { string dag_hash = 1; }
@@ -289,12 +298,21 @@ message GetRequestNodeResponse {
 }
 
 message RequestNodeProto {
-  string message_id = 1;
-  optional string state = 2;
-  bytes diagnostics = 3;
-  bytes payload = 4;
-  string dag_hash = 5;
-  optional string checkpoint = 6;
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string service = 5;
+  string operation = 6;
+  uint32 sequence = 7;
+  // Payload
+  string message_id = 8;
+  optional string state = 9;
+  bytes diagnostics = 10;
+  bytes payload = 11;
+  string dag_hash = 12;
+  optional string checkpoint = 13;
 }
 
 message InsertRequestNodeRequest {
@@ -326,14 +344,23 @@ message GetResponseNodeResponse {
 }
 
 message ResponseNodeProto {
-  string message_id = 1;
-  string correlation_id = 2;
-  optional string state = 3;
-  bytes diagnostics = 4;
-  bytes payload = 5;
-  uint32 status_code = 6;
-  string dag_hash = 7;
-  optional string checkpoint = 8;
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string service = 5;
+  string operation = 6;
+  uint32 sequence = 7;
+  // Payload
+  string message_id = 8;
+  string correlation_id = 9;
+  optional string state = 10;
+  bytes diagnostics = 11;
+  bytes payload = 12;
+  uint32 status_code = 13;
+  string dag_hash = 14;
+  optional string checkpoint = 15;
 }
 
 message InsertResponseNodeRequest {
@@ -473,4 +500,50 @@ message InsertSvcResponseNodeRequest {
 message InsertSvcResponseNodeResponse {
   bool success = 1;
   optional string error = 2;
+}
+
+message GetSvcRequestNodeRequest { string dag_hash = 1; }
+message GetSvcRequestNodeResponse {
+  optional SvcRequestNodeProto node = 1;
+}
+
+message SvcRequestNodeProto {
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string service_type = 5;
+  string service_backend = 6;
+  string operation = 7;
+  uint32 sequence = 8;
+  // Payload
+  string message_id = 9;
+  string tool_call_id = 10;
+  optional string state = 11;
+  bytes arguments = 12;
+  optional string diagnostics = 13;
+}
+
+message GetSvcResponseNodeRequest { string dag_hash = 1; }
+message GetSvcResponseNodeResponse {
+  optional SvcResponseNodeProto node = 1;
+}
+
+message SvcResponseNodeProto {
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string service_type = 5;
+  string service_backend = 6;
+  string operation = 7;
+  uint32 sequence = 8;
+  // Payload
+  string message_id = 9;
+  string correlation_id = 10;
+  optional string state = 11;
+  bytes payload = 12;
+  optional string diagnostics = 13;
 }

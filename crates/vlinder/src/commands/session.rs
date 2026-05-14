@@ -164,7 +164,7 @@ async fn get(session_id_or_name: &str) {
         println!("Turn {sub_id}");
         for node in messages {
             let ts = node.created_at.format("%H:%M:%S%.3f");
-            let (from, to, operation, checkpoint) = if node.message_type()
+            let (from, to, operation, sequence) = if node.message_type()
                 == vlinder_core::domain::MessageType::Invoke
             {
                 if let Ok(Some((key, _msg))) = store.get_invoke_node(&node.id).await {
@@ -183,13 +183,101 @@ async fn get(session_id_or_name: &str) {
                     continue;
                 }
             } else if node.message_type() == vlinder_core::domain::MessageType::Complete {
-                // Complete: skip display details — payload read via get_complete_node elsewhere
-                (
-                    "agent".to_string(),
-                    "harness".to_string(),
-                    None::<String>,
-                    None::<String>,
-                )
+                if let Ok(Some((key, _msg))) = store.get_complete_node(&node.id).await {
+                    let vlinder_core::domain::DataMessageKind::Complete { agent, harness } =
+                        &key.kind
+                    else {
+                        continue;
+                    };
+                    (
+                        agent.to_string(),
+                        harness.as_str().to_string(),
+                        None::<String>,
+                        None::<String>,
+                    )
+                } else {
+                    continue;
+                }
+            } else if node.message_type() == vlinder_core::domain::MessageType::Request {
+                if let Ok(Some((key, _msg))) = store.get_request_node(&node.id).await {
+                    let vlinder_core::domain::DataMessageKind::Request {
+                        agent,
+                        service,
+                        operation,
+                        sequence,
+                    } = &key.kind
+                    else {
+                        continue;
+                    };
+                    (
+                        agent.to_string(),
+                        service.to_string(),
+                        Some(operation.to_string()),
+                        Some(sequence.to_string()),
+                    )
+                } else {
+                    continue;
+                }
+            } else if node.message_type() == vlinder_core::domain::MessageType::Response {
+                if let Ok(Some((key, _msg))) = store.get_response_node(&node.id).await {
+                    let vlinder_core::domain::DataMessageKind::Response {
+                        agent,
+                        service,
+                        operation,
+                        sequence,
+                    } = &key.kind
+                    else {
+                        continue;
+                    };
+                    (
+                        service.to_string(),
+                        agent.to_string(),
+                        Some(operation.to_string()),
+                        Some(sequence.to_string()),
+                    )
+                } else {
+                    continue;
+                }
+            } else if node.message_type() == vlinder_core::domain::MessageType::SvcRequest {
+                if let Ok(Some((key, _msg))) = store.get_svc_request_node(&node.id).await {
+                    let vlinder_core::domain::SvcMessageKind::SvcRequest {
+                        agent,
+                        service,
+                        operation,
+                        sequence,
+                    } = &key.kind
+                    else {
+                        continue;
+                    };
+                    (
+                        agent.to_string(),
+                        service.backend_str().to_string(),
+                        Some(operation.to_string()),
+                        Some(sequence.to_string()),
+                    )
+                } else {
+                    continue;
+                }
+            } else if node.message_type() == vlinder_core::domain::MessageType::SvcResponse {
+                if let Ok(Some((key, _msg))) = store.get_svc_response_node(&node.id).await {
+                    let vlinder_core::domain::SvcMessageKind::SvcResponse {
+                        agent,
+                        service,
+                        operation,
+                        sequence,
+                    } = &key.kind
+                    else {
+                        continue;
+                    };
+                    (
+                        service.backend_str().to_string(),
+                        agent.to_string(),
+                        Some(operation.to_string()),
+                        Some(sequence.to_string()),
+                    )
+                } else {
+                    continue;
+                }
             } else {
                 continue;
             };
@@ -203,8 +291,8 @@ async fn get(session_id_or_name: &str) {
             if let Some(ref op) = operation {
                 parts.push(format!("op:{op}"));
             }
-            if let Some(ref ckpt) = checkpoint {
-                parts.push(format!("ckpt:{ckpt}"));
+            if let Some(ref seq) = sequence {
+                parts.push(format!("seq:{seq}"));
             }
             println!("  {}", parts.join(" "));
         }
@@ -485,6 +573,36 @@ async fn find_agent_name(store: &dyn DagStore, session_id: &SessionId) -> Option
 }
 
 #[cfg(test)]
+/// Format a single message line for the session view.
+///
+/// Pure function — no store access. Tests construct arbitrary arguments
+/// without mocking `DagStore`.
+pub fn format_render_line(
+    timestamp: &str,
+    hash: &str,
+    msg_type: &str,
+    from: &str,
+    to: &str,
+    operation: Option<&str>,
+    sequence: Option<&str>,
+) -> String {
+    let mut parts = vec![
+        timestamp.to_string(),
+        hash[..8].to_string(),
+        msg_type.to_string(),
+        from.to_string(),
+        format!("-> {to}"),
+    ];
+    if let Some(op) = operation {
+        parts.push(format!("op:{op}"));
+    }
+    if let Some(seq) = sequence {
+        parts.push(format!("seq:{seq}"));
+    }
+    parts.join(" ")
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use vlinder_core::domain::{BranchId, ExternalSessionId, SessionId};
@@ -504,5 +622,122 @@ mod tests {
     fn check_agent_mismatch_ok() {
         // Should not panic — matching agent
         check_agent_mismatch(&test_session("pensieve"), "pensieve", "test-ext");
+    }
+
+    // ------------------------------------------------------------------------
+    // 4.4 — Renderer unit tests for 6 message-type branches
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn renders_invoke_line() {
+        let line = format_render_line(
+            "12:00:00.000",
+            "abcdef12",
+            "invoke",
+            "cli",
+            "openrouter-test",
+            None,
+            None,
+        );
+        assert!(line.contains("cli"), "from must be harness: {line}");
+        assert!(line.contains("openrouter-test"), "to must be agent: {line}");
+        assert!(line.contains("invoke"), "type must be invoke: {line}");
+    }
+
+    #[test]
+    fn renders_complete_line_with_routing_agent_and_harness() {
+        let line = format_render_line(
+            "12:00:00.000",
+            "abcdef12",
+            "complete",
+            "agent-from-routing-key",
+            "harness-from-routing-key",
+            None,
+            None,
+        );
+        assert!(
+            line.contains("agent-from-routing-key"),
+            "must contain routing-key agent: {line}"
+        );
+        assert!(
+            line.contains("harness-from-routing-key"),
+            "must contain harness: {line}"
+        );
+        assert!(
+            !line.contains("\"agent\""),
+            "must not have literal 'agent': {line}"
+        );
+    }
+
+    #[test]
+    fn renders_request_line() {
+        let line = format_render_line(
+            "12:00:00.000",
+            "abcdef12",
+            "request",
+            "openrouter-test",
+            "infer.openrouter",
+            Some("run"),
+            Some("1"),
+        );
+        assert!(
+            line.contains("openrouter-test"),
+            "from must be agent: {line}"
+        );
+        assert!(line.contains("op:run"), "op must appear: {line}");
+        assert!(line.contains("seq:1"), "seq must appear: {line}");
+    }
+
+    #[test]
+    fn renders_response_line() {
+        let line = format_render_line(
+            "12:00:00.000",
+            "abcdef12",
+            "response",
+            "infer.openrouter",
+            "openrouter-test",
+            Some("run"),
+            Some("1"),
+        );
+        assert!(line.contains("->"), "must have arrow: {line}");
+        assert!(line.contains("op:run"), "op must appear: {line}");
+        assert!(line.contains("seq:1"), "seq must appear: {line}");
+    }
+
+    #[test]
+    fn renders_svc_request_line() {
+        let line = format_render_line(
+            "12:00:00.000",
+            "abcdef12",
+            "svc_request",
+            "openrouter-test",
+            "brave",
+            Some("search"),
+            Some("1"),
+        );
+        assert!(
+            line.contains("openrouter-test"),
+            "from must be agent: {line}"
+        );
+        assert!(line.contains("brave"), "to must be service backend: {line}");
+        assert!(line.contains("op:search"), "op must appear: {line}");
+        assert!(line.contains("seq:1"), "seq must appear: {line}");
+    }
+
+    #[test]
+    fn renders_svc_response_line() {
+        let line = format_render_line(
+            "12:00:00.000",
+            "abcdef12",
+            "svc_response",
+            "brave",
+            "openrouter-test",
+            Some("search"),
+            Some("1"),
+        );
+        assert!(line.contains("brave"), "from must be service: {line}");
+        assert!(line.contains("->"), "must have arrow: {line}");
+        assert!(line.contains("op:search"), "op must appear: {line}");
+        assert!(line.contains("seq:1"), "seq must appear: {line}");
     }
 }

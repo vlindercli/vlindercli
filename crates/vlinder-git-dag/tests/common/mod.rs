@@ -143,6 +143,7 @@ pub fn make_complete(
     let msg = CompleteMessage {
         id: MessageId::new(),
         dag_id: DagNodeId::root(),
+        dag_parent: DagNodeId::root(),
         state,
         diagnostics: RuntimeDiagnostics::placeholder(100),
         content: Some(String::from_utf8_lossy(payload).to_string()),

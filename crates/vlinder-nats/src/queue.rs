@@ -14,12 +14,13 @@ use futures::StreamExt;
 use std::str::FromStr;
 
 use vlinder_core::domain::{
-    Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind, DataRoutingKey,
-    DeleteAgentMessage, DeployAgentMessage, ExternalSessionId, ForkMessage, HarnessType,
-    InfraMessageKind, InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage,
-    QueueError, RequestMessage, RequestV2, ResponseMessage, ResponseV2, RuntimeType, Sequence,
-    ServiceBackend, ServiceBackendV2, ServiceOperation, ServiceType, SessionId, SessionMessageKind,
-    SessionRoutingKey, SessionStartMessage, SubmissionId, SvcMessageKind, SvcRoutingKey,
+    Acknowledgement, AgentName, BranchId, CompleteMessage, DagNodeId, DataMessageKind,
+    DataRoutingKey, DeleteAgentMessage, DeployAgentMessage, ExternalSessionId, ForkMessage,
+    HarnessType, InfraMessageKind, InfraRoutingKey, InvokeMessage, MessageQueue, Operation,
+    PromoteMessage, QueueError, RequestMessage, RequestV2, ResponseMessage, ResponseV2,
+    RuntimeType, Sequence, ServiceBackend, ServiceBackendV2, ServiceOperation, ServiceType,
+    SessionId, SessionMessageKind, SessionRoutingKey, SessionStartMessage, SubmissionId,
+    SvcMessageKind, SvcRoutingKey,
 };
 
 /// NATS queue with `JetStream` durability. Clone is cheap (Arc).
@@ -223,7 +224,11 @@ impl MessageQueue for NatsQueue {
         Ok(())
     }
 
-    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(
+        &self,
+        key: DataRoutingKey,
+        msg: InvokeMessage,
+    ) -> Result<DagNodeId, QueueError> {
         let subject = invoke_subject(&key);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize invoke: {e}")))?;
@@ -239,7 +244,7 @@ impl MessageQueue for NatsQueue {
             .await
             .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-        Ok(())
+        Ok(msg.dag_id.clone())
     }
 
     async fn receive_invoke(
@@ -265,7 +270,7 @@ impl MessageQueue for NatsQueue {
         &self,
         key: DataRoutingKey,
         msg: CompleteMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let DataMessageKind::Complete { agent, harness } = &key.kind else {
             return Err(QueueError::SendFailed(
                 "send_complete: expected Complete key".into(),
@@ -286,7 +291,7 @@ impl MessageQueue for NatsQueue {
             .await
             .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-        Ok(())
+        Ok(msg.dag_id.clone())
     }
 
     async fn receive_complete(
@@ -314,7 +319,7 @@ impl MessageQueue for NatsQueue {
         &self,
         key: DataRoutingKey,
         msg: RequestMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let DataMessageKind::Request {
             agent,
             service,
@@ -349,7 +354,7 @@ impl MessageQueue for NatsQueue {
             .await
             .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-        Ok(())
+        Ok(msg.dag_id.clone())
     }
 
     async fn receive_request(
@@ -376,7 +381,7 @@ impl MessageQueue for NatsQueue {
         &self,
         key: DataRoutingKey,
         msg: ResponseMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let DataMessageKind::Response {
             agent,
             service,
@@ -411,7 +416,7 @@ impl MessageQueue for NatsQueue {
             .await
             .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-        Ok(())
+        Ok(msg.dag_id.clone())
     }
 
     async fn receive_response(
@@ -580,7 +585,11 @@ impl MessageQueue for NatsQueue {
         let (js_msg, ack_fn) = self.fetch_one(filter).await?;
         Ok((js_msg.subject.to_string(), js_msg.payload.to_vec(), ack_fn))
     }
-    async fn send_svc_request(&self, key: SvcRoutingKey, msg: RequestV2) -> Result<(), QueueError> {
+    async fn send_svc_request(
+        &self,
+        key: SvcRoutingKey,
+        msg: RequestV2,
+    ) -> Result<DagNodeId, QueueError> {
         let SvcMessageKind::SvcRequest {
             agent: _agent,
             service: _service,
@@ -607,7 +616,7 @@ impl MessageQueue for NatsQueue {
             .await
             .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-        Ok(())
+        Ok(msg.dag_id.clone())
     }
 
     async fn receive_svc_request_mcp(
@@ -631,7 +640,7 @@ impl MessageQueue for NatsQueue {
         &self,
         key: SvcRoutingKey,
         msg: ResponseV2,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let SvcMessageKind::SvcResponse {
             agent: _agent,
             service: _service,
@@ -658,7 +667,7 @@ impl MessageQueue for NatsQueue {
             .await
             .map_err(|e| QueueError::SendFailed(e.to_string()))?;
 
-        Ok(())
+        Ok(msg.dag_id.clone())
     }
 
     async fn receive_svc_response(

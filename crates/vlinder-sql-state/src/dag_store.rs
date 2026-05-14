@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use vlinder_core::domain::session::Session;
 use vlinder_core::domain::{
     Branch, BranchId, DagNode, DagNodeId, DagStore, MessageType, ServiceBackendV2,
-    ServiceOperation, SessionId, SessionSummary, SubmissionId,
+    ServiceOperation, SessionId, SessionSummary, SubmissionId, SvcMessageKind, SvcRoutingKey,
 };
 
 /// SQLite-backed `DagStore`.
@@ -966,50 +966,137 @@ impl DagStore for SqliteDagStore {
     async fn get_complete_node(
         &self,
         dag_hash: &DagNodeId,
-    ) -> Result<Option<vlinder_core::domain::CompleteMessage>, String> {
-        use crate::schema::complete_nodes;
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::DataRoutingKey,
+            vlinder_core::domain::CompleteMessage,
+        )>,
+        String,
+    > {
+        use crate::schema::{complete_nodes, dag_nodes};
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        let row: Option<crate::models::CompleteNodeRow> = complete_nodes::table
-            .find(dag_hash.as_str())
-            .select(crate::models::CompleteNodeRow::as_select())
+
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            crate::models::CompleteNodeRow,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = complete_nodes::table
+            .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(complete_nodes::dag_hash)))
+            .filter(complete_nodes::dag_hash.eq(dag_hash.as_str()))
+            .select((
+                crate::models::CompleteNodeRow::as_select(),
+                dag_nodes::session_id,
+                dag_nodes::submission_id,
+                dag_nodes::branch_id,
+            ))
             .first(&mut *conn)
             .optional()
             .map_err(|e| format!("get_complete_node failed: {e}"))?;
 
-        Ok(row.map(|r| {
+        let result = row.map(|(r, session_id, submission_id, branch)| {
+            let key = vlinder_core::domain::DataRoutingKey {
+                session: session_id
+                    .and_then(|s| SessionId::try_from(s).ok())
+                    .unwrap_or_else(SessionId::new),
+                branch: BranchId::from(branch.unwrap_or(0)),
+                submission: vlinder_core::domain::SubmissionId::from(
+                    submission_id.unwrap_or_default(),
+                ),
+                kind: vlinder_core::domain::DataMessageKind::Complete {
+                    agent: vlinder_core::domain::AgentName::new(r.agent),
+                    harness: r
+                        .harness
+                        .parse()
+                        .unwrap_or(vlinder_core::domain::HarnessType::Cli),
+                },
+            };
+
             let diagnostics: vlinder_core::domain::RuntimeDiagnostics =
                 serde_json::from_slice(&r.diagnostics)
                     .unwrap_or_else(|_| vlinder_core::domain::RuntimeDiagnostics::placeholder(0));
-            serde_json::from_slice(&r.payload).unwrap_or_else(|_| {
+            let msg = serde_json::from_slice(&r.payload).unwrap_or(
                 vlinder_core::domain::CompleteMessage {
                     id: vlinder_core::domain::MessageId::from(r.message_id),
                     dag_id: dag_hash.clone(),
+                    dag_parent: vlinder_core::domain::DagNodeId::root(),
                     state: r.state,
                     diagnostics,
                     content: None,
                     tool_calls: None,
                     payload: vec![],
-                }
-            })
-        }))
+                },
+            );
+            (key, msg)
+        });
+
+        Ok(result)
     }
 
     async fn get_request_node(
         &self,
         dag_hash: &DagNodeId,
-    ) -> Result<Option<vlinder_core::domain::RequestMessage>, String> {
-        use crate::schema::request_nodes;
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::DataRoutingKey,
+            vlinder_core::domain::RequestMessage,
+        )>,
+        String,
+    > {
+        use crate::schema::{dag_nodes, request_nodes};
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        let row: Option<crate::models::RequestNodeRow> = request_nodes::table
-            .find(dag_hash.as_str())
-            .select(crate::models::RequestNodeRow::as_select())
+
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            crate::models::RequestNodeRow,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = request_nodes::table
+            .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(request_nodes::dag_hash)))
+            .filter(request_nodes::dag_hash.eq(dag_hash.as_str()))
+            .select((
+                crate::models::RequestNodeRow::as_select(),
+                dag_nodes::session_id,
+                dag_nodes::submission_id,
+                dag_nodes::branch_id,
+            ))
             .first(&mut *conn)
             .optional()
             .map_err(|e| format!("get_request_node failed: {e}"))?;
 
-        Ok(row.map(|r| {
+        let result = row.map(|(r, session_id, submission_id, branch)| {
+            let service: vlinder_core::domain::ServiceBackend =
+                r.service
+                    .parse()
+                    .unwrap_or(vlinder_core::domain::ServiceBackend::Infer(
+                        vlinder_core::domain::InferenceBackendType::OpenRouter,
+                    ));
+            let operation: vlinder_core::domain::Operation = r
+                .operation
+                .parse()
+                .unwrap_or(vlinder_core::domain::Operation::Get);
+            let key = vlinder_core::domain::DataRoutingKey {
+                session: session_id
+                    .and_then(|s| SessionId::try_from(s).ok())
+                    .unwrap_or_else(SessionId::new),
+                branch: BranchId::from(branch.unwrap_or(0)),
+                submission: vlinder_core::domain::SubmissionId::from(
+                    submission_id.unwrap_or_default(),
+                ),
+                kind: vlinder_core::domain::DataMessageKind::Request {
+                    agent: vlinder_core::domain::AgentName::new(r.agent),
+                    service,
+                    operation,
+                    sequence: vlinder_core::domain::Sequence::from(
+                        u32::try_from(r.sequence).unwrap_or(0),
+                    ),
+                },
+            };
+
             let diagnostics: vlinder_core::domain::RequestDiagnostics =
                 serde_json::from_slice(&r.diagnostics).unwrap_or_else(|_| {
                     vlinder_core::domain::RequestDiagnostics {
@@ -1019,32 +1106,83 @@ impl DagStore for SqliteDagStore {
                         received_at_ms: 0,
                     }
                 });
-            vlinder_core::domain::RequestMessage {
+            let msg = vlinder_core::domain::RequestMessage {
                 id: vlinder_core::domain::MessageId::from(r.message_id),
                 dag_id: dag_hash.clone(),
+                dag_parent: vlinder_core::domain::DagNodeId::root(),
                 state: r.state,
                 diagnostics,
                 payload: r.payload,
                 checkpoint: r.checkpoint,
-            }
-        }))
+            };
+            (key, msg)
+        });
+
+        Ok(result)
     }
 
     async fn get_response_node(
         &self,
         dag_hash: &DagNodeId,
-    ) -> Result<Option<vlinder_core::domain::ResponseMessage>, String> {
-        use crate::schema::response_nodes;
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::DataRoutingKey,
+            vlinder_core::domain::ResponseMessage,
+        )>,
+        String,
+    > {
+        use crate::schema::{dag_nodes, response_nodes};
 
         let mut conn = self.conn.lock().expect("db connection lock poisoned");
-        let row: Option<crate::models::ResponseNodeRow> = response_nodes::table
-            .find(dag_hash.as_str())
-            .select(crate::models::ResponseNodeRow::as_select())
+
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            crate::models::ResponseNodeRow,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = response_nodes::table
+            .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(response_nodes::dag_hash)))
+            .filter(response_nodes::dag_hash.eq(dag_hash.as_str()))
+            .select((
+                crate::models::ResponseNodeRow::as_select(),
+                dag_nodes::session_id,
+                dag_nodes::submission_id,
+                dag_nodes::branch_id,
+            ))
             .first(&mut *conn)
             .optional()
             .map_err(|e| format!("get_response_node failed: {e}"))?;
 
-        Ok(row.map(|r| {
+        let result = row.map(|(r, session_id, submission_id, branch)| {
+            let service: vlinder_core::domain::ServiceBackend =
+                r.service
+                    .parse()
+                    .unwrap_or(vlinder_core::domain::ServiceBackend::Infer(
+                        vlinder_core::domain::InferenceBackendType::OpenRouter,
+                    ));
+            let operation: vlinder_core::domain::Operation = r
+                .operation
+                .parse()
+                .unwrap_or(vlinder_core::domain::Operation::Get);
+            let key = vlinder_core::domain::DataRoutingKey {
+                session: session_id
+                    .and_then(|s| SessionId::try_from(s).ok())
+                    .unwrap_or_else(SessionId::new),
+                branch: BranchId::from(branch.unwrap_or(0)),
+                submission: vlinder_core::domain::SubmissionId::from(
+                    submission_id.unwrap_or_default(),
+                ),
+                kind: vlinder_core::domain::DataMessageKind::Response {
+                    agent: vlinder_core::domain::AgentName::new(r.agent),
+                    service,
+                    operation,
+                    sequence: vlinder_core::domain::Sequence::from(
+                        u32::try_from(r.sequence).unwrap_or(0),
+                    ),
+                },
+            };
+
             let diagnostics: vlinder_core::domain::ServiceDiagnostics =
                 serde_json::from_slice(&r.diagnostics).unwrap_or_else(|_| {
                     vlinder_core::domain::ServiceDiagnostics::storage(
@@ -1055,17 +1193,193 @@ impl DagStore for SqliteDagStore {
                         0,
                     )
                 });
-            vlinder_core::domain::ResponseMessage {
+            let msg = vlinder_core::domain::ResponseMessage {
                 id: vlinder_core::domain::MessageId::from(r.message_id),
                 dag_id: dag_hash.clone(),
+                dag_parent: vlinder_core::domain::DagNodeId::root(),
                 correlation_id: vlinder_core::domain::MessageId::from(r.correlation_id),
                 state: r.state,
                 diagnostics,
                 payload: r.payload,
                 status_code: u16::try_from(r.status_code).unwrap_or(200),
                 checkpoint: r.checkpoint,
-            }
-        }))
+            };
+            (key, msg)
+        });
+
+        Ok(result)
+    }
+
+    async fn get_svc_request_node(
+        &self,
+        dag_hash: &DagNodeId,
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::SvcRoutingKey,
+            vlinder_core::domain::RequestV2,
+        )>,
+        String,
+    > {
+        use crate::schema::{dag_nodes, svc_request_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            crate::models::SvcRequestNodeRow,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = svc_request_nodes::table
+            .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(svc_request_nodes::dag_hash)))
+            .filter(svc_request_nodes::dag_hash.eq(dag_hash.as_str()))
+            .select((
+                crate::models::SvcRequestNodeRow::as_select(),
+                dag_nodes::session_id,
+                dag_nodes::submission_id,
+                dag_nodes::branch_id,
+            ))
+            .first(&mut *conn)
+            .optional()
+            .map_err(|e| format!("get_svc_request_node failed: {e}"))?;
+
+        let result = row
+            .map(
+                |(r, session_id, submission_id, branch)| -> Result<
+                    (
+                        vlinder_core::domain::SvcRoutingKey,
+                        vlinder_core::domain::RequestV2,
+                    ),
+                    String,
+                > {
+                    let service = ServiceBackendV2::from_parts(&r.service_type, &r.service_backend)
+                        .ok_or_else(|| {
+                            format!(
+                        "get_svc_request_node: invalid ServiceBackendV2 (type={:?}, backend={:?})",
+                        r.service_type, r.service_backend
+                    )
+                        })?;
+                    let key = SvcRoutingKey {
+                        session: session_id
+                            .and_then(|s| SessionId::try_from(s).ok())
+                            .unwrap_or_else(SessionId::new),
+                        branch: BranchId::from(branch.unwrap_or(0)),
+                        submission: vlinder_core::domain::SubmissionId::from(
+                            submission_id.unwrap_or_default(),
+                        ),
+                        kind: SvcMessageKind::SvcRequest {
+                            agent: vlinder_core::domain::AgentName::new(r.agent),
+                            service,
+                            operation: ServiceOperation::new(&r.operation),
+                            sequence: vlinder_core::domain::Sequence::from(
+                                u32::try_from(r.sequence).unwrap_or(0),
+                            ),
+                        },
+                    };
+
+                    let diagnostics: vlinder_core::domain::SvcRequestDiagnostics =
+                        serde_json::from_slice(&r.diagnostics.unwrap_or_default().into_bytes())
+                            .unwrap_or_default();
+                    let msg = vlinder_core::domain::RequestV2 {
+                        id: vlinder_core::domain::MessageId::from(r.message_id),
+                        dag_id: dag_hash.clone(),
+                        dag_parent: vlinder_core::domain::DagNodeId::root(),
+                        tool_call_id: vlinder_core::domain::ToolCallId::from(r.tool_call_id),
+                        state: r.state,
+                        diagnostics,
+                        payload: r.arguments,
+                    };
+                    Ok((key, msg))
+                },
+            )
+            .transpose()?;
+        Ok(result)
+    }
+
+    async fn get_svc_response_node(
+        &self,
+        dag_hash: &DagNodeId,
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::SvcRoutingKey,
+            vlinder_core::domain::ResponseV2,
+        )>,
+        String,
+    > {
+        use crate::schema::{dag_nodes, svc_response_nodes};
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            crate::models::SvcResponseNodeRow,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = svc_response_nodes::table
+            .inner_join(dag_nodes::table.on(dag_nodes::hash.eq(svc_response_nodes::dag_hash)))
+            .filter(svc_response_nodes::dag_hash.eq(dag_hash.as_str()))
+            .select((
+                crate::models::SvcResponseNodeRow::as_select(),
+                dag_nodes::session_id,
+                dag_nodes::submission_id,
+                dag_nodes::branch_id,
+            ))
+            .first(&mut *conn)
+            .optional()
+            .map_err(|e| format!("get_svc_response_node failed: {e}"))?;
+
+        let result = row
+            .map(
+                |(r, session_id, submission_id, branch)| -> Result<
+                    (
+                        vlinder_core::domain::SvcRoutingKey,
+                        vlinder_core::domain::ResponseV2,
+                    ),
+                    String,
+                > {
+                    let service = ServiceBackendV2::from_parts(&r.service_type, &r.service_backend)
+                        .ok_or_else(|| {
+                            format!(
+                        "get_svc_response_node: invalid ServiceBackendV2 (type={:?}, backend={:?})",
+                        r.service_type, r.service_backend
+                    )
+                        })?;
+                    let key = SvcRoutingKey {
+                        session: session_id
+                            .and_then(|s| SessionId::try_from(s).ok())
+                            .unwrap_or_else(SessionId::new),
+                        branch: BranchId::from(branch.unwrap_or(0)),
+                        submission: vlinder_core::domain::SubmissionId::from(
+                            submission_id.unwrap_or_default(),
+                        ),
+                        kind: SvcMessageKind::SvcResponse {
+                            agent: vlinder_core::domain::AgentName::new(r.agent),
+                            service,
+                            operation: ServiceOperation::new(&r.operation),
+                            sequence: vlinder_core::domain::Sequence::from(
+                                u32::try_from(r.sequence).unwrap_or(0),
+                            ),
+                        },
+                    };
+
+                    let diagnostics: vlinder_core::domain::SvcResponseDiagnostics =
+                        serde_json::from_slice(&r.diagnostics.unwrap_or_default().into_bytes())
+                            .unwrap_or_default();
+                    let msg = vlinder_core::domain::ResponseV2 {
+                        id: vlinder_core::domain::MessageId::from(r.message_id),
+                        dag_id: dag_hash.clone(),
+                        dag_parent: vlinder_core::domain::DagNodeId::root(),
+                        correlation_id: vlinder_core::domain::MessageId::from(r.correlation_id),
+                        state: r.state,
+                        diagnostics,
+                        payload: r.payload,
+                    };
+                    Ok((key, msg))
+                },
+            )
+            .transpose()?;
+        Ok(result)
     }
 
     async fn get_branches_for_session(
@@ -2037,6 +2351,7 @@ mod tests {
         let request_msg = vlinder_core::domain::RequestV2 {
             id: vlinder_core::domain::MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             tool_call_id: vlinder_core::domain::ToolCallId::new(),
             state: None,
             diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
@@ -2070,6 +2385,7 @@ mod tests {
         let response_msg = vlinder_core::domain::ResponseV2 {
             id: vlinder_core::domain::MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             correlation_id: vlinder_core::domain::MessageId::new(),
             state: None,
             diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
@@ -2098,5 +2414,515 @@ mod tests {
         let node = store.get_node(&response_dag_id).await.unwrap().unwrap();
         assert_eq!(node.message_type(), MessageType::SvcResponse);
         assert_eq!(node.protocol_version(), "v2");
+    }
+
+    // ------------------------------------------------------------------------
+    // 4.1 — SqliteDagStore unit tests for 5 node getters
+    // ------------------------------------------------------------------------
+    // NOTE: V1 getters (Complete, Request, Response) use silent `unwrap_or()`
+    // for all column-parsing fallbacks, so no loud-error test is possible
+    // without first converting those to `ok_or_else` (out of scope). Only V2
+    // getters (SvcRequest, SvcResponse) have loud-error paths after Commit 1.
+
+    // Complete node getter
+
+    #[tokio::test]
+    async fn get_complete_node_happy_path() {
+        let (store, _dir) = test_store().await;
+        let session = sess();
+        let submission = sub();
+        let branch = BranchId::from(1);
+        let agent = vlinder_core::domain::AgentName::new("test-agent");
+        let harness = vlinder_core::domain::HarnessType::Grpc;
+        let dag_id = DagNodeId::from("complete-happy-1".to_string());
+
+        let msg = vlinder_core::domain::CompleteMessage {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            state: Some("done".to_string()),
+            diagnostics: vlinder_core::domain::RuntimeDiagnostics::placeholder(100),
+            content: Some("result".to_string()),
+            tool_calls: None,
+            payload: b"output".to_vec(),
+        };
+
+        store
+            .insert_complete_node(
+                &dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                harness,
+                &msg,
+            )
+            .await
+            .unwrap();
+
+        let (key, out_msg) = store
+            .get_complete_node(&dag_id)
+            .await
+            .expect("query must succeed")
+            .expect("Some, not None");
+
+        match key.kind {
+            vlinder_core::domain::DataMessageKind::Complete {
+                ref agent,
+                ref harness,
+            } => {
+                assert_eq!(agent.as_str(), "test-agent");
+                assert_eq!(harness.as_str(), "grpc");
+            }
+            other => panic!("expected Complete kind, got {other:?}"),
+        }
+        assert_eq!(key.session, session);
+        assert_eq!(key.branch, branch);
+        assert_eq!(out_msg.state.as_deref(), Some("done"));
+    }
+
+    #[tokio::test]
+    async fn get_complete_node_returns_none_when_missing() {
+        let (store, _dir) = test_store().await;
+        let id = DagNodeId::from("does-not-exist".to_string());
+        let out = store
+            .get_complete_node(&id)
+            .await
+            .expect("query must succeed");
+        assert!(out.is_none(), "expected None for missing row");
+    }
+
+    // Request node getter
+
+    #[tokio::test]
+    async fn get_request_node_happy_path() {
+        let (store, _dir) = test_store().await;
+        let session = sess();
+        let submission = sub();
+        let branch = BranchId::from(1);
+        let agent = vlinder_core::domain::AgentName::new("test-agent");
+        let service = vlinder_core::domain::ServiceBackend::Infer(
+            vlinder_core::domain::InferenceBackendType::OpenRouter,
+        );
+        let operation = vlinder_core::domain::Operation::Get;
+        let sequence = vlinder_core::domain::Sequence::first();
+        let dag_id = DagNodeId::from("request-happy-1".to_string());
+
+        let msg = vlinder_core::domain::RequestMessage {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            state: None,
+            diagnostics: vlinder_core::domain::RequestDiagnostics {
+                sequence: 1,
+                endpoint: "infer".to_string(),
+                request_bytes: 100,
+                received_at_ms: 0,
+            },
+            payload: b"hello".to_vec(),
+            checkpoint: None,
+        };
+
+        store
+            .insert_request_node(
+                &dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence,
+                &msg,
+            )
+            .await
+            .unwrap();
+
+        let (key, out_msg) = store
+            .get_request_node(&dag_id)
+            .await
+            .expect("query must succeed")
+            .expect("Some, not None");
+
+        match key.kind {
+            vlinder_core::domain::DataMessageKind::Request { ref agent, .. } => {
+                assert_eq!(agent.as_str(), "test-agent");
+            }
+            other => panic!("expected Request kind, got {other:?}"),
+        }
+        assert_eq!(key.session, session);
+        assert_eq!(key.branch, branch);
+        assert_eq!(out_msg.id, msg.id);
+    }
+
+    #[tokio::test]
+    async fn get_request_node_returns_none_when_missing() {
+        let (store, _dir) = test_store().await;
+        let id = DagNodeId::from("does-not-exist".to_string());
+        let out = store
+            .get_request_node(&id)
+            .await
+            .expect("query must succeed");
+        assert!(out.is_none(), "expected None for missing row");
+    }
+
+    // Response node getter
+
+    #[tokio::test]
+    async fn get_response_node_happy_path() {
+        let (store, _dir) = test_store().await;
+        let session = sess();
+        let submission = sub();
+        let branch = BranchId::from(1);
+        let agent = vlinder_core::domain::AgentName::new("test-agent");
+        let service = vlinder_core::domain::ServiceBackend::Infer(
+            vlinder_core::domain::InferenceBackendType::OpenRouter,
+        );
+        let operation = vlinder_core::domain::Operation::Get;
+        let sequence = vlinder_core::domain::Sequence::first();
+        let dag_id = DagNodeId::from("response-happy-1".to_string());
+
+        let msg = vlinder_core::domain::ResponseMessage {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            correlation_id: vlinder_core::domain::MessageId::new(),
+            state: Some("done".to_string()),
+            diagnostics: vlinder_core::domain::ServiceDiagnostics::storage(
+                vlinder_core::domain::ServiceType::Kv,
+                "test",
+                vlinder_core::domain::Operation::Get,
+                100,
+                0,
+            ),
+            payload: b"result".to_vec(),
+            status_code: 200,
+            checkpoint: None,
+        };
+
+        store
+            .insert_response_node(
+                &dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence,
+                &msg,
+            )
+            .await
+            .unwrap();
+
+        let (key, out_msg) = store
+            .get_response_node(&dag_id)
+            .await
+            .expect("query must succeed")
+            .expect("Some, not None");
+
+        match key.kind {
+            vlinder_core::domain::DataMessageKind::Response { ref agent, .. } => {
+                assert_eq!(agent.as_str(), "test-agent");
+            }
+            other => panic!("expected Response kind, got {other:?}"),
+        }
+        assert_eq!(key.session, session);
+        assert_eq!(key.branch, branch);
+        assert_eq!(out_msg.id, msg.id);
+    }
+
+    #[tokio::test]
+    async fn get_response_node_returns_none_when_missing() {
+        let (store, _dir) = test_store().await;
+        let id = DagNodeId::from("does-not-exist".to_string());
+        let out = store
+            .get_response_node(&id)
+            .await
+            .expect("query must succeed");
+        assert!(out.is_none(), "expected None for missing row");
+    }
+
+    // SvcRequest node getter
+
+    #[tokio::test]
+    async fn get_svc_request_node_happy_path() {
+        let (store, _dir) = test_store().await;
+        let session = sess();
+        let submission = sub();
+        let branch = BranchId::from(1);
+        let agent = vlinder_core::domain::AgentName::new("test-agent");
+        let service = ServiceBackendV2::Mcp("brave".to_string());
+        let operation = ServiceOperation::new("echo");
+        let sequence = vlinder_core::domain::Sequence::first();
+        let dag_id = DagNodeId::from("svc-req-happy-1".to_string());
+
+        let msg = vlinder_core::domain::RequestV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            tool_call_id: vlinder_core::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({ "key": "val" })).unwrap(),
+        };
+
+        store
+            .insert_svc_request_node(
+                &dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service.clone(),
+                operation.clone(),
+                sequence,
+                &msg,
+            )
+            .await
+            .unwrap();
+
+        let (key, out_msg) = store
+            .get_svc_request_node(&dag_id)
+            .await
+            .expect("query must succeed")
+            .expect("Some, not None");
+
+        match key.kind {
+            vlinder_core::domain::SvcMessageKind::SvcRequest {
+                ref agent,
+                ref service,
+                ..
+            } => {
+                assert_eq!(agent.as_str(), "test-agent");
+                assert_eq!(service.backend_str(), "brave");
+            }
+            vlinder_core::domain::SvcMessageKind::SvcResponse { .. } => {
+                panic!("expected SvcRequest kind")
+            }
+        }
+        assert_eq!(key.session, session);
+        assert_eq!(key.branch, branch);
+        assert_eq!(out_msg.tool_call_id, msg.tool_call_id);
+    }
+
+    #[tokio::test]
+    async fn get_svc_request_node_returns_none_when_missing() {
+        let (store, _dir) = test_store().await;
+        let id = DagNodeId::from("does-not-exist".to_string());
+        let out = store
+            .get_svc_request_node(&id)
+            .await
+            .expect("query must succeed");
+        assert!(out.is_none(), "expected None for missing row");
+    }
+
+    #[tokio::test]
+    async fn get_svc_request_node_returns_err_on_malformed_row() {
+        let (store, _dir) = test_store().await;
+        let dag_id = DagNodeId::from("svc-req-bad-1".to_string());
+        let branch_id = 1i64;
+
+        // Insert a minimal dag_nodes row to satisfy FK
+        {
+            let mut conn = store.conn.lock().expect("db connection lock poisoned");
+            diesel::insert_or_ignore_into(crate::schema::dag_nodes::table)
+                .values(&crate::models::NewDagNode {
+                    hash: dag_id.as_str(),
+                    parent_hash: None,
+                    message_type: "svc_request",
+                    session_id: Some(sess().as_str()),
+                    submission_id: Some(sub().as_str()),
+                    branch_id: Some(branch_id),
+                    created_at: &Utc::now().to_rfc3339(),
+                    protocol_version: "v2",
+                    snapshot: "{}",
+                })
+                .execute(&mut *conn)
+                .unwrap();
+        }
+
+        // Insert a svc_request_nodes row with invalid service_backend
+        {
+            let mut conn = store.conn.lock().expect("db connection lock poisoned");
+            diesel::insert_into(crate::schema::svc_request_nodes::table)
+                .values(&crate::models::NewSvcRequestNode {
+                    dag_hash: dag_id.as_str(),
+                    agent: "test-agent",
+                    service_type: "not-a-real-type",
+                    service_backend: "brave",
+                    operation: "echo",
+                    sequence: 1,
+                    message_id: "msg-1",
+                    tool_call_id: "tc-1",
+                    state: None,
+                    diagnostics: Some("{}"),
+                    payload: b"{}",
+                })
+                .execute(&mut *conn)
+                .unwrap();
+        }
+
+        let err = store
+            .get_svc_request_node(&dag_id)
+            .await
+            .expect_err("malformed row must surface as Err, not Ok(Some(_))");
+        assert!(
+            err.contains("get_svc_request_node"),
+            "error must name the getter: {err}"
+        );
+        assert!(
+            err.contains("not-a-real-type"),
+            "error must contain the bad service_type: {err}"
+        );
+    }
+
+    // SvcResponse node getter
+
+    #[tokio::test]
+    async fn get_svc_response_node_happy_path() {
+        let (store, _dir) = test_store().await;
+        let session = sess();
+        let submission = sub();
+        let branch = BranchId::from(1);
+        let agent = vlinder_core::domain::AgentName::new("test-agent");
+        let service = ServiceBackendV2::Mcp("brave".to_string());
+        let operation = ServiceOperation::new("echo");
+        let sequence = vlinder_core::domain::Sequence::first();
+        let dag_id = DagNodeId::from("svc-res-happy-1".to_string());
+
+        let msg = vlinder_core::domain::ResponseV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            correlation_id: vlinder_core::domain::MessageId::new(),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
+            payload: b"result".to_vec(),
+        };
+
+        store
+            .insert_svc_response_node(
+                &dag_id,
+                &DagNodeId::root(),
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service.clone(),
+                operation.clone(),
+                sequence,
+                &msg,
+            )
+            .await
+            .unwrap();
+
+        let (key, out_msg) = store
+            .get_svc_response_node(&dag_id)
+            .await
+            .expect("query must succeed")
+            .expect("Some, not None");
+
+        match key.kind {
+            vlinder_core::domain::SvcMessageKind::SvcResponse {
+                ref agent,
+                ref service,
+                ..
+            } => {
+                assert_eq!(agent.as_str(), "test-agent");
+                assert_eq!(service.backend_str(), "brave");
+            }
+            vlinder_core::domain::SvcMessageKind::SvcRequest { .. } => {
+                panic!("expected SvcResponse kind")
+            }
+        }
+        assert_eq!(key.session, session);
+        assert_eq!(key.branch, branch);
+        assert_eq!(out_msg.correlation_id, msg.correlation_id);
+    }
+
+    #[tokio::test]
+    async fn get_svc_response_node_returns_none_when_missing() {
+        let (store, _dir) = test_store().await;
+        let id = DagNodeId::from("does-not-exist".to_string());
+        let out = store
+            .get_svc_response_node(&id)
+            .await
+            .expect("query must succeed");
+        assert!(out.is_none(), "expected None for missing row");
+    }
+
+    #[tokio::test]
+    async fn get_svc_response_node_returns_err_on_malformed_row() {
+        let (store, _dir) = test_store().await;
+        let dag_id = "svc-res-bad-1".to_string();
+
+        // Insert a minimal dag_nodes row to satisfy FK
+        {
+            let mut conn = store.conn.lock().expect("db connection lock poisoned");
+            diesel::insert_or_ignore_into(crate::schema::dag_nodes::table)
+                .values(&crate::models::NewDagNode {
+                    hash: &dag_id,
+                    parent_hash: None,
+                    message_type: "svc_response",
+                    session_id: Some(sess().as_str()),
+                    submission_id: Some(sub().as_str()),
+                    branch_id: Some(1i64),
+                    created_at: &Utc::now().to_rfc3339(),
+                    protocol_version: "v2",
+                    snapshot: "{}",
+                })
+                .execute(&mut *conn)
+                .unwrap();
+        }
+
+        // Insert a svc_response_nodes row with invalid service_backend
+        {
+            let mut conn = store.conn.lock().expect("db connection lock poisoned");
+            diesel::insert_into(crate::schema::svc_response_nodes::table)
+                .values(&crate::models::NewSvcResponseNode {
+                    dag_hash: &dag_id,
+                    agent: "test-agent",
+                    service_type: "not-a-real-type",
+                    service_backend: "brave",
+                    operation: "echo",
+                    sequence: 1,
+                    message_id: "msg-1",
+                    correlation_id: "corr-1",
+                    state: None,
+                    diagnostics: Some("{}"),
+                    payload: b"{}",
+                })
+                .execute(&mut *conn)
+                .unwrap();
+        }
+
+        let id = DagNodeId::from(dag_id);
+        let err = store
+            .get_svc_response_node(&id)
+            .await
+            .expect_err("malformed row must surface as Err, not Ok(Some(_))");
+        assert!(
+            err.contains("get_svc_response_node"),
+            "error must name the getter: {err}"
+        );
+        assert!(
+            err.contains("not-a-real-type"),
+            "error must contain the bad service_type: {err}"
+        );
     }
 }

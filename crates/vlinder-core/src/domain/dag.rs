@@ -559,28 +559,49 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Retrieve typed complete data by DAG node hash.
+    /// Returns the routing key and complete message, symmetric with [`get_invoke_node`].
     async fn get_complete_node(
         &self,
         dag_hash: &super::DagNodeId,
-    ) -> Result<Option<super::CompleteMessage>, String> {
+    ) -> Result<Option<(super::DataRoutingKey, super::CompleteMessage)>, String> {
         let _ = dag_hash;
         Ok(None)
     }
 
     /// Retrieve typed request data by DAG node hash.
+    /// Returns the routing key and request message, symmetric with [`get_invoke_node`].
     async fn get_request_node(
         &self,
         dag_hash: &super::DagNodeId,
-    ) -> Result<Option<super::RequestMessage>, String> {
+    ) -> Result<Option<(super::DataRoutingKey, super::RequestMessage)>, String> {
         let _ = dag_hash;
         Ok(None)
     }
 
     /// Retrieve typed response data by DAG node hash.
+    /// Returns the routing key and response message, symmetric with [`get_invoke_node`].
     async fn get_response_node(
         &self,
         dag_hash: &super::DagNodeId,
-    ) -> Result<Option<super::ResponseMessage>, String> {
+    ) -> Result<Option<(super::DataRoutingKey, super::ResponseMessage)>, String> {
+        let _ = dag_hash;
+        Ok(None)
+    }
+
+    /// Retrieve typed `svc_request` data by DAG node hash.
+    async fn get_svc_request_node(
+        &self,
+        dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::SvcRoutingKey, super::RequestV2)>, String> {
+        let _ = dag_hash;
+        Ok(None)
+    }
+
+    /// Retrieve typed `svc_response` data by DAG node hash.
+    async fn get_svc_response_node(
+        &self,
+        dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::SvcRoutingKey, super::ResponseV2)>, String> {
         let _ = dag_hash;
         Ok(None)
     }
@@ -879,11 +900,70 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
+    async fn get_invoke_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::DataRoutingKey, super::InvokeMessage)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
     async fn get_complete_node(
         &self,
         _dag_hash: &super::DagNodeId,
-    ) -> Result<Option<super::CompleteMessage>, String> {
-        Ok(None)
+    ) -> Result<Option<(super::DataRoutingKey, super::CompleteMessage)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
+    async fn get_request_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::DataRoutingKey, super::RequestMessage)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
+    async fn get_response_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::DataRoutingKey, super::ResponseMessage)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
+    async fn get_svc_request_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::SvcRoutingKey, super::RequestV2)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
+    async fn get_svc_response_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::SvcRoutingKey, super::ResponseV2)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
     }
 
     async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String> {
@@ -1412,6 +1492,7 @@ mod tests {
         let req_msg = RequestV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             tool_call_id: ToolCallId::new(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
@@ -1444,6 +1525,7 @@ mod tests {
         let response_msg = ResponseV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             correlation_id: MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
@@ -1470,5 +1552,101 @@ mod tests {
         let node = store.get_node(&response_dag_id).await.unwrap().unwrap();
         assert_eq!(node.msg_type, MessageType::SvcResponse);
         assert_eq!(node.protocol_version, "v1");
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_invoke_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_invoke_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_complete_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_complete_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_request_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_request_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_response_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_response_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_svc_request_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_svc_request_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_svc_response_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_svc_response_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
     }
 }

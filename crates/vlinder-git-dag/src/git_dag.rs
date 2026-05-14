@@ -1265,6 +1265,7 @@ mod tests {
         CompleteMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
             content: None,
@@ -1403,6 +1404,7 @@ mod tests {
         let complete = CompleteMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: Some("state-abc123".to_string()),
             diagnostics: RuntimeDiagnostics::placeholder(100),
             content: None,
@@ -1493,6 +1495,7 @@ mod tests {
         let complete = CompleteMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics {
                 stderr: b"WARN: something".to_vec(),
@@ -1534,6 +1537,7 @@ mod tests {
         let complete = CompleteMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: Some("abc123state".to_string()),
             diagnostics: RuntimeDiagnostics::placeholder(0),
             content: None,
@@ -1563,6 +1567,7 @@ mod tests {
         let msg = CompleteMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(100),
             content: None,
@@ -1986,6 +1991,7 @@ mod tests {
         RequestV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: None,
             diagnostics: SvcRequestDiagnostics::default(),
             tool_call_id: ToolCallId::from("call_abc123".to_string()),
@@ -2045,6 +2051,7 @@ mod tests {
         let msg = RequestV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: Some("state-abc123".to_string()),
             diagnostics: SvcRequestDiagnostics::default(),
             tool_call_id: ToolCallId::from("call_abc123".to_string()),
@@ -2089,6 +2096,7 @@ mod tests {
         ResponseV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             correlation_id: MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),
@@ -2150,6 +2158,7 @@ mod tests {
         let msg = ResponseV2 {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             correlation_id: MessageId::new(),
             state: None,
             diagnostics: SvcResponseDiagnostics::default(),

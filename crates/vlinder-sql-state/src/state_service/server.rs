@@ -12,16 +12,18 @@ use super::proto::{
     GetNodeRequest, GetNodeResponse, GetNodesBySubmissionRequest, GetNodesBySubmissionResponse,
     GetRequestNodeRequest, GetRequestNodeResponse, GetResponseNodeRequest, GetResponseNodeResponse,
     GetSessionByNameRequest, GetSessionNodesRequest, GetSessionNodesResponse, GetSessionRequest,
-    GetSessionResponse, InsertCompleteNodeRequest, InsertCompleteNodeResponse,
-    InsertDeleteAgentNodeRequest, InsertDeleteAgentNodeResponse, InsertDeployAgentNodeRequest,
-    InsertDeployAgentNodeResponse, InsertForkNodeRequest, InsertForkNodeResponse,
-    InsertInvokeNodeRequest, InsertInvokeNodeResponse, InsertPromoteNodeRequest,
-    InsertPromoteNodeResponse, InsertRequestNodeRequest, InsertRequestNodeResponse,
-    InsertResponseNodeRequest, InsertResponseNodeResponse, InsertSvcRequestNodeRequest,
-    InsertSvcRequestNodeResponse, InsertSvcResponseNodeRequest, InsertSvcResponseNodeResponse,
-    InvokeNodeProto, LatestNodeOnBranchRequest, LatestNodeOnBranchResponse, ListSessionsRequest,
-    ListSessionsResponse, PingRequest, RenameBranchRequest, RenameBranchResponse, RequestNodeProto,
-    ResponseNodeProto, SealBranchRequest, SealBranchResponse, SemVer,
+    GetSessionResponse, GetSvcRequestNodeRequest, GetSvcRequestNodeResponse,
+    GetSvcResponseNodeRequest, GetSvcResponseNodeResponse, InsertCompleteNodeRequest,
+    InsertCompleteNodeResponse, InsertDeleteAgentNodeRequest, InsertDeleteAgentNodeResponse,
+    InsertDeployAgentNodeRequest, InsertDeployAgentNodeResponse, InsertForkNodeRequest,
+    InsertForkNodeResponse, InsertInvokeNodeRequest, InsertInvokeNodeResponse,
+    InsertPromoteNodeRequest, InsertPromoteNodeResponse, InsertRequestNodeRequest,
+    InsertRequestNodeResponse, InsertResponseNodeRequest, InsertResponseNodeResponse,
+    InsertSvcRequestNodeRequest, InsertSvcRequestNodeResponse, InsertSvcResponseNodeRequest,
+    InsertSvcResponseNodeResponse, InvokeNodeProto, LatestNodeOnBranchRequest,
+    LatestNodeOnBranchResponse, ListSessionsRequest, ListSessionsResponse, PingRequest,
+    RenameBranchRequest, RenameBranchResponse, RequestNodeProto, ResponseNodeProto,
+    SealBranchRequest, SealBranchResponse, SemVer, SvcRequestNodeProto, SvcResponseNodeProto,
     UpdateSessionDefaultBranchRequest, UpdateSessionDefaultBranchResponse,
 };
 use vlinder_core::domain::{DagNodeId, DagStore, MessageType, SessionId};
@@ -351,7 +353,20 @@ impl StateService for StateServiceServer {
             .await
             .map_err(Status::internal)?;
 
-        let node = result.map(|msg| CompleteNodeProto {
+        let node = result.map(|(key, msg)| CompleteNodeProto {
+            session_id: key.session.to_string(),
+            branch: key.branch.as_i64(),
+            submission_id: key.submission.to_string(),
+            agent: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Complete { agent, .. } => agent.to_string(),
+                _ => String::new(),
+            },
+            harness: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Complete { harness, .. } => {
+                    harness.as_str().to_string()
+                }
+                _ => String::new(),
+            },
             message_id: msg.id.to_string(),
             state: msg.state.clone(),
             diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
@@ -374,7 +389,32 @@ impl StateService for StateServiceServer {
             .await
             .map_err(Status::internal)?;
 
-        let node = result.map(|msg| RequestNodeProto {
+        let node = result.map(|(key, msg)| RequestNodeProto {
+            session_id: key.session.to_string(),
+            branch: key.branch.as_i64(),
+            submission_id: key.submission.to_string(),
+            agent: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Request { agent, .. } => agent.to_string(),
+                _ => String::new(),
+            },
+            service: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Request { service, .. } => {
+                    service.to_string()
+                }
+                _ => String::new(),
+            },
+            operation: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Request { operation, .. } => {
+                    operation.to_string()
+                }
+                _ => String::new(),
+            },
+            sequence: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Request { sequence, .. } => {
+                    sequence.as_u32()
+                }
+                _ => 0,
+            },
             message_id: msg.id.to_string(),
             state: msg.state,
             diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
@@ -398,7 +438,32 @@ impl StateService for StateServiceServer {
             .await
             .map_err(Status::internal)?;
 
-        let node = result.map(|msg| ResponseNodeProto {
+        let node = result.map(|(key, msg)| ResponseNodeProto {
+            session_id: key.session.to_string(),
+            branch: key.branch.as_i64(),
+            submission_id: key.submission.to_string(),
+            agent: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Response { agent, .. } => agent.to_string(),
+                _ => String::new(),
+            },
+            service: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Response { service, .. } => {
+                    service.to_string()
+                }
+                _ => String::new(),
+            },
+            operation: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Response { operation, .. } => {
+                    operation.to_string()
+                }
+                _ => String::new(),
+            },
+            sequence: match &key.kind {
+                vlinder_core::domain::DataMessageKind::Response { sequence, .. } => {
+                    sequence.as_u32()
+                }
+                _ => 0,
+            },
             message_id: msg.id.to_string(),
             correlation_id: msg.correlation_id.to_string(),
             state: msg.state,
@@ -410,6 +475,116 @@ impl StateService for StateServiceServer {
         });
 
         Ok(Response::new(GetResponseNodeResponse { node }))
+    }
+
+    async fn get_svc_request_node(
+        &self,
+        request: Request<GetSvcRequestNodeRequest>,
+    ) -> Result<Response<GetSvcRequestNodeResponse>, Status> {
+        let req = request.into_inner();
+        let dag_hash = DagNodeId::from(req.dag_hash);
+        let result = self
+            .store
+            .get_svc_request_node(&dag_hash)
+            .await
+            .map_err(Status::internal)?;
+
+        let node = result.map(|(key, msg)| SvcRequestNodeProto {
+            session_id: key.session.to_string(),
+            branch: key.branch.as_i64(),
+            submission_id: key.submission.to_string(),
+            agent: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcRequest { agent, .. } => agent.to_string(),
+                vlinder_core::domain::SvcMessageKind::SvcResponse { .. } => String::new(),
+            },
+            service_type: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcRequest { service, .. } => {
+                    service.service_type_str().to_string()
+                }
+                vlinder_core::domain::SvcMessageKind::SvcResponse { .. } => String::new(),
+            },
+            service_backend: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcRequest { service, .. } => {
+                    service.backend_str().to_string()
+                }
+                vlinder_core::domain::SvcMessageKind::SvcResponse { .. } => String::new(),
+            },
+            operation: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcRequest { operation, .. } => {
+                    operation.to_string()
+                }
+                vlinder_core::domain::SvcMessageKind::SvcResponse { .. } => String::new(),
+            },
+            sequence: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcRequest { sequence, .. } => {
+                    sequence.as_u32()
+                }
+                vlinder_core::domain::SvcMessageKind::SvcResponse { .. } => 0,
+            },
+            message_id: msg.id.to_string(),
+            tool_call_id: msg.tool_call_id.to_string(),
+            state: msg.state,
+            arguments: msg.payload,
+            diagnostics: Some(serde_json::to_string(&msg.diagnostics).unwrap_or_default()),
+        });
+
+        Ok(Response::new(GetSvcRequestNodeResponse { node }))
+    }
+
+    async fn get_svc_response_node(
+        &self,
+        request: Request<GetSvcResponseNodeRequest>,
+    ) -> Result<Response<GetSvcResponseNodeResponse>, Status> {
+        let req = request.into_inner();
+        let dag_hash = DagNodeId::from(req.dag_hash);
+        let result = self
+            .store
+            .get_svc_response_node(&dag_hash)
+            .await
+            .map_err(Status::internal)?;
+
+        let node = result.map(|(key, msg)| SvcResponseNodeProto {
+            session_id: key.session.to_string(),
+            branch: key.branch.as_i64(),
+            submission_id: key.submission.to_string(),
+            agent: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcResponse { agent, .. } => {
+                    agent.to_string()
+                }
+                vlinder_core::domain::SvcMessageKind::SvcRequest { .. } => String::new(),
+            },
+            service_type: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcResponse { service, .. } => {
+                    service.service_type_str().to_string()
+                }
+                vlinder_core::domain::SvcMessageKind::SvcRequest { .. } => String::new(),
+            },
+            service_backend: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcResponse { service, .. } => {
+                    service.backend_str().to_string()
+                }
+                vlinder_core::domain::SvcMessageKind::SvcRequest { .. } => String::new(),
+            },
+            operation: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcResponse { operation, .. } => {
+                    operation.to_string()
+                }
+                vlinder_core::domain::SvcMessageKind::SvcRequest { .. } => String::new(),
+            },
+            sequence: match &key.kind {
+                vlinder_core::domain::SvcMessageKind::SvcResponse { sequence, .. } => {
+                    sequence.as_u32()
+                }
+                vlinder_core::domain::SvcMessageKind::SvcRequest { .. } => 0,
+            },
+            message_id: msg.id.to_string(),
+            correlation_id: msg.correlation_id.to_string(),
+            state: msg.state,
+            payload: msg.payload,
+            diagnostics: Some(serde_json::to_string(&msg.diagnostics).unwrap_or_default()),
+        });
+
+        Ok(Response::new(GetSvcResponseNodeResponse { node }))
     }
 
     async fn insert_invoke_node(
@@ -510,6 +685,7 @@ impl StateService for StateServiceServer {
                 vlinder_core::domain::CompleteMessage {
                     id: vlinder_core::domain::MessageId::from(req.message_id.clone()),
                     dag_id: dag_id.clone(),
+                    dag_parent: vlinder_core::domain::DagNodeId::root(),
                     state: req.state.clone(),
                     diagnostics,
                     content: None,
@@ -583,6 +759,7 @@ impl StateService for StateServiceServer {
         let msg = vlinder_core::domain::RequestMessage {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             dag_id: dag_id.clone(),
+            dag_parent: vlinder_core::domain::DagNodeId::root(),
             state: req.state,
             diagnostics,
             payload: req.payload,
@@ -657,6 +834,7 @@ impl StateService for StateServiceServer {
         let msg = vlinder_core::domain::ResponseMessage {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             dag_id: dag_id.clone(),
+            dag_parent: vlinder_core::domain::DagNodeId::root(),
             correlation_id: vlinder_core::domain::MessageId::from(req.correlation_id),
             state: req.state,
             diagnostics,
@@ -1009,6 +1187,7 @@ impl StateService for StateServiceServer {
         let msg = vlinder_core::domain::RequestV2 {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             dag_id: dag_id.clone(),
+            dag_parent: vlinder_core::domain::DagNodeId::root(),
             tool_call_id: vlinder_core::domain::ToolCallId::from(req.tool_call_id),
             state: state_str,
             diagnostics,
@@ -1081,6 +1260,7 @@ impl StateService for StateServiceServer {
         let msg = vlinder_core::domain::ResponseV2 {
             id: vlinder_core::domain::MessageId::from(req.message_id),
             dag_id: dag_id.clone(),
+            dag_parent: vlinder_core::domain::DagNodeId::root(),
             correlation_id: vlinder_core::domain::MessageId::from(req.correlation_id),
             state: state_str,
             diagnostics,

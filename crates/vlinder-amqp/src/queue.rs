@@ -14,7 +14,7 @@ use lapin::{
     BasicProperties, Channel, Connection, ConnectionProperties, ExchangeKind,
 };
 use vlinder_core::domain::{
-    Acknowledgement, AgentName, CompleteMessage, DataMessageKind, DataRoutingKey,
+    Acknowledgement, AgentName, CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey,
     DeleteAgentMessage, DeployAgentMessage, ExternalSessionId, ForkMessage, HarnessType,
     InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
     RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionMessageKind,
@@ -213,11 +213,17 @@ impl MessageQueue for AmqpQueue {
         Ok(())
     }
 
-    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(
+        &self,
+        key: DataRoutingKey,
+        msg: InvokeMessage,
+    ) -> Result<DagNodeId, QueueError> {
+        let dag_id = msg.dag_id.clone();
         let rk = routing::invoke_routing_key(&key);
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize invoke: {e}")))?;
-        self.publish(&rk, msg.id.as_str(), &payload).await
+        self.publish(&rk, msg.id.as_str(), &payload).await?;
+        Ok(dag_id)
     }
 
     async fn receive_invoke(
@@ -344,7 +350,8 @@ impl MessageQueue for AmqpQueue {
         &self,
         key: DataRoutingKey,
         msg: CompleteMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
+        let dag_id = msg.dag_id.clone();
         let DataMessageKind::Complete {
             ref agent, harness, ..
         } = key.kind
@@ -360,14 +367,16 @@ impl MessageQueue for AmqpQueue {
         );
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize complete: {e}")))?;
-        self.publish(&rk, msg.id.as_str(), &payload).await
+        self.publish(&rk, msg.id.as_str(), &payload).await?;
+        Ok(dag_id)
     }
 
     async fn send_request(
         &self,
         key: DataRoutingKey,
         msg: RequestMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
+        let dag_id = msg.dag_id.clone();
         let DataMessageKind::Request {
             ref agent,
             service,
@@ -408,14 +417,15 @@ impl MessageQueue for AmqpQueue {
             .await
             .map_err(|e| QueueError::SendFailed(format!("publish confirm failed: {e}")))?;
 
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn send_response(
         &self,
         key: DataRoutingKey,
         msg: ResponseMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
+        let dag_id = msg.dag_id.clone();
         let DataMessageKind::Response {
             ref agent,
             service,
@@ -436,7 +446,8 @@ impl MessageQueue for AmqpQueue {
         );
         let payload = serde_json::to_vec(&msg)
             .map_err(|e| QueueError::SendFailed(format!("serialize response: {e}")))?;
-        self.publish(&rk, msg.id.as_str(), &payload).await
+        self.publish(&rk, msg.id.as_str(), &payload).await?;
+        Ok(dag_id)
     }
 
     async fn send_fork(&self, key: SessionRoutingKey, msg: ForkMessage) -> Result<(), QueueError> {

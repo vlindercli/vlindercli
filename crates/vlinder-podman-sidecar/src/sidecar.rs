@@ -82,23 +82,77 @@ impl Sidecar {
         .await
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+        let agent_id = AgentName::new(&self.agent_name);
+
+        // Receive the first invoke so we can latch session_id/branch/submission
+        // for the session-scoped ProviderServer. These fields are stable across
+        // every invoke in a run (verified empirically; submission_id is run-scoped,
+        // not invoke-scoped). Retry on receive timeout — that's normal polling
+        // behavior, not a fatal error.
+        let (first_key, first_invoke, first_ack) = loop {
+            match self.dispatch.queue.receive_invoke(&agent_id).await {
+                Ok(tuple) => break tuple,
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        };
+        let _ = first_ack().await;
+
+        let session_provider = vlinder_provider_server::dispatch::start_session_provider(
+            &self.dispatch.queue,
+            &self.dispatch.registry,
+            &agent_id,
+            first_key.branch,
+            first_key.submission.clone(),
+            first_key.session.clone(),
+        )
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
         tracing::info!(event = "sidecar.started", agent = %self.agent_name, "Sidecar loop started");
 
-        loop {
-            let agent_id = AgentName::new(&self.agent_name);
+        // Dispatch the first invoke we already pulled.
+        self.dispatch_one(&session_provider, &first_key, &first_invoke)
+            .await;
 
+        loop {
             if let Ok((key, invoke, ack)) = self.dispatch.queue.receive_invoke(&agent_id).await {
                 let _ = ack().await;
-                tracing::info!(
-                    event = "dispatch.started",
-                    submission = %key.submission,
-                    session = %key.session,
-                    "Dispatching invoke to container"
-                );
-                dispatch::handle_invoke(&self.dispatch, &mut self.health, &key, &invoke).await;
+                self.dispatch_one(&session_provider, &key, &invoke).await;
             } else {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
+    }
+
+    async fn dispatch_one(
+        &mut self,
+        session_provider: &vlinder_provider_server::dispatch::SessionProvider,
+        key: &vlinder_core::domain::DataRoutingKey,
+        invoke: &vlinder_core::domain::InvokeMessage,
+    ) {
+        tracing::debug!(
+            event = "chain_head_trace",
+            site = "sidecar.receive_invoke",
+            session = %key.session,
+            submission = %key.submission,
+            agent = %self.agent_name,
+            msg_dag_id = %invoke.dag_id,
+            msg_dag_parent = %invoke.dag_parent,
+            "sidecar received invoke from queue"
+        );
+        tracing::info!(
+            event = "dispatch.started",
+            submission = %key.submission,
+            session = %key.session,
+            "Dispatching invoke to container"
+        );
+        dispatch::handle_invoke(
+            &self.dispatch,
+            &mut self.health,
+            session_provider,
+            key,
+            invoke,
+        )
+        .await;
     }
 }

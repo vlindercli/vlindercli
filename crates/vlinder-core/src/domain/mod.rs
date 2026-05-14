@@ -18,6 +18,7 @@ mod diagnostics;
 mod fleet;
 mod fleet_manifest;
 pub mod harness;
+pub mod harness_event;
 mod identity;
 mod image_digest;
 mod image_ref;
@@ -37,6 +38,8 @@ pub mod registry_memory;
 mod registry_repository;
 mod resource_id;
 mod routing_key;
+pub mod run_ctl;
+pub mod run_result;
 mod runtime;
 mod secret_store;
 mod service_backend_v2;
@@ -48,6 +51,7 @@ mod tool_call;
 mod tool_call_parser;
 mod tool_call_protocol;
 mod tool_result;
+pub mod tool_trace;
 pub mod wire;
 pub mod workers;
 
@@ -64,11 +68,13 @@ pub use image_ref::ImageRef;
 pub use operation::{Operation, ServiceOperation};
 pub use pod_id::PodId;
 pub use readiness::{derive_status, ReadinessCheck, ReadinessStatus};
+pub use run_result::RunResult;
 pub use service_type::ServiceType;
 pub use tool_call::ToolCall;
 pub use tool_call_parser::{ParseError, ParsedResponse, ToolCallParser};
 pub use tool_call_protocol::ToolCallProtocol;
 pub use tool_result::ToolResult;
+pub use tool_trace::{ToolTrace, TurnTrace};
 
 // ============================================================================
 // Message Queue (protocol types + trait)
@@ -157,6 +163,8 @@ pub use runtime::{Runtime, RuntimeType};
 // ============================================================================
 
 pub use harness::{CoreHarness, ForkParams, Harness, PromoteParams};
+pub use harness_event::{ApprovalDecision, HarnessEvent};
+pub use run_ctl::{ApprovalMode, RunCtl};
 pub use session::Session;
 
 // ============================================================================

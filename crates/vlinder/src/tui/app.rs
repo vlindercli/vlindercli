@@ -3,6 +3,7 @@
 //! about rendering, theming, or events.
 
 use ratatui_textarea::TextArea;
+use vlinder_core::domain::{ToolCall, ToolTrace};
 
 use super::theme;
 
@@ -11,6 +12,17 @@ use super::theme;
 pub enum Role {
     User,
     Assistant,
+    ToolCall,
+}
+
+/// Display data for a rendered tool-call entry.
+#[derive(Clone)]
+pub struct ToolTraceDisplay {
+    pub name: String,
+    pub args: String,
+    pub result: String,
+    pub duration_ms: u64,
+    pub is_error: bool,
 }
 
 /// One styled entry in the transcript. Multi-line `text` is allowed; the
@@ -18,6 +30,7 @@ pub enum Role {
 pub struct Entry {
     pub role: Role,
     pub text: String,
+    pub tool: Option<ToolTraceDisplay>,
 }
 
 /// All UI state for the REPL. Public fields are read by renderers; mutation
@@ -43,6 +56,10 @@ pub struct App {
     /// output auto-scrolls into view. Scrolling up disengages this; reaching
     /// the bottom (or jumping there) re-engages it.
     pub follow_tail: bool,
+
+    /// When true, tool-call entries render expanded (full args + result).
+    /// Toggled by Ctrl+O.
+    pub tools_expanded: bool,
 }
 
 impl App {
@@ -56,6 +73,7 @@ impl App {
             spinner_frame: 0,
             scroll_offset: 0,
             follow_tail: true,
+            tools_expanded: false,
         }
     }
 
@@ -65,6 +83,7 @@ impl App {
         self.output.push(Entry {
             role: Role::User,
             text: text.into(),
+            tool: None,
         });
     }
 
@@ -72,6 +91,89 @@ impl App {
         self.output.push(Entry {
             role: Role::Assistant,
             text: text.into(),
+            tool: None,
+        });
+    }
+
+    /// Push a pending tool-call entry showing "[running…]".
+    /// Returns the index so `finalize_tool_call` can update it in place.
+    pub fn push_tool_call_pending(&mut self, tool_call: &ToolCall) -> usize {
+        let idx = self.output.len();
+        let args_str = serde_json::to_string(&tool_call.arguments)
+            .unwrap_or_else(|_| tool_call.arguments.to_string());
+        let one_liner = format!("⏵ {}(…) [running…]", tool_call.name);
+        self.output.push(Entry {
+            role: Role::ToolCall,
+            text: one_liner,
+            tool: Some(ToolTraceDisplay {
+                name: tool_call.name.clone(),
+                args: args_str,
+                result: String::new(),
+                duration_ms: 0,
+                is_error: false,
+            }),
+        });
+        idx
+    }
+
+    /// Update a pending tool-call entry with completed details (duration, result preview).
+    pub fn finalize_tool_call(&mut self, idx: usize, trace: &ToolTrace) {
+        if idx >= self.output.len() {
+            return;
+        }
+        let is_error = false; // ToolResult has no is_error field yet.
+        let result_preview = String::from_utf8_lossy(&trace.result.content)
+            .chars()
+            .take(80)
+            .collect::<String>();
+        let one_liner = format!(
+            "⏵ {}(…) [{}ms] {}",
+            trace.tool_call.name,
+            trace.duration_ms,
+            result_preview.trim(),
+        );
+        let args_pretty = serde_json::to_string_pretty(&trace.tool_call.arguments)
+            .unwrap_or_else(|_| trace.tool_call.arguments.to_string());
+        self.output[idx] = Entry {
+            role: Role::ToolCall,
+            text: one_liner,
+            tool: Some(ToolTraceDisplay {
+                name: trace.tool_call.name.clone(),
+                args: args_pretty,
+                result: String::from_utf8_lossy(&trace.result.content).to_string(),
+                duration_ms: trace.duration_ms,
+                is_error,
+            }),
+        };
+    }
+
+    /// Push a tool-call entry built from a domain `ToolTrace`.
+    pub fn push_tool_call(&mut self, trace: &ToolTrace) {
+        // TODO: ToolResult currently has no `is_error` field; always false.
+        let is_error = false;
+        let args_pretty = serde_json::to_string_pretty(&trace.tool_call.arguments)
+            .unwrap_or_else(|_| trace.tool_call.arguments.to_string());
+        // Collapsed one-liner: name(args) → "<first 40 chars of content>" [Nms]
+        let result_preview = String::from_utf8_lossy(&trace.result.content)
+            .chars()
+            .take(40)
+            .collect::<String>();
+        let one_liner = format!(
+            "{}(…) → \"{}…\"",
+            trace.tool_call.name,
+            result_preview.trim()
+        );
+
+        self.output.push(Entry {
+            role: Role::ToolCall,
+            text: one_liner,
+            tool: Some(ToolTraceDisplay {
+                name: trace.tool_call.name.clone(),
+                args: args_pretty,
+                result: String::from_utf8_lossy(&trace.result.content).to_string(),
+                duration_ms: trace.duration_ms,
+                is_error,
+            }),
         });
     }
 

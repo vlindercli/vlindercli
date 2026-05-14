@@ -16,6 +16,7 @@ use super::identity::{DagNodeId, MessageId};
 pub struct ResponseMessage {
     pub id: MessageId,
     pub dag_id: DagNodeId,
+    pub dag_parent: DagNodeId,
     pub correlation_id: MessageId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
@@ -36,6 +37,7 @@ mod tests {
         let msg = ResponseMessage {
             id: MessageId::from("msg-1".to_string()),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             correlation_id: MessageId::from("req-1".to_string()),
             state: Some("state-abc".to_string()),
             diagnostics: ServiceDiagnostics::storage(
@@ -59,6 +61,7 @@ mod tests {
         let msg = ResponseMessage {
             id: MessageId::from("msg-1".to_string()),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             correlation_id: MessageId::from("req-1".to_string()),
             state: None,
             diagnostics: ServiceDiagnostics::storage(

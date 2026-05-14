@@ -2,11 +2,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{Subcommand, ValueEnum};
+use tokio::sync::mpsc;
 
 use crate::config::CliConfig;
 use vlinder_core::domain::{
     Agent, AgentManifest, AgentStatus, BranchId, DagNodeId, DagStore, ExternalSessionId,
-    McpManifest, McpServer, Registry, SessionId,
+    HarnessEvent, McpManifest, McpServer, Registry, RunCtl, RunResult, SessionId,
 };
 use vlinder_sql_registry::registry_service::GrpcRegistryClient;
 
@@ -302,34 +303,63 @@ async fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Op
         }
     };
 
-    let invoke = |input: String| {
-        let harness = harness.clone();
-        let agent_id = agent_id.clone();
-        let session_id = session_id.clone();
-        let initial_state = initial_state.clone();
-        let dag_parent = dag_parent.clone();
-        async move {
-            harness
-                .run_agent(
-                    &agent_id,
-                    &input,
-                    session_id,
-                    branch_id,
-                    sealed,
-                    initial_state,
-                    dag_parent,
-                )
-                .await
-                .unwrap_or_else(|e| format!("[error] {e}"))
-        }
-    };
-
     if let Some(message) = prompt {
         // Non-interactive: send single message, print response, exit.
-        println!("{}", invoke(message.to_string()).await);
+        let ctl = RunCtl::quiet();
+        let result = harness
+            .run_agent(
+                &agent_id,
+                message,
+                session_id,
+                branch_id,
+                sealed,
+                initial_state,
+                dag_parent,
+                &ctl,
+            )
+            .await
+            .unwrap_or_else(|e| RunResult {
+                content: Some(format!("[error] {e}")),
+                pending_tool_calls: None,
+                turns: Vec::new(),
+                state_snapshot: None,
+            });
+        println!("{}", result.content.unwrap_or_default());
     } else {
-        // Interactive REPL.
-        tui::run(invoke).await;
+        // Interactive REPL — create event channel for streaming tool traces.
+        let (event_tx, event_rx) = mpsc::channel::<HarnessEvent>(32);
+
+        let invoke = move |input: String| {
+            let harness = harness.clone();
+            let agent_id = agent_id.clone();
+            let session_id = session_id.clone();
+            let initial_state = initial_state.clone();
+            let dag_parent = dag_parent.clone();
+            let ctl_tx = event_tx.clone();
+            async move {
+                let ctl = RunCtl::streaming(ctl_tx);
+                harness
+                    .run_agent(
+                        &agent_id,
+                        &input,
+                        session_id,
+                        branch_id,
+                        sealed,
+                        initial_state,
+                        dag_parent,
+                        &ctl,
+                    )
+                    .await
+                    .unwrap_or_else(|e| RunResult {
+                        content: Some(format!("[error] {e}")),
+                        pending_tool_calls: None,
+                        turns: Vec::new(),
+                        state_snapshot: None,
+                    })
+            }
+        };
+
+        tui::run(invoke, event_rx).await;
     }
 }
 
@@ -443,7 +473,7 @@ async fn resolve_branch_tip(
                 .await
                 .ok()
                 .flatten()
-                .and_then(|m| m.state)
+                .and_then(|(_, m)| m.state)
                 .unwrap_or_default()
         } else {
             String::new()

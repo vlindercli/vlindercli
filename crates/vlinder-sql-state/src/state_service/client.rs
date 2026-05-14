@@ -282,7 +282,13 @@ impl DagStore for GrpcStateClient {
     async fn get_complete_node(
         &self,
         dag_hash: &DagNodeId,
-    ) -> Result<Option<vlinder_core::domain::CompleteMessage>, String> {
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::DataRoutingKey,
+            vlinder_core::domain::CompleteMessage,
+        )>,
+        String,
+    > {
         let request = proto::GetCompleteNodeRequest {
             dag_hash: dag_hash.to_string(),
         };
@@ -295,21 +301,38 @@ impl DagStore for GrpcStateClient {
 
         match response.into_inner().node {
             Some(n) => {
+                let harness: vlinder_core::domain::HarnessType = n
+                    .harness
+                    .parse()
+                    .unwrap_or(vlinder_core::domain::HarnessType::Cli);
+                let key = vlinder_core::domain::DataRoutingKey {
+                    session: vlinder_core::domain::SessionId::try_from(n.session_id)
+                        .unwrap_or_else(|_| vlinder_core::domain::SessionId::new()),
+                    branch: vlinder_core::domain::BranchId::from(n.branch),
+                    submission: vlinder_core::domain::SubmissionId::from(n.submission_id),
+                    kind: vlinder_core::domain::DataMessageKind::Complete {
+                        agent: vlinder_core::domain::AgentName::new(n.agent),
+                        harness,
+                    },
+                };
+
                 let diagnostics: vlinder_core::domain::RuntimeDiagnostics =
                     serde_json::from_slice(&n.diagnostics).unwrap_or_else(|_| {
                         vlinder_core::domain::RuntimeDiagnostics::placeholder(0)
                     });
-                Ok(Some(serde_json::from_slice(&n.payload).unwrap_or_else(
-                    |_| vlinder_core::domain::CompleteMessage {
+                let msg = serde_json::from_slice(&n.payload).unwrap_or_else(|_| {
+                    vlinder_core::domain::CompleteMessage {
                         id: vlinder_core::domain::MessageId::from(n.message_id),
                         dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
+                        dag_parent: vlinder_core::domain::DagNodeId::root(),
                         state: n.state,
                         diagnostics,
                         content: None,
                         tool_calls: None,
                         payload: vec![],
-                    },
-                )))
+                    }
+                });
+                Ok(Some((key, msg)))
             }
             None => Ok(None),
         }
@@ -318,7 +341,13 @@ impl DagStore for GrpcStateClient {
     async fn get_request_node(
         &self,
         dag_hash: &DagNodeId,
-    ) -> Result<Option<vlinder_core::domain::RequestMessage>, String> {
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::DataRoutingKey,
+            vlinder_core::domain::RequestMessage,
+        )>,
+        String,
+    > {
         let request = proto::GetRequestNodeRequest {
             dag_hash: dag_hash.to_string(),
         };
@@ -331,6 +360,33 @@ impl DagStore for GrpcStateClient {
 
         match response.into_inner().node {
             Some(n) => {
+                let service: vlinder_core::domain::ServiceBackend =
+                    n.service.parse().map_err(|e| {
+                        format!(
+                            "get_request_node({dag_hash}): service = {} unparseable: {e}",
+                            n.service
+                        )
+                    })?;
+                let operation: vlinder_core::domain::Operation =
+                    n.operation.parse().map_err(|e| {
+                        format!(
+                            "get_request_node({dag_hash}): operation = {} unparseable: {e}",
+                            n.operation
+                        )
+                    })?;
+                let key = vlinder_core::domain::DataRoutingKey {
+                    session: vlinder_core::domain::SessionId::try_from(n.session_id)
+                        .unwrap_or_else(|_| vlinder_core::domain::SessionId::new()),
+                    branch: vlinder_core::domain::BranchId::from(n.branch),
+                    submission: vlinder_core::domain::SubmissionId::from(n.submission_id),
+                    kind: vlinder_core::domain::DataMessageKind::Request {
+                        agent: vlinder_core::domain::AgentName::new(n.agent),
+                        service,
+                        operation,
+                        sequence: vlinder_core::domain::Sequence::from(n.sequence),
+                    },
+                };
+
                 let diagnostics: vlinder_core::domain::RequestDiagnostics =
                     serde_json::from_slice(&n.diagnostics).unwrap_or_else(|_| {
                         vlinder_core::domain::RequestDiagnostics {
@@ -340,14 +396,16 @@ impl DagStore for GrpcStateClient {
                             received_at_ms: 0,
                         }
                     });
-                Ok(Some(vlinder_core::domain::RequestMessage {
+                let msg = vlinder_core::domain::RequestMessage {
                     id: vlinder_core::domain::MessageId::from(n.message_id),
                     dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
+                    dag_parent: vlinder_core::domain::DagNodeId::root(),
                     state: n.state,
                     diagnostics,
                     payload: n.payload,
                     checkpoint: n.checkpoint,
-                }))
+                };
+                Ok(Some((key, msg)))
             }
             None => Ok(None),
         }
@@ -356,7 +414,13 @@ impl DagStore for GrpcStateClient {
     async fn get_response_node(
         &self,
         dag_hash: &DagNodeId,
-    ) -> Result<Option<vlinder_core::domain::ResponseMessage>, String> {
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::DataRoutingKey,
+            vlinder_core::domain::ResponseMessage,
+        )>,
+        String,
+    > {
         let request = proto::GetResponseNodeRequest {
             dag_hash: dag_hash.to_string(),
         };
@@ -369,6 +433,33 @@ impl DagStore for GrpcStateClient {
 
         match response.into_inner().node {
             Some(n) => {
+                let service: vlinder_core::domain::ServiceBackend =
+                    n.service.parse().map_err(|e| {
+                        format!(
+                            "get_response_node({dag_hash}): service = {} unparseable: {e}",
+                            n.service
+                        )
+                    })?;
+                let operation: vlinder_core::domain::Operation =
+                    n.operation.parse().map_err(|e| {
+                        format!(
+                            "get_response_node({dag_hash}): operation = {} unparseable: {e}",
+                            n.operation
+                        )
+                    })?;
+                let key = vlinder_core::domain::DataRoutingKey {
+                    session: vlinder_core::domain::SessionId::try_from(n.session_id)
+                        .unwrap_or_else(|_| vlinder_core::domain::SessionId::new()),
+                    branch: vlinder_core::domain::BranchId::from(n.branch),
+                    submission: vlinder_core::domain::SubmissionId::from(n.submission_id),
+                    kind: vlinder_core::domain::DataMessageKind::Response {
+                        agent: vlinder_core::domain::AgentName::new(n.agent),
+                        service,
+                        operation,
+                        sequence: vlinder_core::domain::Sequence::from(n.sequence),
+                    },
+                };
+
                 let diagnostics: vlinder_core::domain::ServiceDiagnostics =
                     serde_json::from_slice(&n.diagnostics).unwrap_or_else(|_| {
                         vlinder_core::domain::ServiceDiagnostics::storage(
@@ -379,16 +470,156 @@ impl DagStore for GrpcStateClient {
                             0,
                         )
                     });
-                Ok(Some(vlinder_core::domain::ResponseMessage {
+                let msg = vlinder_core::domain::ResponseMessage {
                     id: vlinder_core::domain::MessageId::from(n.message_id),
                     dag_id: vlinder_core::domain::DagNodeId::from(n.dag_hash),
+                    dag_parent: vlinder_core::domain::DagNodeId::root(),
                     correlation_id: vlinder_core::domain::MessageId::from(n.correlation_id),
                     state: n.state,
                     diagnostics,
                     payload: n.payload,
                     status_code: u16::try_from(n.status_code).unwrap_or(200),
                     checkpoint: n.checkpoint,
-                }))
+                };
+                Ok(Some((key, msg)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_svc_request_node(
+        &self,
+        dag_hash: &DagNodeId,
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::SvcRoutingKey,
+            vlinder_core::domain::RequestV2,
+        )>,
+        String,
+    > {
+        let request = proto::GetSvcRequestNodeRequest {
+            dag_hash: dag_hash.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .get_svc_request_node(request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match response.into_inner().node {
+            Some(n) => {
+                let service = vlinder_core::domain::ServiceBackendV2::from_parts(
+                    &n.service_type,
+                    &n.service_backend,
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "get_svc_request_node({dag_hash}): service_type={} backend={} unparseable",
+                        n.service_type, n.service_backend
+                    )
+                })?;
+                let operation = vlinder_core::domain::ServiceOperation::new(&n.operation);
+                let key = vlinder_core::domain::SvcRoutingKey {
+                    session: vlinder_core::domain::SessionId::try_from(n.session_id).map_err(
+                        |e| {
+                            format!("get_svc_request_node({dag_hash}): session_id unparseable: {e}")
+                        },
+                    )?,
+                    branch: vlinder_core::domain::BranchId::from(n.branch),
+                    submission: vlinder_core::domain::SubmissionId::from(n.submission_id),
+                    kind: vlinder_core::domain::SvcMessageKind::SvcRequest {
+                        agent: vlinder_core::domain::AgentName::new(n.agent),
+                        service,
+                        operation,
+                        sequence: vlinder_core::domain::Sequence::from(n.sequence),
+                    },
+                };
+                let diagnostics: vlinder_core::domain::SvcRequestDiagnostics = n
+                    .diagnostics
+                    .as_deref()
+                    .and_then(|d| serde_json::from_str(d).ok())
+                    .unwrap_or_default();
+                let msg = vlinder_core::domain::RequestV2 {
+                    id: vlinder_core::domain::MessageId::from(n.message_id),
+                    dag_id: dag_hash.clone(),
+                    dag_parent: vlinder_core::domain::DagNodeId::root(),
+                    tool_call_id: vlinder_core::domain::ToolCallId::from(n.tool_call_id),
+                    state: n.state,
+                    diagnostics,
+                    payload: n.arguments,
+                };
+                Ok(Some((key, msg)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_svc_response_node(
+        &self,
+        dag_hash: &DagNodeId,
+    ) -> Result<
+        Option<(
+            vlinder_core::domain::SvcRoutingKey,
+            vlinder_core::domain::ResponseV2,
+        )>,
+        String,
+    > {
+        let request = proto::GetSvcResponseNodeRequest {
+            dag_hash: dag_hash.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .get_svc_response_node(request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match response.into_inner().node {
+            Some(n) => {
+                let service = vlinder_core::domain::ServiceBackendV2::from_parts(
+                    &n.service_type,
+                    &n.service_backend,
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "get_svc_response_node({dag_hash}): service_type={} backend={} unparseable",
+                        n.service_type, n.service_backend
+                    )
+                })?;
+                let operation = vlinder_core::domain::ServiceOperation::new(&n.operation);
+                let key = vlinder_core::domain::SvcRoutingKey {
+                    session: vlinder_core::domain::SessionId::try_from(n.session_id).map_err(
+                        |e| {
+                            format!(
+                                "get_svc_response_node({dag_hash}): session_id unparseable: {e}"
+                            )
+                        },
+                    )?,
+                    branch: vlinder_core::domain::BranchId::from(n.branch),
+                    submission: vlinder_core::domain::SubmissionId::from(n.submission_id),
+                    kind: vlinder_core::domain::SvcMessageKind::SvcResponse {
+                        agent: vlinder_core::domain::AgentName::new(n.agent),
+                        service,
+                        operation,
+                        sequence: vlinder_core::domain::Sequence::from(n.sequence),
+                    },
+                };
+                let diagnostics: vlinder_core::domain::SvcResponseDiagnostics = n
+                    .diagnostics
+                    .as_deref()
+                    .and_then(|d| serde_json::from_str(d).ok())
+                    .unwrap_or_default();
+                let msg = vlinder_core::domain::ResponseV2 {
+                    id: vlinder_core::domain::MessageId::from(n.message_id),
+                    dag_id: dag_hash.clone(),
+                    dag_parent: vlinder_core::domain::DagNodeId::root(),
+                    correlation_id: vlinder_core::domain::MessageId::from(n.correlation_id),
+                    state: n.state,
+                    diagnostics,
+                    payload: n.payload,
+                };
+                Ok(Some((key, msg)))
             }
             None => Ok(None),
         }

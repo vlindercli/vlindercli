@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::app::{App, Entry, Role};
+use super::app::{App, Entry, Role, ToolTraceDisplay};
 use super::theme;
 
 /// ASCII wordmark for `vlinder` (lowercase ASCII-art block letters).
@@ -88,7 +88,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let lines = if app.output.is_empty() {
         welcome_lines()
     } else {
-        transcript_lines(&app.output, area.width)
+        transcript_lines(&app.output, area.width, app.tools_expanded)
     };
 
     let total_rows = count_wrapped_rows(&lines, area.width);
@@ -115,10 +115,10 @@ fn welcome_lines() -> Vec<Line<'static>> {
     ]
 }
 
-fn transcript_lines(output: &[Entry], width: u16) -> Vec<Line<'static>> {
+fn transcript_lines(output: &[Entry], width: u16, tools_expanded: bool) -> Vec<Line<'static>> {
     let mut acc: Vec<Line> = Vec::new();
     for (idx, entry) in output.iter().enumerate() {
-        acc.extend(render_entry(entry, width));
+        acc.extend(render_entry(entry, width, tools_expanded));
         if idx + 1 < output.len() {
             acc.push(Line::from(""));
         }
@@ -126,10 +126,21 @@ fn transcript_lines(output: &[Entry], width: u16) -> Vec<Line<'static>> {
     acc
 }
 
-fn render_entry(entry: &Entry, width: u16) -> Vec<Line<'static>> {
+fn render_entry(entry: &Entry, width: u16, tools_expanded: bool) -> Vec<Line<'static>> {
     match entry.role {
         Role::User => render_user_entry(&entry.text, width),
         Role::Assistant => render_assistant_entry(&entry.text),
+        Role::ToolCall => {
+            if let Some(ref display) = entry.tool {
+                if tools_expanded {
+                    render_tool_call_expanded(display, width)
+                } else {
+                    render_tool_call_collapsed(display, width)
+                }
+            } else {
+                render_assistant_entry(&entry.text)
+            }
+        }
     }
 }
 
@@ -160,6 +171,93 @@ fn render_assistant_entry(text: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// Collapsed tool-call showing name, truncated args/result, and duration.
+fn render_tool_call_collapsed(display: &ToolTraceDisplay, width: u16) -> Vec<Line<'static>> {
+    let glyph_style = if display.is_error {
+        theme::tool_glyph_error_style()
+    } else {
+        theme::tool_glyph_style()
+    };
+    let prefix = if display.is_error { "✗" } else { "⏵" };
+    let left = format!(
+        "{} {}({:.40}) → \"{:.40}\"",
+        prefix,
+        display.name,
+        display.args.trim(),
+        display.result.trim()
+    );
+    let duration_s = format!("[{}ms]", display.duration_ms);
+    let left_w = left.chars().count();
+    let pad = usize::from(width).saturating_sub(left_w + duration_s.chars().count() + 2);
+    vec![Line::from(vec![
+        Span::styled(prefix, glyph_style),
+        Span::raw(" "),
+        Span::styled(display.name.clone(), theme::tool_name_style()),
+        Span::styled(
+            format!("({:.40})", display.args.trim()),
+            theme::tool_args_style(),
+        ),
+        Span::raw(" → "),
+        Span::raw(format!("\"{:.40}\"", display.result.trim())),
+        Span::styled(" ".repeat(pad), theme::hint_style()),
+        Span::styled(duration_s, theme::tool_duration_style()),
+    ])]
+}
+
+/// Expanded tool-call: header with name + duration, indented args block,
+/// indented result block.
+fn render_tool_call_expanded(display: &ToolTraceDisplay, width: u16) -> Vec<Line<'static>> {
+    let glyph_style = if display.is_error {
+        theme::tool_glyph_error_style()
+    } else {
+        theme::tool_glyph_style()
+    };
+    let prefix = if display.is_error { "✗" } else { "⏵" };
+    let duration_s = format!("[{}ms]", display.duration_ms);
+    let pad = usize::from(width)
+        .saturating_sub(display.name.chars().count() + duration_s.chars().count() + 4);
+
+    let mut lines = Vec::new();
+    // Header: glyph name [duration]
+    lines.push(Line::from(vec![
+        Span::styled(prefix, glyph_style),
+        Span::raw(" "),
+        Span::styled(display.name.clone(), theme::tool_name_style()),
+        Span::styled(" ".repeat(pad), theme::hint_style()),
+        Span::styled(duration_s, theme::tool_duration_style()),
+    ]));
+    // Args: "  args:   {pretty-printed JSON}"
+    for (i, arg_line) in display.args.lines().enumerate() {
+        if i == 0 {
+            lines.push(Line::from(vec![
+                Span::styled("  args:   ", theme::tool_args_label_style()),
+                Span::styled(arg_line.to_string(), theme::tool_args_style()),
+            ]));
+        } else {
+            // Continuation lines of args are indented further
+            lines.push(Line::from(Span::styled(
+                format!("          {arg_line}"),
+                theme::tool_args_style(),
+            )));
+        }
+    }
+    // Result: "  result: {result content}"
+    for (i, res_line) in display.result.lines().enumerate() {
+        if i == 0 {
+            lines.push(Line::from(vec![
+                Span::styled("  result: ", theme::tool_result_label_style()),
+                Span::styled(res_line.to_string(), theme::tool_result_style()),
+            ]));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!("          {res_line}"),
+                theme::tool_result_style(),
+            )));
+        }
+    }
+    lines
+}
+
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let line = if app.spinning {
         let glyph = theme::SPINNER_FRAMES[app.spinner_frame % theme::SPINNER_FRAMES.len()];
@@ -180,7 +278,7 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_hint(frame: &mut Frame<'_>, area: Rect) {
     let hint = Line::from(Span::styled(
-        "  ↵ send · shift+↵ newline · wheel/pgup-pgdn scroll · ctrl-c quit",
+        "  ↵ send · shift+↵ newline · ctrl-o tools · wheel/pgup-pgdn scroll · ctrl-c quit",
         theme::hint_style(),
     ));
     frame.render_widget(Paragraph::new(hint), area);

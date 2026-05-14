@@ -62,6 +62,7 @@ async fn send_error_response(
     let resp = ResponseV2 {
         id: MessageId::new(),
         dag_id: req.dag_id.clone(),
+        dag_parent: req.dag_id.clone(),
         correlation_id: req.id.clone(),
         state: req.state.clone(),
         diagnostics: SvcResponseDiagnostics {
@@ -75,6 +76,7 @@ async fn send_error_response(
     queue
         .send_svc_response(response_key, resp)
         .await
+        .map(|_| ())
         .map_err(Into::into)
 }
 
@@ -154,6 +156,7 @@ pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Re
         let resp = ResponseV2 {
             id: MessageId::new(),
             dag_id: req.dag_id.clone(),
+            dag_parent: req.dag_id.clone(),
             correlation_id: req.id,
             state: req.state.clone(),
             diagnostics: SvcResponseDiagnostics {

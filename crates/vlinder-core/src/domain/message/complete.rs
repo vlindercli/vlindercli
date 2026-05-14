@@ -15,6 +15,7 @@ use super::identity::{DagNodeId, MessageId};
 pub struct CompleteMessage {
     pub id: MessageId,
     pub dag_id: DagNodeId,
+    pub dag_parent: DagNodeId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     pub diagnostics: RuntimeDiagnostics,
@@ -41,6 +42,7 @@ mod tests {
         let msg = CompleteMessage {
             id: MessageId::from("msg-1".to_string()),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: Some("state-abc".to_string()),
             diagnostics: RuntimeDiagnostics::placeholder(42),
             content: None,
@@ -57,6 +59,7 @@ mod tests {
         let msg = CompleteMessage {
             id: MessageId::from("msg-1".to_string()),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
             content: None,
@@ -74,6 +77,7 @@ mod tests {
         let msg = CompleteMessage {
             id: MessageId::from("msg-1".to_string()),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
             content: None,

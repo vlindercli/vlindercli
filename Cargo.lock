@@ -6317,9 +6317,12 @@ dependencies = [
  "async-trait",
  "chrono",
  "prost",
+ "serde_json",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
+ "uuid",
  "vlinder-core",
 ]
 

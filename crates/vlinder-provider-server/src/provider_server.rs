@@ -3,23 +3,25 @@
 //! Pure HTTP plumbing: bind, recv, route, respond. Data-plane logic lives
 //! in the `handler` module — this module never touches the queue or registry.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use http::Method;
-use vlinder_core::domain::{HttpMethod, ProviderHost, ProviderRoute};
+use vlinder_core::domain::{DagNodeId, HttpMethod, ProviderHost, ProviderRoute};
 
-use crate::handler::InvokeHandler;
+use crate::handler::{InvokeHandler, RoutingContext};
 
 // =========================================================================
 // HTTP plumbing — server lifecycle, routing, host extraction
 // =========================================================================
 
-/// A running provider server, scoped to one invoke.
+/// A running provider server, session-scoped.
 ///
 /// Shuts down automatically when dropped: the `Drop` impl aborts the task.
 pub struct ProviderServer {
     handle: Option<tokio::task::JoinHandle<()>>,
     state: Arc<RwLock<Option<String>>>,
+    chain_head: Arc<Mutex<DagNodeId>>,
+    routing: Arc<Mutex<RoutingContext>>,
 }
 
 /// State shared between the axum router and the request handler.
@@ -43,6 +45,8 @@ impl ProviderServer {
         port: u16,
         tools: Vec<serde_json::Value>,
     ) -> Self {
+        let chain_head_arc = handler.chain_head_arc();
+        let routing_arc = handler.routing_arc();
         let hosts: Vec<ProviderHost> = hosts
             .into_iter()
             .map(|mut h| {
@@ -78,12 +82,40 @@ impl ProviderServer {
         Self {
             handle: Some(handle),
             state,
+            chain_head: chain_head_arc,
+            routing: routing_arc,
         }
     }
 
     /// Read the final state hash after an invocation completes.
     pub fn final_state(&self) -> Option<String> {
         self.state.read().unwrap().clone()
+    }
+
+    /// Read the final `chain_head` (last DAG node id) after an invocation completes.
+    pub fn chain_head(&self) -> DagNodeId {
+        self.chain_head.lock().unwrap().clone()
+    }
+
+    /// Reset `chain_head` to a new value. Called on each new invoke so that
+    /// outgoing requests on the upcoming turn parent on the invoke's `dag_id`.
+    /// The DAG is the source of truth; this resets the derived in-memory state.
+    pub fn set_chain_head(&self, head: DagNodeId) {
+        *self.chain_head.lock().unwrap() = head;
+    }
+
+    /// Seed the agent state for the upcoming turn. Called per-invoke before
+    /// the agent POST. `forward_provider` may further mutate state during the turn.
+    pub fn set_state(&self, state: Option<String>) {
+        *self.state.write().unwrap() = state;
+    }
+
+    /// Reset routing identifiers (branch/submission/session) on each new invoke,
+    /// so outgoing request routing keys carry the current user-turn's submission.
+    /// Without this, the session-scoped handler stamps every turn's requests
+    /// with the submission from when the sidecar started.
+    pub fn set_routing(&self, ctx: RoutingContext) {
+        *self.routing.lock().unwrap() = ctx;
     }
 }
 
@@ -306,18 +338,21 @@ mod tests {
     fn metadata_tools_state() -> Arc<ServerState> {
         use crate::handler::InvokeHandler;
         use std::sync::RwLock;
-        use vlinder_core::domain::{AgentName, BranchId, SessionId, SubmissionId};
+        use vlinder_core::domain::{AgentName, BranchId, DagNodeId, SessionId, SubmissionId};
         use vlinder_core::queue::InMemoryQueue;
 
         let queue = Arc::new(InMemoryQueue::new());
         let state = Arc::new(RwLock::new(None::<String>));
         let handler = InvokeHandler::new(
             queue,
-            BranchId::from(1),
-            SubmissionId::new(),
-            SessionId::new(),
+            crate::handler::RoutingContext {
+                branch: BranchId::from(1),
+                submission: SubmissionId::new(),
+                session: SessionId::new(),
+            },
             AgentName::new("test-agent"),
             state,
+            DagNodeId::root(),
         );
         Arc::new(ServerState {
             handler,

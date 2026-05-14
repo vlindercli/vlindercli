@@ -120,8 +120,11 @@ impl From<String> for DagNodeId {
 
 /// Unique identifier for a user-initiated submission.
 ///
-/// Value is a git commit SHA — directly pasteable into `git show`.
-/// A submission groups all messages related to a single user request.
+/// Minted once per user turn (in `Harness::run_agent`) and carried through
+/// every cycle of the invoke/reinvoke loop — so all messages belonging to
+/// one user request share a single `SubmissionId`.
+///
+/// Value is a UUID (v4).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SubmissionId(String);

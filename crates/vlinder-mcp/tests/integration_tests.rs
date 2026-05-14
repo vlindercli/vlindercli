@@ -44,6 +44,7 @@ fn echo_request(message: &str) -> RequestV2 {
     RequestV2 {
         id: MessageId::new(),
         dag_id: DagNodeId::root(),
+        dag_parent: DagNodeId::root(),
         tool_call_id: vlinder_core::domain::ToolCallId::new(),
         state: None,
         diagnostics: SvcRequestDiagnostics::default(),

@@ -125,6 +125,7 @@ impl OpenRouterWorker {
         let response = ResponseMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: msg.dag_id.clone(),
             correlation_id: msg.id,
             state: msg.state,
             diagnostics: diag,
@@ -278,6 +279,7 @@ mod tests {
         let msg = RequestMessage {
             id: MessageId::new(),
             dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
             state,
             diagnostics: test_request_diag(),
             payload,

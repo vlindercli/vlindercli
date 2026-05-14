@@ -70,6 +70,11 @@ fn handle_key(key: KeyEvent, app: &mut App) -> EventOutcome {
             app.jump_bottom();
             EventOutcome::Continue
         }
+        KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
+            app.tools_expanded = !app.tools_expanded;
+            app.jump_bottom();
+            EventOutcome::Continue
+        }
 
         _ => {
             app.textarea.input(key);

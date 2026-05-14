@@ -80,6 +80,48 @@ pub fn hint_style() -> Style {
     Style::default().fg(DIM)
 }
 
+// ── Tool call rendering ──────────────────────────────────────────────────
+
+/// Style for the glyph (⏵ / ✗) in tool-call entries.
+pub fn tool_glyph_style() -> Style {
+    Style::default().fg(ACCENT)
+}
+
+/// Style for the glyph when the tool call errored.
+pub fn tool_glyph_error_style() -> Style {
+    Style::default().fg(Color::Red)
+}
+
+/// Style for the tool name in tool-call entries.
+pub fn tool_name_style() -> Style {
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+}
+
+/// Style for tool arguments.
+pub fn tool_args_style() -> Style {
+    Style::default().fg(DIM)
+}
+
+/// Style for the "args:" label prefix.
+pub fn tool_args_label_style() -> Style {
+    Style::default().fg(DIM).add_modifier(Modifier::BOLD)
+}
+
+/// Style for tool results.
+pub fn tool_result_style() -> Style {
+    Style::default()
+}
+
+/// Style for the "result:" label prefix.
+pub fn tool_result_label_style() -> Style {
+    Style::default().fg(DIM).add_modifier(Modifier::BOLD)
+}
+
+/// Style for the duration display in tool-call entries.
+pub fn tool_duration_style() -> Style {
+    Style::default().fg(DIM)
+}
+
 // ── Splash screen ────────────────────────────────────────────────────────
 
 /// Style for the big ASCII wordmark on the splash.

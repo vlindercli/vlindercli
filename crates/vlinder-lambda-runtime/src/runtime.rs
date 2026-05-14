@@ -316,6 +316,7 @@ impl LambdaRuntime {
                         let complete = CompleteMessage {
                             id: MessageId::new(),
                             dag_id: DagNodeId::root(),
+                            dag_parent: DagNodeId::root(),
                             state: None,
                             diagnostics: RuntimeDiagnostics::placeholder(0),
                             content: None,

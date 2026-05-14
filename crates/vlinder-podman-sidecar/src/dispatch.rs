@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    ContainerId, DataMessageKind, DataRoutingKey, HealthWindow, ImageDigest, ImageRef,
+    ContainerId, DagNodeId, DataMessageKind, DataRoutingKey, HealthWindow, ImageDigest, ImageRef,
     InvokeMessage, MessageQueue, Registry, RuntimeDiagnostics,
 };
 
@@ -29,6 +29,7 @@ pub struct DispatchContext {
 pub async fn handle_invoke(
     ctx: &DispatchContext,
     health: &mut HealthWindow,
+    session_provider: &shared::SessionProvider,
     key: &DataRoutingKey,
     msg: &InvokeMessage,
 ) {
@@ -37,7 +38,7 @@ pub async fn handle_invoke(
         return;
     };
 
-    match shared::dispatch_invoke(&ctx.queue, &ctx.registry, ctx.container_port, key, msg).await {
+    match shared::dispatch_one_invoke(session_provider, ctx.container_port, key, msg) {
         Ok(result) => {
             let diagnostics = health::build_diagnostics(
                 health,
@@ -56,6 +57,7 @@ pub async fn handle_invoke(
                 result.tool_calls,
                 result.state,
                 diagnostics,
+                result.chain_head,
             )
             .await;
         }
@@ -70,6 +72,7 @@ pub async fn handle_invoke(
                 None,
                 None,
                 RuntimeDiagnostics::placeholder(0),
+                DagNodeId::root(),
             )
             .await;
         }
