@@ -159,6 +159,7 @@ impl Model {
             self.quit = true;
             return;
         }
+        self.transcript_mut().jump_bottom();
         self.transcript_mut().push_user(input.clone());
         self.sync_scrolled_status();
         self.input_mut().clear();
@@ -181,6 +182,7 @@ impl Model {
                 ExternalEvent::ProcessResult(result) => self.handle_process_result(result),
             }
         }
+        self.sync_scrolled_status();
     }
 
     fn handle_harness_event(&mut self, event: HarnessEvent) {
@@ -216,8 +218,6 @@ impl Model {
                 self.transcript_mut().push_assistant(text);
             }
         }
-        self.transcript_mut().jump_bottom();
-        self.sync_scrolled_status();
     }
 
     fn view(&mut self) {
@@ -236,6 +236,18 @@ impl Model {
             ])
             .split(frame.area());
             self.app.view(&Id::Transcript, frame, chunks[0]);
+            let scrolled_up = self
+                .app
+                .get_component_mut(&Id::Transcript)
+                .and_then(|c| c.as_any_mut().downcast_mut::<TranscriptComponent>())
+                .is_some_and(|transcript| !transcript.follow_tail);
+            if let Some(status) = self
+                .app
+                .get_component_mut(&Id::Status)
+                .and_then(|c| c.as_any_mut().downcast_mut::<StatusComponent>())
+            {
+                status.set_scrolled_up(scrolled_up);
+            }
             self.app.view(&Id::Status, frame, chunks[2]);
             self.app.view(&Id::Input, frame, chunks[3]);
             self.app.view(&Id::Hint, frame, chunks[4]);
@@ -318,7 +330,6 @@ impl TranscriptComponent {
             text,
             tool: None,
         });
-        self.jump_bottom();
     }
 
     fn push_assistant(&mut self, text: String) {
@@ -327,7 +338,6 @@ impl TranscriptComponent {
             text,
             tool: None,
         });
-        self.jump_bottom();
     }
 
     fn push_tool_call_pending(&mut self, tool_call: &ToolCall) -> usize {
@@ -345,7 +355,6 @@ impl TranscriptComponent {
                 is_error: false,
             }),
         });
-        self.jump_bottom();
         idx
     }
 
@@ -373,7 +382,6 @@ impl TranscriptComponent {
                 is_error: false,
             }),
         };
-        self.jump_bottom();
     }
 
     fn push_tool_call(&mut self, trace: &ToolTrace) {
@@ -396,7 +404,6 @@ impl TranscriptComponent {
                 is_error: false,
             }),
         });
-        self.jump_bottom();
     }
 
     fn scroll_up(&mut self, n: u16) {
@@ -953,10 +960,12 @@ fn render_tool_call_collapsed(display: &ToolTraceDisplay, width: u16) -> Vec<Lin
     let prefix = if display.is_error { "✗" } else { "⏵" };
     let duration_s = format!("[{}ms]", display.duration_ms);
     let w = width as usize;
-    let name_w = display.name.chars().count();
     let dur_w = duration_s.chars().count();
-    let fixed = 9_usize;
-    let remaining = w.saturating_sub(fixed + name_w + dur_w);
+    let fixed = 10_usize;
+    let remaining = w.saturating_sub(fixed + dur_w);
+    let name_trunc: String = display.name.chars().take(remaining).collect();
+    let name_w = name_trunc.chars().count();
+    let remaining = remaining.saturating_sub(name_w);
     let args_budget = (remaining / 2).min(40);
     let result_budget = remaining.saturating_sub(args_budget).min(40);
     let args_trunc: String = display.args.trim().chars().take(args_budget).collect();
@@ -969,10 +978,7 @@ fn render_tool_call_collapsed(display: &ToolTraceDisplay, width: u16) -> Vec<Lin
         Line::from(vec![
             Span::styled(prefix, glyph_style.patch(bg_style)),
             Span::styled(" ", bg_style),
-            Span::styled(
-                display.name.clone(),
-                theme::tool_name_style().patch(bg_style),
-            ),
+            Span::styled(name_trunc, theme::tool_name_style().patch(bg_style)),
             Span::styled("(", theme::tool_args_style().patch(bg_style)),
             Span::styled(args_trunc, theme::tool_args_style().patch(bg_style)),
             Span::styled(")", theme::tool_args_style().patch(bg_style)),
@@ -1102,5 +1108,35 @@ fn to_textarea_key(key: Key) -> TextKey {
         Key::PageDown => TextKey::PageDown,
         Key::Esc => TextKey::Esc,
         _ => TextKey::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collapsed_tool_call_rows_do_not_exceed_width() {
+        let display = ToolTraceDisplay {
+            name: "brave_search".to_string(),
+            args: "{\"query\":\"a long query that should be truncated\"}".to_string(),
+            result: "a long search result preview that should also be truncated".to_string(),
+            duration_ms: 123,
+            is_error: false,
+        };
+
+        for width in [20, 40, 80] {
+            for line in render_tool_call_collapsed(&display, width) {
+                let cols: usize = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.chars().count())
+                    .sum();
+                assert!(
+                    cols <= usize::from(width),
+                    "line width {cols} exceeded available width {width}",
+                );
+            }
+        }
     }
 }
