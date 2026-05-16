@@ -164,6 +164,7 @@ impl TryFrom<proto::SessionSummary> for SessionSummary {
 // InvokeMessage → proto::InvokeMessageProto / proto::InvokeMessageProto → InvokeMessage
 // =============================================================================
 
+#[cfg(feature = "server")]
 pub fn invoke_message_to_proto(
     msg: &vlinder_core::domain::InvokeMessage,
 ) -> proto::InvokeMessageProto {
@@ -199,6 +200,7 @@ pub fn proto_to_invoke_message(
 // CompleteMessage → proto::CompleteMessageProto / proto::CompleteMessageProto → CompleteMessage
 // =============================================================================
 
+#[cfg(feature = "server")]
 pub fn complete_message_to_proto(
     msg: &vlinder_core::domain::CompleteMessage,
 ) -> proto::CompleteMessageProto {
@@ -233,6 +235,7 @@ pub fn proto_to_complete_message(
 // RequestV2 → proto::RequestV2Proto / proto::RequestV2Proto → RequestV2
 // =============================================================================
 
+#[cfg(feature = "server")]
 pub fn request_v2_to_proto(msg: &vlinder_core::domain::RequestV2) -> proto::RequestV2Proto {
     proto::RequestV2Proto {
         id: msg.id.to_string(),
@@ -263,6 +266,7 @@ pub fn proto_to_request_v2(proto: proto::RequestV2Proto) -> vlinder_core::domain
 // ResponseV2 → proto::ResponseV2Proto / proto::ResponseV2Proto → ResponseV2
 // =============================================================================
 
+#[cfg(feature = "server")]
 pub fn response_v2_to_proto(msg: &vlinder_core::domain::ResponseV2) -> proto::ResponseV2Proto {
     proto::ResponseV2Proto {
         id: msg.id.to_string(),
