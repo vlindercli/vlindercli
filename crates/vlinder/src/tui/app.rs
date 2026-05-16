@@ -8,7 +8,7 @@ use vlinder_core::domain::{ToolCall, ToolTrace};
 use super::theme;
 
 /// Who produced a transcript entry.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Role {
     User,
     Assistant,
@@ -75,6 +75,18 @@ impl App {
             follow_tail: true,
             tools_expanded: false,
         }
+    }
+
+    /// Create an `App` with a pre-populated transcript from a resumed session.
+    ///
+    /// The caller is responsible for walking the DAG chain and projecting
+    /// prior-turn entries via `projection::walk_chain_to_entries`. The
+    /// scroll starts at the tail (most recent) so the user sees the latest
+    /// message on first render.
+    pub fn with_initial_transcript(entries: Vec<Entry>) -> Self {
+        let mut app = Self::new();
+        app.output = entries;
+        app
     }
 
     // ── Transcript ───────────────────────────────────────────────────────

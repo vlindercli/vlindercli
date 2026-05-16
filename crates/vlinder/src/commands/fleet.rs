@@ -9,7 +9,7 @@ use vlinder_core::domain::{
     RunCtl, RunResult, SessionId,
 };
 
-use super::connect::{connect_harness, connect_registry};
+use super::connect::{connect_harness, connect_registry, open_dag_store};
 use crate::tui;
 
 #[derive(Subcommand, Debug, PartialEq)]
@@ -178,6 +178,7 @@ async fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<S
     deployed
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(name: &str, prompt: Option<&str>) {
     let config = CliConfig::load();
     let registry = connect_registry(&config).await;
@@ -237,6 +238,11 @@ pub async fn run(name: &str, prompt: Option<&str>) {
         // Interactive REPL — create event channel for streaming tool traces.
         let (event_tx, event_rx) = mpsc::channel::<HarnessEvent>(32);
 
+        // Clone before the `move` closure so they're still available for
+        // the chain walk below.
+        let session_id_for_walk = session_id.clone();
+        let branch_id_for_walk = branch_id;
+
         let invoke = move |input: String| {
             let harness = harness.clone();
             let entry_agent_id = entry_agent_id.clone();
@@ -267,7 +273,23 @@ pub async fn run(name: &str, prompt: Option<&str>) {
             }
         };
 
-        tui::run(invoke, event_rx).await;
+        let initial_transcript = if let Some(store) = open_dag_store(&config).await {
+            tui::projection::walk_chain_to_entries(
+                store.as_ref(),
+                &session_id_for_walk,
+                branch_id_for_walk,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to load initial transcript; starting empty");
+                Vec::new()
+            })
+        } else {
+            tracing::warn!("no state service available; starting with empty transcript");
+            Vec::new()
+        };
+
+        tui::run(invoke, event_rx, initial_transcript).await;
     }
 }
 

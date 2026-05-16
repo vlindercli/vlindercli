@@ -159,6 +159,11 @@ impl CoreHarness {
         self.service_sequence.next()
     }
 
+    /// Access the underlying DAG store for chain-walking on resume.
+    pub fn store(&self) -> Arc<dyn DagStore> {
+        self.store.clone()
+    }
+
     /// Look up the agent and resolve its runtime.
     async fn resolve_agent_and_runtime(
         &self,

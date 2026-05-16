@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use vlinder_core::domain::{HarnessEvent, RunResult};
 
-use super::app::App;
+use super::app::{App, Entry};
 use super::event::{handle_event, EventOutcome};
 use super::theme::{SPINNER_FRAMES, SPINNER_TICK, SPLASH_DURATION};
 use super::view::{draw, draw_splash};
@@ -25,18 +25,25 @@ use super::view::{draw, draw_splash};
 /// messages during execution — the caller constructs the channel and captures
 /// the sender in the `process` closure.
 ///
+/// `initial_transcript` is a pre-populated list of entries from a resumed
+/// session, projected from the DAG chain by the caller. Pass an empty `Vec`
+/// to start a fresh session.
+///
 /// The future is polled concurrently with a spinner-animation timer and the
 /// event channel so "thinking..." animates while a response is in flight and
 /// tool-call entries appear incrementally.
-pub async fn run<F, Fut>(mut process: F, mut event_rx: mpsc::Receiver<HarnessEvent>)
-where
+pub async fn run<F, Fut>(
+    mut process: F,
+    mut event_rx: mpsc::Receiver<HarnessEvent>,
+    initial_transcript: Vec<Entry>,
+) where
     F: FnMut(String) -> Fut,
     Fut: Future<Output = RunResult>,
 {
     let mut terminal = ratatui::init();
     splash_phase(&mut terminal);
 
-    let mut app = App::new();
+    let mut app = App::with_initial_transcript(initial_transcript);
 
     'main: loop {
         let _ = terminal.draw(|frame| draw(frame, &mut app));

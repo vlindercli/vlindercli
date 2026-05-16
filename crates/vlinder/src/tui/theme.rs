@@ -22,8 +22,16 @@ pub const SPLASH_DURATION: Duration = Duration::from_millis(1800);
 
 // ── Color palette ────────────────────────────────────────────────────────
 
-/// Background tint for user-message rows. Dracula-ish dark blue-gray.
+/// Background tint for user-message rows. Cool dark blue-gray.
 const USER_BG: Color = Color::Rgb(40, 42, 54);
+
+/// Background tint for assistant-message rows. Neutral-cool dark green-gray —
+/// chosen to be perceptibly distinct from `USER_BG` while staying subtle.
+const ASSISTANT_BG: Color = Color::Rgb(38, 52, 48);
+
+/// Background tint for tool-call rows. Warm dark amber/brown — clearly
+/// distinct from User and Assistant.
+const TOOL_CALL_BG: Color = Color::Rgb(58, 46, 32);
 
 /// Accent color — prompt marker, spinner, welcome heading.
 const ACCENT: Color = Color::Cyan;
@@ -53,6 +61,23 @@ pub fn user_text_style() -> Style {
 /// the right margin.
 pub fn user_pad_style() -> Style {
     Style::default().bg(USER_BG)
+}
+
+/// Style for the body text of an assistant message.
+pub fn assistant_text_style() -> Style {
+    Style::default().bg(ASSISTANT_BG)
+}
+
+/// Style for the trailing space-padding that extends the assistant-row bar
+/// to the right margin.
+pub fn assistant_pad_style() -> Style {
+    Style::default().bg(ASSISTANT_BG)
+}
+
+/// Style for tool-call rows (collapsed or expanded). Applies a subtle warm
+/// background to distinguish them from assistant entries.
+pub fn tool_call_row_style() -> Style {
+    Style::default().bg(TOOL_CALL_BG)
 }
 
 /// Style for the welcome heading shown in an empty transcript.

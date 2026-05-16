@@ -3,6 +3,7 @@
 //! paints a frame. All visual choices come from `theme`.
 
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
@@ -124,19 +125,74 @@ fn welcome_lines() -> Vec<Line<'static>> {
 
 fn transcript_lines(output: &[Entry], width: u16, tools_expanded: bool) -> Vec<Line<'static>> {
     let mut acc: Vec<Line> = Vec::new();
-    for (idx, entry) in output.iter().enumerate() {
+    for entry in output {
         acc.extend(render_entry(entry, width, tools_expanded));
-        if idx + 1 < output.len() {
-            acc.push(Line::from(""));
-        }
     }
     acc
+}
+
+/// Wrap text to fit within `width` chars per visual line, preserving explicit
+/// `\n` paragraph breaks. Returns visual lines, one per row, each ≤ `width`
+/// chars. Used to pre-wrap before constructing styled spans so every visual
+/// row carries its own full-width bg padding (otherwise ratatui's runtime
+/// wrap produces continuation rows without trailing-bg coverage and the
+/// "rectangle" effect breaks).
+fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut result = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            result.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        let mut current_w = 0;
+        for word in paragraph.split_whitespace() {
+            let word_w = word.chars().count();
+            if word_w > width {
+                if current_w > 0 {
+                    result.push(std::mem::take(&mut current));
+                    current_w = 0;
+                }
+                let chars: Vec<char> = word.chars().collect();
+                for chunk in chars.chunks(width) {
+                    result.push(chunk.iter().collect::<String>());
+                }
+            } else if current_w == 0 {
+                current = word.to_string();
+                current_w = word_w;
+            } else if current_w + 1 + word_w <= width {
+                current.push(' ');
+                current.push_str(word);
+                current_w += 1 + word_w;
+            } else {
+                result.push(std::mem::take(&mut current));
+                current = word.to_string();
+                current_w = word_w;
+            }
+        }
+        if !current.is_empty() {
+            result.push(current);
+        }
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
+}
+
+/// Build a full-width row painted with `bg`. Used for vertical padding inside
+/// message rectangles.
+fn bg_row(bg: Style, width: u16) -> Line<'static> {
+    Line::from(Span::styled(" ".repeat(width as usize), bg))
 }
 
 fn render_entry(entry: &Entry, width: u16, tools_expanded: bool) -> Vec<Line<'static>> {
     match entry.role {
         Role::User => render_user_entry(&entry.text, width),
-        Role::Assistant => render_assistant_entry(&entry.text),
+        Role::Assistant => render_assistant_entry(&entry.text, width),
         Role::ToolCall => {
             if let Some(ref display) = entry.tool {
                 if tools_expanded {
@@ -145,75 +201,140 @@ fn render_entry(entry: &Entry, width: u16, tools_expanded: bool) -> Vec<Line<'st
                     render_tool_call_collapsed(display, width)
                 }
             } else {
-                render_assistant_entry(&entry.text)
+                render_assistant_entry(&entry.text, width)
             }
         }
     }
 }
 
-/// User messages render as a tinted full-width bar with a `> ` prompt
-/// marker and 2-space hanging indent on continuation lines.
+/// User messages render as a tinted full-width rectangle: top padding row,
+/// then one row per visual line (prefixed with `> ` on the first row and `  `
+/// on continuations, text wrapped to fit), then bottom padding row.
 fn render_user_entry(text: &str, width: u16) -> Vec<Line<'static>> {
     const PROMPT_WIDTH: usize = 2;
-    let width = width as usize;
+    let bg_pad = theme::user_pad_style();
+    let w = width as usize;
+    let inner_w = w.saturating_sub(PROMPT_WIDTH).max(1);
 
-    text.split('\n')
-        .enumerate()
-        .map(|(i, line)| {
-            let marker = if i == 0 { "> " } else { "  " };
-            let used = PROMPT_WIDTH + line.chars().count();
-            let pad = width.saturating_sub(used);
-            Line::from(vec![
+    let mut lines = vec![bg_row(bg_pad, width)];
+
+    let mut overall_idx = 0;
+    for paragraph in text.split('\n') {
+        let visuals = if paragraph.is_empty() {
+            vec![String::new()]
+        } else {
+            wrap_to_width(paragraph, inner_w)
+        };
+        for visual in visuals {
+            let marker = if overall_idx == 0 { "> " } else { "  " };
+            let used = PROMPT_WIDTH + visual.chars().count();
+            let pad = w.saturating_sub(used);
+            lines.push(Line::from(vec![
                 Span::styled(marker.to_string(), theme::user_prompt_style()),
-                Span::styled(line.to_string(), theme::user_text_style()),
-                Span::styled(" ".repeat(pad), theme::user_pad_style()),
-            ])
-        })
-        .collect()
+                Span::styled(visual, theme::user_text_style()),
+                Span::styled(" ".repeat(pad), bg_pad),
+            ]));
+            overall_idx += 1;
+        }
+    }
+
+    lines.push(bg_row(bg_pad, width));
+    lines
 }
 
-fn render_assistant_entry(text: &str) -> Vec<Line<'static>> {
-    text.split('\n')
-        .map(|line| Line::from(Span::raw(line.to_string())))
-        .collect()
+/// Assistant messages render as a tinted full-width rectangle: top padding
+/// row, then one row per visual line (text wrapped to fit, padded to full
+/// width with bg color), then bottom padding row.
+fn render_assistant_entry(text: &str, width: u16) -> Vec<Line<'static>> {
+    let bg_text = theme::assistant_text_style();
+    let bg_pad = theme::assistant_pad_style();
+    let w = width as usize;
+
+    let mut lines = vec![bg_row(bg_pad, width)];
+
+    for visual in wrap_to_width(text, w) {
+        let used = visual.chars().count();
+        let pad = w.saturating_sub(used);
+        lines.push(Line::from(vec![
+            Span::styled(visual, bg_text),
+            Span::styled(" ".repeat(pad), bg_pad),
+        ]));
+    }
+
+    lines.push(bg_row(bg_pad, width));
+    lines
 }
 
-/// Collapsed tool-call showing name, truncated args/result, and duration.
+/// Collapsed tool-call rendered as a colored rectangle: top padding row, one
+/// line of `⏵ name(args) → "result"   [duration]` budgeted to fit in `width`,
+/// then bottom padding row. Args and result are truncated dynamically to fit;
+/// the line is never allowed to overflow (which would break the rectangle).
 fn render_tool_call_collapsed(display: &ToolTraceDisplay, width: u16) -> Vec<Line<'static>> {
+    let bg_style = theme::tool_call_row_style();
     let glyph_style = if display.is_error {
         theme::tool_glyph_error_style()
     } else {
         theme::tool_glyph_style()
     };
     let prefix = if display.is_error { "✗" } else { "⏵" };
-    let left = format!(
-        "{} {}({:.40}) → \"{:.40}\"",
-        prefix,
-        display.name,
-        display.args.trim(),
-        display.result.trim()
-    );
     let duration_s = format!("[{}ms]", display.duration_ms);
-    let left_w = left.chars().count();
-    let pad = usize::from(width).saturating_sub(left_w + duration_s.chars().count() + 2);
-    vec![Line::from(vec![
-        Span::styled(prefix, glyph_style),
-        Span::raw(" "),
-        Span::styled(display.name.clone(), theme::tool_name_style()),
-        Span::styled(
-            format!("({:.40})", display.args.trim()),
-            theme::tool_args_style(),
-        ),
-        Span::raw(" → "),
-        Span::raw(format!("\"{:.40}\"", display.result.trim())),
-        Span::styled(" ".repeat(pad), theme::hint_style()),
-        Span::styled(duration_s, theme::tool_duration_style()),
-    ])]
+
+    let w = width as usize;
+    let name_w = display.name.chars().count();
+    let dur_w = duration_s.chars().count();
+    // Fixed structural overhead: prefix(1) + space(1) + "(" + ")" + " → " (3)
+    // + "\"" + "\"" + space-before-duration(1) = 9 chars.
+    let fixed = 9_usize;
+    // Remaining budget for variable content (args text + result text + the
+    // optional pad before duration). If name itself eats everything, args/
+    // result get nothing.
+    let remaining = w.saturating_sub(fixed + name_w + dur_w);
+    // Give args and result equal halves of the remaining budget, capped at 40
+    // each (the original truncation ceiling — beyond that the inline form
+    // becomes useless).
+    let args_budget = (remaining / 2).min(40);
+    let result_budget = remaining.saturating_sub(args_budget).min(40);
+    let args_trunc: String = display.args.trim().chars().take(args_budget).collect();
+    let result_trunc: String = display.result.trim().chars().take(result_budget).collect();
+
+    let used = fixed + name_w + args_trunc.chars().count() + result_trunc.chars().count() + dur_w;
+    let pad = w.saturating_sub(used);
+
+    vec![
+        bg_row(bg_style, width),
+        Line::from(vec![
+            Span::styled(prefix, glyph_style.patch(bg_style)),
+            Span::styled(" ", bg_style),
+            Span::styled(
+                display.name.clone(),
+                theme::tool_name_style().patch(bg_style),
+            ),
+            Span::styled("(", theme::tool_args_style().patch(bg_style)),
+            Span::styled(args_trunc, theme::tool_args_style().patch(bg_style)),
+            Span::styled(")", theme::tool_args_style().patch(bg_style)),
+            Span::styled(" → ", bg_style),
+            Span::styled("\"", bg_style),
+            Span::styled(result_trunc, bg_style),
+            Span::styled("\"", bg_style),
+            Span::styled(" ".repeat(pad), bg_style),
+            Span::styled(" ", bg_style),
+            Span::styled(duration_s, theme::tool_duration_style().patch(bg_style)),
+        ]),
+        bg_row(bg_style, width),
+    ]
 }
 
 /// Expanded tool-call: header with name + duration, indented args block,
 /// indented result block.
 fn render_tool_call_expanded(display: &ToolTraceDisplay, width: u16) -> Vec<Line<'static>> {
+    fn pad_line(line: &mut Line, width: u16, bg_style: Style) {
+        let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        let pad = usize::from(width).saturating_sub(used);
+        if pad > 0 {
+            line.spans.push(Span::styled(" ".repeat(pad), bg_style));
+        }
+    }
+
     let glyph_style = if display.is_error {
         theme::tool_glyph_error_style()
     } else {
@@ -223,45 +344,69 @@ fn render_tool_call_expanded(display: &ToolTraceDisplay, width: u16) -> Vec<Line
     let duration_s = format!("[{}ms]", display.duration_ms);
     let pad = usize::from(width)
         .saturating_sub(display.name.chars().count() + duration_s.chars().count() + 4);
+    let bg_style = theme::tool_call_row_style();
 
-    let mut lines = Vec::new();
+    let mut lines = vec![bg_row(bg_style, width)];
+
     // Header: glyph name [duration]
-    lines.push(Line::from(vec![
-        Span::styled(prefix, glyph_style),
-        Span::raw(" "),
-        Span::styled(display.name.clone(), theme::tool_name_style()),
-        Span::styled(" ".repeat(pad), theme::hint_style()),
-        Span::styled(duration_s, theme::tool_duration_style()),
-    ]));
+    let mut header = Line::from(vec![
+        Span::styled(prefix, glyph_style.patch(bg_style)),
+        Span::styled(" ", bg_style),
+        Span::styled(
+            display.name.clone(),
+            theme::tool_name_style().patch(bg_style),
+        ),
+        Span::styled(" ".repeat(pad), bg_style),
+        Span::styled(duration_s, theme::tool_duration_style().patch(bg_style)),
+    ]);
+    pad_line(&mut header, width, bg_style);
+    lines.push(header);
     // Args: "  args:   {pretty-printed JSON}"
     for (i, arg_line) in display.args.lines().enumerate() {
         if i == 0 {
-            lines.push(Line::from(vec![
-                Span::styled("  args:   ", theme::tool_args_label_style()),
-                Span::styled(arg_line.to_string(), theme::tool_args_style()),
-            ]));
+            let mut l = Line::from(vec![
+                Span::styled("  args:   ", theme::tool_args_label_style().patch(bg_style)),
+                Span::styled(
+                    arg_line.to_string(),
+                    theme::tool_args_style().patch(bg_style),
+                ),
+            ]);
+            pad_line(&mut l, width, bg_style);
+            lines.push(l);
         } else {
-            // Continuation lines of args are indented further
-            lines.push(Line::from(Span::styled(
+            let mut l = Line::from(Span::styled(
                 format!("          {arg_line}"),
-                theme::tool_args_style(),
-            )));
+                theme::tool_args_style().patch(bg_style),
+            ));
+            pad_line(&mut l, width, bg_style);
+            lines.push(l);
         }
     }
     // Result: "  result: {result content}"
     for (i, res_line) in display.result.lines().enumerate() {
         if i == 0 {
-            lines.push(Line::from(vec![
-                Span::styled("  result: ", theme::tool_result_label_style()),
-                Span::styled(res_line.to_string(), theme::tool_result_style()),
-            ]));
+            let mut l = Line::from(vec![
+                Span::styled(
+                    "  result: ",
+                    theme::tool_result_label_style().patch(bg_style),
+                ),
+                Span::styled(
+                    res_line.to_string(),
+                    theme::tool_result_style().patch(bg_style),
+                ),
+            ]);
+            pad_line(&mut l, width, bg_style);
+            lines.push(l);
         } else {
-            lines.push(Line::from(Span::styled(
+            let mut l = Line::from(Span::styled(
                 format!("          {res_line}"),
-                theme::tool_result_style(),
-            )));
+                theme::tool_result_style().patch(bg_style),
+            ));
+            pad_line(&mut l, width, bg_style);
+            lines.push(l);
         }
     }
+    lines.push(bg_row(bg_style, width));
     lines
 }
 

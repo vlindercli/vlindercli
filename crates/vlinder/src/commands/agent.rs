@@ -267,6 +267,7 @@ pub(super) async fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Regi
         })
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&str>) {
     let config = CliConfig::load();
     let registry = connect_registry(&config).await;
@@ -329,6 +330,11 @@ async fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Op
         // Interactive REPL — create event channel for streaming tool traces.
         let (event_tx, event_rx) = mpsc::channel::<HarnessEvent>(32);
 
+        // Clone before the `move` closure so they're still available for
+        // the chain walk below.
+        let session_id_for_walk = session_id.clone();
+        let branch_id_for_walk = branch_id;
+
         let invoke = move |input: String| {
             let harness = harness.clone();
             let agent_id = agent_id.clone();
@@ -359,7 +365,23 @@ async fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Op
             }
         };
 
-        tui::run(invoke, event_rx).await;
+        let initial_transcript = if let Some(store) = open_dag_store(&config).await {
+            tui::projection::walk_chain_to_entries(
+                store.as_ref(),
+                &session_id_for_walk,
+                branch_id_for_walk,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to load initial transcript; starting empty");
+                Vec::new()
+            })
+        } else {
+            tracing::warn!("no state service available; starting with empty transcript");
+            Vec::new()
+        };
+
+        tui::run(invoke, event_rx, initial_transcript).await;
     }
 }
 
