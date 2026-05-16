@@ -8,7 +8,7 @@ use vlinder_core::domain::{
     BranchId, DagStore, Message, MessageType, SessionId, ToolCall, ToolCallId,
 };
 
-use super::app::{Entry, Role, ToolTraceDisplay};
+use super::types::{Entry, Role, ToolTraceDisplay};
 
 /// Walk every node on `branch` (oldest-first) and project each into the
 /// live-path `Entry` shape.
