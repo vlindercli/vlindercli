@@ -460,7 +460,6 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            history: vec![],
             current_input: vec![vlinder_core::domain::Message::User {
                 content: "summarize this article".to_string(),
             }],

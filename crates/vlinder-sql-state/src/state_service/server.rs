@@ -3,28 +3,35 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-use super::proto::{
-    self, state_service_server::StateService, CompleteNodeProto, CreateBranchRequest,
-    CreateBranchResponse, CreateSessionRequest, CreateSessionResponse, GetBranchByIdRequest,
-    GetBranchByNameRequest, GetBranchResponse, GetBranchesForSessionRequest,
-    GetBranchesForSessionResponse, GetChildrenRequest, GetChildrenResponse, GetCompleteNodeRequest,
-    GetCompleteNodeResponse, GetInvokeNodeRequest, GetInvokeNodeResponse, GetNodeByPrefixRequest,
-    GetNodeRequest, GetNodeResponse, GetNodesBySubmissionRequest, GetNodesBySubmissionResponse,
-    GetRequestNodeRequest, GetRequestNodeResponse, GetResponseNodeRequest, GetResponseNodeResponse,
-    GetSessionByNameRequest, GetSessionNodesRequest, GetSessionNodesResponse, GetSessionRequest,
-    GetSessionResponse, GetSvcRequestNodeRequest, GetSvcRequestNodeResponse,
-    GetSvcResponseNodeRequest, GetSvcResponseNodeResponse, InsertCompleteNodeRequest,
-    InsertCompleteNodeResponse, InsertDeleteAgentNodeRequest, InsertDeleteAgentNodeResponse,
-    InsertDeployAgentNodeRequest, InsertDeployAgentNodeResponse, InsertForkNodeRequest,
-    InsertForkNodeResponse, InsertInvokeNodeRequest, InsertInvokeNodeResponse,
-    InsertPromoteNodeRequest, InsertPromoteNodeResponse, InsertRequestNodeRequest,
-    InsertRequestNodeResponse, InsertResponseNodeRequest, InsertResponseNodeResponse,
-    InsertSvcRequestNodeRequest, InsertSvcRequestNodeResponse, InsertSvcResponseNodeRequest,
-    InsertSvcResponseNodeResponse, InvokeNodeProto, LatestNodeOnBranchRequest,
-    LatestNodeOnBranchResponse, ListSessionsRequest, ListSessionsResponse, PingRequest,
-    RenameBranchRequest, RenameBranchResponse, RequestNodeProto, ResponseNodeProto,
-    SealBranchRequest, SealBranchResponse, SemVer, SvcRequestNodeProto, SvcResponseNodeProto,
-    UpdateSessionDefaultBranchRequest, UpdateSessionDefaultBranchResponse,
+use super::{
+    convert,
+    proto::{
+        self, state_service_server::StateService, CompleteNodeProto, CreateBranchRequest,
+        CreateBranchResponse, CreateSessionRequest, CreateSessionResponse, GetBranchByIdRequest,
+        GetBranchByNameRequest, GetBranchResponse, GetBranchesForSessionRequest,
+        GetBranchesForSessionResponse, GetChildrenRequest, GetChildrenResponse,
+        GetCompleteMessageRequest, GetCompleteMessageResponse, GetCompleteNodeRequest,
+        GetCompleteNodeResponse, GetInvokeMessageRequest, GetInvokeMessageResponse,
+        GetInvokeNodeRequest, GetInvokeNodeResponse, GetNodeByPrefixRequest, GetNodeRequest,
+        GetNodeResponse, GetNodesBySubmissionRequest, GetNodesBySubmissionResponse,
+        GetRequestNodeRequest, GetRequestNodeResponse, GetRequestV2Request, GetRequestV2Response,
+        GetResponseNodeRequest, GetResponseNodeResponse, GetResponseV2Request,
+        GetResponseV2Response, GetSessionByNameRequest, GetSessionNodesRequest,
+        GetSessionNodesResponse, GetSessionRequest, GetSessionResponse, GetSvcRequestNodeRequest,
+        GetSvcRequestNodeResponse, GetSvcResponseNodeRequest, GetSvcResponseNodeResponse,
+        InsertCompleteNodeRequest, InsertCompleteNodeResponse, InsertDeleteAgentNodeRequest,
+        InsertDeleteAgentNodeResponse, InsertDeployAgentNodeRequest, InsertDeployAgentNodeResponse,
+        InsertForkNodeRequest, InsertForkNodeResponse, InsertInvokeNodeRequest,
+        InsertInvokeNodeResponse, InsertPromoteNodeRequest, InsertPromoteNodeResponse,
+        InsertRequestNodeRequest, InsertRequestNodeResponse, InsertResponseNodeRequest,
+        InsertResponseNodeResponse, InsertSvcRequestNodeRequest, InsertSvcRequestNodeResponse,
+        InsertSvcResponseNodeRequest, InsertSvcResponseNodeResponse, InvokeNodeProto,
+        LatestNodeOnBranchRequest, LatestNodeOnBranchResponse, LatestNodesOnBranchRequest,
+        LatestNodesOnBranchResponse, ListSessionsRequest, ListSessionsResponse, PingRequest,
+        RenameBranchRequest, RenameBranchResponse, RequestNodeProto, ResponseNodeProto,
+        SealBranchRequest, SealBranchResponse, SemVer, SvcRequestNodeProto, SvcResponseNodeProto,
+        UpdateSessionDefaultBranchRequest, UpdateSessionDefaultBranchResponse,
+    },
 };
 use vlinder_core::domain::{DagNodeId, DagStore, MessageType, SessionId};
 
@@ -587,6 +594,70 @@ impl StateService for StateServiceServer {
         Ok(Response::new(GetSvcResponseNodeResponse { node }))
     }
 
+    async fn get_invoke_message(
+        &self,
+        request: Request<GetInvokeMessageRequest>,
+    ) -> Result<Response<GetInvokeMessageResponse>, Status> {
+        let req = request.into_inner();
+        let dag_id = DagNodeId::from(req.dag_node_id);
+        let result = self
+            .store
+            .get_invoke_message(&dag_id)
+            .await
+            .map_err(Status::internal)?;
+
+        let message = result.map(|msg| convert::invoke_message_to_proto(&msg));
+        Ok(Response::new(GetInvokeMessageResponse { message }))
+    }
+
+    async fn get_complete_message(
+        &self,
+        request: Request<GetCompleteMessageRequest>,
+    ) -> Result<Response<GetCompleteMessageResponse>, Status> {
+        let req = request.into_inner();
+        let dag_id = DagNodeId::from(req.dag_node_id);
+        let result = self
+            .store
+            .get_complete_message(&dag_id)
+            .await
+            .map_err(Status::internal)?;
+
+        let message = result.map(|msg| convert::complete_message_to_proto(&msg));
+        Ok(Response::new(GetCompleteMessageResponse { message }))
+    }
+
+    async fn get_request_v2(
+        &self,
+        request: Request<GetRequestV2Request>,
+    ) -> Result<Response<GetRequestV2Response>, Status> {
+        let req = request.into_inner();
+        let dag_id = DagNodeId::from(req.dag_node_id);
+        let result = self
+            .store
+            .get_request_v2(&dag_id)
+            .await
+            .map_err(Status::internal)?;
+
+        let message = result.map(|msg| convert::request_v2_to_proto(&msg));
+        Ok(Response::new(GetRequestV2Response { message }))
+    }
+
+    async fn get_response_v2(
+        &self,
+        request: Request<GetResponseV2Request>,
+    ) -> Result<Response<GetResponseV2Response>, Status> {
+        let req = request.into_inner();
+        let dag_id = DagNodeId::from(req.dag_node_id);
+        let result = self
+            .store
+            .get_response_v2(&dag_id)
+            .await
+            .map_err(Status::internal)?;
+
+        let message = result.map(|msg| convert::response_v2_to_proto(&msg));
+        Ok(Response::new(GetResponseV2Response { message }))
+    }
+
     async fn insert_invoke_node(
         &self,
         request: Request<InsertInvokeNodeRequest>,
@@ -636,7 +707,6 @@ impl StateService for StateServiceServer {
                 state: n.state.clone(),
                 diagnostics,
                 dag_parent: vlinder_core::domain::DagNodeId::from(n.dag_parent),
-                history: vec![],
                 current_input: vec![],
             });
 
@@ -983,6 +1053,22 @@ impl StateService for StateServiceServer {
             .map_err(Status::internal)?
             .map(std::convert::Into::into);
         Ok(Response::new(LatestNodeOnBranchResponse { node }))
+    }
+
+    async fn latest_nodes_on_branch(
+        &self,
+        request: Request<LatestNodesOnBranchRequest>,
+    ) -> Result<Response<LatestNodesOnBranchResponse>, Status> {
+        let req = request.into_inner();
+        let nodes = self
+            .store
+            .latest_nodes_on_branch(vlinder_core::domain::BranchId::from(req.branch_id), req.n)
+            .await
+            .map_err(Status::internal)?
+            .into_iter()
+            .map(std::convert::Into::into)
+            .collect::<Vec<_>>();
+        Ok(Response::new(LatestNodesOnBranchResponse { nodes }))
     }
 
     // -------------------------------------------------------------------------

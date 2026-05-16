@@ -32,7 +32,10 @@ tracing = "0.1"
 ureq = "2"
 
 [dev-dependencies]
+chrono = "0.4"
 tower = "0.5"
+vlinder-sql-state = { path = "../vlinder-sql-state", features = ["server"] }
+tempfile = "3"
 
 [lints]
 workspace = true

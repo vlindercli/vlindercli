@@ -953,7 +953,6 @@ impl DagStore for SqliteDagStore {
                     state: inv.state.clone(),
                     diagnostics,
                     dag_parent: parent_hash.map_or_else(DagNodeId::root, DagNodeId::from),
-                    history: vec![],
                     current_input: vec![],
                 });
 
@@ -1382,6 +1381,126 @@ impl DagStore for SqliteDagStore {
         Ok(result)
     }
 
+    async fn get_invoke_message(
+        &self,
+        dag_id: &DagNodeId,
+    ) -> Result<Option<vlinder_core::domain::InvokeMessage>, String> {
+        use crate::schema::invoke_nodes;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let row: Option<crate::models::InvokeNodeRow> = invoke_nodes::table
+            .filter(invoke_nodes::dag_hash.eq(dag_id.as_str()))
+            .first(&mut *conn)
+            .optional()
+            .map_err(|e| format!("get_invoke_message failed: {e}"))?;
+
+        let result = row.map(|r| {
+            serde_json::from_slice(&r.payload).unwrap_or_else(|_| {
+                vlinder_core::domain::InvokeMessage {
+                    id: vlinder_core::domain::MessageId::from(r.message_id),
+                    dag_id: dag_id.clone(),
+                    state: r.state,
+                    diagnostics: vlinder_core::domain::InvokeDiagnostics {
+                        harness_version: String::new(),
+                    },
+                    dag_parent: DagNodeId::root(),
+                    current_input: vec![],
+                }
+            })
+        });
+
+        Ok(result)
+    }
+
+    async fn get_complete_message(
+        &self,
+        dag_id: &DagNodeId,
+    ) -> Result<Option<vlinder_core::domain::CompleteMessage>, String> {
+        use crate::schema::complete_nodes;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let row: Option<crate::models::CompleteNodeRow> = complete_nodes::table
+            .filter(complete_nodes::dag_hash.eq(dag_id.as_str()))
+            .first(&mut *conn)
+            .optional()
+            .map_err(|e| format!("get_complete_message failed: {e}"))?;
+
+        let result = row.map(|r| {
+            serde_json::from_slice(&r.payload).unwrap_or_else(|_| {
+                vlinder_core::domain::CompleteMessage {
+                    id: vlinder_core::domain::MessageId::from(r.message_id),
+                    dag_id: dag_id.clone(),
+                    dag_parent: DagNodeId::root(),
+                    state: r.state,
+                    diagnostics: vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
+                    content: None,
+                    tool_calls: None,
+                    payload: vec![],
+                }
+            })
+        });
+
+        Ok(result)
+    }
+
+    async fn get_request_v2(
+        &self,
+        dag_id: &DagNodeId,
+    ) -> Result<Option<vlinder_core::domain::RequestV2>, String> {
+        use crate::schema::svc_request_nodes;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let row: Option<crate::models::SvcRequestNodeRow> = svc_request_nodes::table
+            .filter(svc_request_nodes::dag_hash.eq(dag_id.as_str()))
+            .first(&mut *conn)
+            .optional()
+            .map_err(|e| format!("get_request_v2 failed: {e}"))?;
+
+        let result = row.map(|r| vlinder_core::domain::RequestV2 {
+            id: vlinder_core::domain::MessageId::from(r.message_id),
+            dag_id: dag_id.clone(),
+            dag_parent: DagNodeId::root(),
+            tool_call_id: vlinder_core::domain::ToolCallId::from(r.tool_call_id),
+            state: r.state,
+            diagnostics: serde_json::from_slice(&r.diagnostics.unwrap_or_default().into_bytes())
+                .unwrap_or_default(),
+            payload: r.arguments,
+        });
+
+        Ok(result)
+    }
+
+    async fn get_response_v2(
+        &self,
+        dag_id: &DagNodeId,
+    ) -> Result<Option<vlinder_core::domain::ResponseV2>, String> {
+        use crate::schema::svc_response_nodes;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let row: Option<crate::models::SvcResponseNodeRow> = svc_response_nodes::table
+            .filter(svc_response_nodes::dag_hash.eq(dag_id.as_str()))
+            .first(&mut *conn)
+            .optional()
+            .map_err(|e| format!("get_response_v2 failed: {e}"))?;
+
+        let result = row.map(|r| vlinder_core::domain::ResponseV2 {
+            id: vlinder_core::domain::MessageId::from(r.message_id),
+            dag_id: dag_id.clone(),
+            dag_parent: DagNodeId::root(),
+            correlation_id: vlinder_core::domain::MessageId::from(r.correlation_id),
+            state: r.state,
+            diagnostics: serde_json::from_slice(&r.diagnostics.unwrap_or_default().into_bytes())
+                .unwrap_or_default(),
+            payload: r.payload,
+        });
+
+        Ok(result)
+    }
+
     async fn get_branches_for_session(
         &self,
         session_id: &SessionId,
@@ -1397,6 +1516,29 @@ impl DagStore for SqliteDagStore {
             .map_err(|e| format!("get_branches_for_session failed: {e}"))?;
 
         Ok(rows.into_iter().map(branch_row_to_domain).collect())
+    }
+
+    async fn latest_nodes_on_branch(
+        &self,
+        branch_id: BranchId,
+        n: u32,
+    ) -> Result<Vec<DagNode>, String> {
+        use crate::schema::dag_nodes;
+
+        let mut conn = self.conn.lock().expect("db connection lock poisoned");
+
+        let rows: Vec<crate::models::DagNodeRow> = dag_nodes::table
+            .filter(dag_nodes::branch_id.eq(branch_id.as_i64()))
+            .order(dag_nodes::created_at.desc())
+            .limit(i64::from(n))
+            .select(crate::models::DagNodeRow::as_select())
+            .load(&mut *conn)
+            .map_err(|e| format!("latest_nodes_on_branch query failed: {e}"))?;
+
+        // Reverse to oldest-first (SQL returns newest-first via ORDER BY DESC)
+        let mut nodes: Vec<DagNode> = rows.into_iter().map(dag_node_row_to_domain).collect();
+        nodes.reverse();
+        Ok(nodes)
     }
 
     async fn latest_node_on_branch(
@@ -2073,6 +2215,98 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(latest.id, node2.id);
+    }
+
+    // ========================================================================
+    // latest_nodes_on_branch tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn latest_nodes_on_branch_returns_n_most_recent() {
+        let (store, _dir) = test_store().await;
+        let branch = BranchId::from(1);
+
+        // Insert 5 nodes
+        let mut parent = DagNodeId::root();
+        for i in 0..5 {
+            let id = hash_dag_node(
+                format!("sql-test-{i}").as_bytes(),
+                &parent,
+                &MessageType::Fork,
+                &[],
+                &sess(),
+            );
+            let node = DagNode {
+                id: id.clone(),
+                parent_id: parent.clone(),
+                created_at: Utc::now(),
+                state: Snapshot::empty(),
+                msg_type: MessageType::Fork,
+                session: sess(),
+                submission: sub(),
+                branch,
+                protocol_version: "v1".to_string(),
+            };
+            store.insert_node(&node).unwrap();
+            parent = id;
+            // Stagger timestamps so ordering is deterministic
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+
+        // Fetch last 3 — oldest-first
+        let result = store.latest_nodes_on_branch(branch, 3).await.unwrap();
+        assert_eq!(result.len(), 3);
+        // All belong to the right branch
+        for node in &result {
+            assert_eq!(*node.branch_id(), branch);
+        }
+        // Order is oldest-first
+        assert!(result[0].created_at <= result[1].created_at);
+        assert!(result[1].created_at <= result[2].created_at);
+    }
+
+    #[tokio::test]
+    async fn latest_nodes_on_branch_n_larger_than_chain_returns_all() {
+        let (store, _dir) = test_store().await;
+        let branch = BranchId::from(1);
+
+        let mut parent = DagNodeId::root();
+        for i in 0..3 {
+            let id = hash_dag_node(
+                format!("sql-all-{i}").as_bytes(),
+                &parent,
+                &MessageType::Fork,
+                &[],
+                &sess(),
+            );
+            let node = DagNode {
+                id: id.clone(),
+                parent_id: parent.clone(),
+                created_at: Utc::now(),
+                state: Snapshot::empty(),
+                msg_type: MessageType::Fork,
+                session: sess(),
+                submission: sub(),
+                branch,
+                protocol_version: "v1".to_string(),
+            };
+            store.insert_node(&node).unwrap();
+            parent = id;
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+
+        let result = store.latest_nodes_on_branch(branch, 100).await.unwrap();
+        assert_eq!(result.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn latest_nodes_on_branch_unknown_branch_returns_empty() {
+        let (store, _dir) = test_store().await;
+        let result = store
+            .latest_nodes_on_branch(BranchId::from(999), 3)
+            .await
+            .unwrap();
+        assert!(result.is_empty());
     }
 
     // ========================================================================
@@ -2924,5 +3158,356 @@ mod tests {
             err.contains("not-a-real-type"),
             "error must contain the bad service_type: {err}"
         );
+    }
+
+    // ========================================================================
+    // get_invoke_message / get_complete_message / get_request_v2 / get_response_v2
+    // ========================================================================
+
+    #[tokio::test]
+    async fn get_invoke_message_happy_path() {
+        let (store, _dir) = test_store().await;
+        let dag_id = DagNodeId::from("invoke-msg-1".to_string());
+        let msg = vlinder_core::domain::InvokeMessage {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            state: Some("abc".to_string()),
+            diagnostics: vlinder_core::domain::InvokeDiagnostics {
+                harness_version: "0.1.0".to_string(),
+            },
+            dag_parent: DagNodeId::root(),
+            current_input: vec![vlinder_core::domain::Message::User {
+                content: "hello".to_string(),
+            }],
+        };
+
+        store
+            .insert_invoke_node(
+                &dag_id,
+                &DagNodeId::root(),
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &vlinder_core::domain::DataRoutingKey {
+                    session: sess(),
+                    branch: BranchId::from(1),
+                    submission: sub(),
+                    kind: vlinder_core::domain::DataMessageKind::Invoke {
+                        harness: vlinder_core::domain::HarnessType::Grpc,
+                        runtime: vlinder_core::domain::RuntimeType::Container,
+                        agent: vlinder_core::domain::AgentName::new("test-agent"),
+                    },
+                },
+                &msg,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .get_invoke_message(&dag_id)
+            .await
+            .expect("query must succeed");
+        let out = result.expect("expected Some(InvokeMessage)");
+        assert_eq!(out.current_input, msg.current_input);
+        assert_eq!(out.state, msg.state);
+        assert_eq!(out.diagnostics.harness_version, "0.1.0");
+    }
+
+    #[tokio::test]
+    async fn get_invoke_message_returns_none_for_wrong_type() {
+        let (store, _dir) = test_store().await;
+        let dag_id = DagNodeId::from("invoke-wrong-1".to_string());
+        // Insert a complete node at this dag_id instead
+        let complete_msg = vlinder_core::domain::CompleteMessage {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            state: None,
+            diagnostics: vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
+            payload: vec![],
+        };
+        store
+            .insert_complete_node(
+                &dag_id,
+                &DagNodeId::root(),
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &sess(),
+                &sub(),
+                BranchId::from(1),
+                &vlinder_core::domain::AgentName::new("test-agent"),
+                vlinder_core::domain::HarnessType::Grpc,
+                &complete_msg,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .get_invoke_message(&dag_id)
+            .await
+            .expect("query must succeed");
+        assert!(result.is_none(), "expected None for wrong type");
+    }
+
+    #[tokio::test]
+    async fn get_complete_message_happy_path() {
+        let (store, _dir) = test_store().await;
+        let dag_id = DagNodeId::from("complete-msg-1".to_string());
+        let msg = vlinder_core::domain::CompleteMessage {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            state: Some("done".to_string()),
+            diagnostics: vlinder_core::domain::RuntimeDiagnostics::placeholder(42),
+            content: Some("result".to_string()),
+            tool_calls: Some(vec![vlinder_core::domain::ToolCall {
+                id: vlinder_core::domain::ToolCallId::new(),
+                name: "test".to_string(),
+                arguments: serde_json::json!({}),
+            }]),
+            payload: b"data".to_vec(),
+        };
+
+        store
+            .insert_complete_node(
+                &dag_id,
+                &DagNodeId::root(),
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &sess(),
+                &sub(),
+                BranchId::from(1),
+                &vlinder_core::domain::AgentName::new("test-agent"),
+                vlinder_core::domain::HarnessType::Grpc,
+                &msg,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .get_complete_message(&dag_id)
+            .await
+            .expect("query must succeed");
+        let out = result.expect("expected Some(CompleteMessage)");
+        assert_eq!(out.content, msg.content);
+        assert_eq!(out.tool_calls, msg.tool_calls);
+        assert_eq!(out.state, msg.state);
+    }
+
+    #[tokio::test]
+    async fn get_complete_message_returns_none_for_wrong_type() {
+        let (store, _dir) = test_store().await;
+        let dag_id = DagNodeId::from("complete-wrong-1".to_string());
+        // Insert an invoke node at this dag_id
+        let invoke_msg = vlinder_core::domain::InvokeMessage {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            state: None,
+            diagnostics: vlinder_core::domain::InvokeDiagnostics {
+                harness_version: "0.1.0".to_string(),
+            },
+            dag_parent: DagNodeId::root(),
+            current_input: vec![],
+        };
+        store
+            .insert_invoke_node(
+                &dag_id,
+                &DagNodeId::root(),
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &vlinder_core::domain::DataRoutingKey {
+                    session: sess(),
+                    branch: BranchId::from(1),
+                    submission: sub(),
+                    kind: vlinder_core::domain::DataMessageKind::Invoke {
+                        harness: vlinder_core::domain::HarnessType::Grpc,
+                        runtime: vlinder_core::domain::RuntimeType::Container,
+                        agent: vlinder_core::domain::AgentName::new("test-agent"),
+                    },
+                },
+                &invoke_msg,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .get_complete_message(&dag_id)
+            .await
+            .expect("query must succeed");
+        assert!(result.is_none(), "expected None for wrong type");
+    }
+
+    #[tokio::test]
+    async fn get_request_v2_happy_path() {
+        let (store, _dir) = test_store().await;
+        let dag_id = DagNodeId::from("req-v2-1".to_string());
+        let msg = vlinder_core::domain::RequestV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            tool_call_id: vlinder_core::domain::ToolCallId::new(),
+            state: Some("st".to_string()),
+            diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
+        };
+
+        store
+            .insert_svc_request_node(
+                &dag_id,
+                &DagNodeId::root(),
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &sess(),
+                &sub(),
+                BranchId::from(1),
+                &vlinder_core::domain::AgentName::new("test-agent"),
+                vlinder_core::domain::ServiceBackendV2::Mcp("brave".to_string()),
+                vlinder_core::domain::ServiceOperation::new("echo"),
+                vlinder_core::domain::Sequence::first(),
+                &msg,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .get_request_v2(&dag_id)
+            .await
+            .expect("query must succeed");
+        let out = result.expect("expected Some(RequestV2)");
+        assert_eq!(out.tool_call_id, msg.tool_call_id);
+        assert_eq!(out.payload, msg.payload);
+        assert_eq!(out.state, msg.state);
+    }
+
+    #[tokio::test]
+    async fn get_request_v2_returns_none_for_wrong_type() {
+        let (store, _dir) = test_store().await;
+        let dag_id = DagNodeId::from("req-v2-wrong-1".to_string());
+        // Insert a response node at this dag_id
+        let svc_resp = vlinder_core::domain::ResponseV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            correlation_id: vlinder_core::domain::MessageId::new(),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
+            payload: vec![],
+        };
+        store
+            .insert_svc_response_node(
+                &dag_id,
+                &DagNodeId::root(),
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &sess(),
+                &sub(),
+                BranchId::from(1),
+                &vlinder_core::domain::AgentName::new("test-agent"),
+                vlinder_core::domain::ServiceBackendV2::Mcp("brave".to_string()),
+                vlinder_core::domain::ServiceOperation::new("echo"),
+                vlinder_core::domain::Sequence::first(),
+                &svc_resp,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .get_request_v2(&dag_id)
+            .await
+            .expect("query must succeed");
+        assert!(result.is_none(), "expected None for wrong type");
+    }
+
+    #[tokio::test]
+    async fn get_response_v2_happy_path() {
+        let (store, _dir) = test_store().await;
+        let dag_id = DagNodeId::from("resp-v2-1".to_string());
+        let msg = vlinder_core::domain::ResponseV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            correlation_id: vlinder_core::domain::MessageId::new(),
+            state: Some("final".to_string()),
+            diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
+            payload: b"result".to_vec(),
+        };
+
+        store
+            .insert_svc_response_node(
+                &dag_id,
+                &DagNodeId::root(),
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &sess(),
+                &sub(),
+                BranchId::from(1),
+                &vlinder_core::domain::AgentName::new("test-agent"),
+                vlinder_core::domain::ServiceBackendV2::Mcp("brave".to_string()),
+                vlinder_core::domain::ServiceOperation::new("echo"),
+                vlinder_core::domain::Sequence::first(),
+                &msg,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .get_response_v2(&dag_id)
+            .await
+            .expect("query must succeed");
+        let out = result.expect("expected Some(ResponseV2)");
+        assert_eq!(out.correlation_id, msg.correlation_id);
+        assert_eq!(out.payload, msg.payload);
+        assert_eq!(out.state, msg.state);
+    }
+
+    #[tokio::test]
+    async fn get_response_v2_returns_none_for_wrong_type() {
+        let (store, _dir) = test_store().await;
+        let dag_id = DagNodeId::from("resp-v2-wrong-1".to_string());
+        // Insert a svc_request node at this dag_id
+        let svc_req = vlinder_core::domain::RequestV2 {
+            id: vlinder_core::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            tool_call_id: vlinder_core::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
+            payload: vec![],
+        };
+        store
+            .insert_svc_request_node(
+                &dag_id,
+                &DagNodeId::root(),
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &sess(),
+                &sub(),
+                BranchId::from(1),
+                &vlinder_core::domain::AgentName::new("test-agent"),
+                vlinder_core::domain::ServiceBackendV2::Mcp("brave".to_string()),
+                vlinder_core::domain::ServiceOperation::new("echo"),
+                vlinder_core::domain::Sequence::first(),
+                &svc_req,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .get_response_v2(&dag_id)
+            .await
+            .expect("query must succeed");
+        assert!(result.is_none(), "expected None for wrong type");
+    }
+
+    #[tokio::test]
+    async fn get_invoke_message_returns_none_when_missing() {
+        let (store, _dir) = test_store().await;
+        let id = DagNodeId::from("nonexistent-invoke".to_string());
+        let result = store
+            .get_invoke_message(&id)
+            .await
+            .expect("query must succeed");
+        assert!(result.is_none(), "expected None for missing id");
     }
 }

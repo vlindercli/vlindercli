@@ -256,7 +256,7 @@ async fn dispatch_loop(
                     }
                     // Dispatch the invocation as usual.
                     let dispatch_result =
-                        shared::dispatch_invoke(&queue, registry, agent_port, &key, &invoke).await;
+                        shared::dispatch_invoke(&queue, registry, &**store, agent_port, &key, &invoke).await;
 
                     match dispatch_result {
                         Ok(result) => {

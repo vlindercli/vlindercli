@@ -763,7 +763,6 @@ mod tests {
                 harness_version: "test".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            history: vec![],
             current_input: vec![vlinder_core::domain::Message::User {
                 content: "hello lambda".to_string(),
             }],
@@ -827,7 +826,6 @@ mod tests {
                 harness_version: "test".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            history: vec![],
             current_input: vec![vlinder_core::domain::Message::User {
                 content: "hello".to_string(),
             }],

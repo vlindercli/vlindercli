@@ -43,7 +43,7 @@ impl Sidecar {
             }
         };
         let store = factory::connect_state_async(&config.state_url).await?;
-        let queue = factory::with_recording(queue, store);
+        let queue = factory::with_recording(queue, store.clone());
         let registry = factory::connect_registry_async(&config.registry_url).await?;
         let image_ref = config
             .image_ref
@@ -62,6 +62,7 @@ impl Sidecar {
             dispatch: DispatchContext {
                 queue,
                 registry,
+                store,
                 container_port: config.container_port,
                 container_id,
                 image_ref,

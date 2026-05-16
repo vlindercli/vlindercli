@@ -69,7 +69,6 @@ mod tests {
                     harness_version: "0.1.0".to_string(),
                 },
                 dag_parent: DagNodeId::root(),
-                history: vec![],
                 current_input: vec![Message::User {
                     content: String::from_utf8_lossy(payload).to_string(),
                 }],

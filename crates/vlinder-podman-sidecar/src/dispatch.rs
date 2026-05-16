@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    ContainerId, DagNodeId, DataMessageKind, DataRoutingKey, HealthWindow, ImageDigest, ImageRef,
-    InvokeMessage, MessageQueue, Registry, RuntimeDiagnostics,
+    ContainerId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, HealthWindow, ImageDigest,
+    ImageRef, InvokeMessage, MessageQueue, Registry, RuntimeDiagnostics,
 };
 
 use vlinder_provider_server::dispatch as shared;
@@ -19,6 +19,7 @@ use crate::health;
 pub struct DispatchContext {
     pub queue: Arc<dyn MessageQueue + Send + Sync>,
     pub registry: Arc<dyn Registry>,
+    pub store: Arc<dyn DagStore>,
     pub container_port: u16,
     pub container_id: ContainerId,
     pub image_ref: Option<ImageRef>,
@@ -38,7 +39,9 @@ pub async fn handle_invoke(
         return;
     };
 
-    match shared::dispatch_one_invoke(session_provider, ctx.container_port, key, msg) {
+    match shared::dispatch_one_invoke(session_provider, &*ctx.store, ctx.container_port, key, msg)
+        .await
+    {
         Ok(result) => {
             let diagnostics = health::build_diagnostics(
                 health,

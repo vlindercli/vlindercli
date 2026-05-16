@@ -1048,11 +1048,90 @@ impl DagStore for GrpcStateClient {
                         state: n.state.clone(),
                         diagnostics,
                         dag_parent: vlinder_core::domain::DagNodeId::from(n.dag_parent.clone()),
-                        history: vec![],
                         current_input: vec![],
                     });
                 Ok(Some((key, msg)))
             }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_invoke_message(
+        &self,
+        dag_id: &DagNodeId,
+    ) -> Result<Option<vlinder_core::domain::InvokeMessage>, String> {
+        let request = proto::GetInvokeMessageRequest {
+            dag_node_id: dag_id.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .get_invoke_message(request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match response.into_inner().message {
+            Some(p) => Ok(Some(super::convert::proto_to_invoke_message(p))),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_complete_message(
+        &self,
+        dag_id: &DagNodeId,
+    ) -> Result<Option<vlinder_core::domain::CompleteMessage>, String> {
+        let request = proto::GetCompleteMessageRequest {
+            dag_node_id: dag_id.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .get_complete_message(request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match response.into_inner().message {
+            Some(p) => Ok(Some(super::convert::proto_to_complete_message(p))),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_request_v2(
+        &self,
+        dag_id: &DagNodeId,
+    ) -> Result<Option<vlinder_core::domain::RequestV2>, String> {
+        let request = proto::GetRequestV2Request {
+            dag_node_id: dag_id.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .get_request_v2(request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match response.into_inner().message {
+            Some(p) => Ok(Some(super::convert::proto_to_request_v2(p))),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_response_v2(
+        &self,
+        dag_id: &DagNodeId,
+    ) -> Result<Option<vlinder_core::domain::ResponseV2>, String> {
+        let request = proto::GetResponseV2Request {
+            dag_node_id: dag_id.to_string(),
+        };
+
+        let mut client = self.client.clone();
+        let response = client
+            .get_response_v2(request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match response.into_inner().message {
+            Some(p) => Ok(Some(super::convert::proto_to_response_v2(p))),
             None => Ok(None),
         }
     }
@@ -1091,6 +1170,29 @@ impl DagStore for GrpcStateClient {
         response
             .into_inner()
             .branches
+            .into_iter()
+            .map(std::convert::TryInto::try_into)
+            .collect()
+    }
+
+    async fn latest_nodes_on_branch(
+        &self,
+        branch_id: BranchId,
+        n: u32,
+    ) -> Result<Vec<vlinder_core::domain::DagNode>, String> {
+        let request = proto::LatestNodesOnBranchRequest {
+            branch_id: branch_id.as_i64(),
+            n,
+        };
+        let mut client = self.client.clone();
+        let response = client
+            .latest_nodes_on_branch(request)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        response
+            .into_inner()
+            .nodes
             .into_iter()
             .map(std::convert::TryInto::try_into)
             .collect()

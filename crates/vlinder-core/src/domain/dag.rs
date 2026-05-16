@@ -503,6 +503,58 @@ pub trait DagStore: Send + Sync {
         Err("insert_svc_response_node not implemented".into())
     }
 
+    /// Retrieve typed `InvokeMessage` payload by DAG node ID.
+    ///
+    /// Returns `Ok(Some(msg))` if the node exists and is of type `Invoke`.
+    /// Returns `Ok(None)` if the ID is unknown or the node is a different type.
+    /// Returns `Err` on store errors.
+    async fn get_invoke_message(
+        &self,
+        dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::InvokeMessage>, String> {
+        let _ = dag_id;
+        Err("get_invoke_message not implemented".to_string())
+    }
+
+    /// Retrieve typed `CompleteMessage` payload by DAG node ID.
+    ///
+    /// Returns `Ok(Some(msg))` if the node exists and is of type `Complete`.
+    /// Returns `Ok(None)` if the ID is unknown or the node is a different type.
+    /// Returns `Err` on store errors.
+    async fn get_complete_message(
+        &self,
+        dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::CompleteMessage>, String> {
+        let _ = dag_id;
+        Err("get_complete_message not implemented".to_string())
+    }
+
+    /// Retrieve typed `RequestV2` payload by DAG node ID.
+    ///
+    /// Returns `Ok(Some(msg))` if the node exists and is of type `SvcRequest`.
+    /// Returns `Ok(None)` if the ID is unknown or the node is a different type.
+    /// Returns `Err` on store errors.
+    async fn get_request_v2(
+        &self,
+        dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::RequestV2>, String> {
+        let _ = dag_id;
+        Err("get_request_v2 not implemented".to_string())
+    }
+
+    /// Retrieve typed `ResponseV2` payload by DAG node ID.
+    ///
+    /// Returns `Ok(Some(msg))` if the node exists and is of type `SvcResponse`.
+    /// Returns `Ok(None)` if the ID is unknown or the node is a different type.
+    /// Returns `Err` on store errors.
+    async fn get_response_v2(
+        &self,
+        dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::ResponseV2>, String> {
+        let _ = dag_id;
+        Err("get_response_v2 not implemented".to_string())
+    }
+
     /// Retrieve a node by its content-addressed ID.
     async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String>;
 
@@ -611,6 +663,20 @@ pub trait DagStore: Send + Sync {
         &self,
         session_id: &super::SessionId,
     ) -> Result<Vec<Branch>, String>;
+
+    /// Get up to `n` most recent `DagNode` values on a branch, ordered **oldest-first**
+    /// (chain-order), so consumers can prepend or iterate chronologically without re-sorting.
+    ///
+    /// `n` is an upper bound — fewer nodes may be returned if the chain is shorter than `n`.
+    /// Returns an empty `Vec` (not an error) if the branch has no nodes.
+    async fn latest_nodes_on_branch(
+        &self,
+        branch_id: super::BranchId,
+        n: u32,
+    ) -> Result<Vec<DagNode>, String> {
+        let _ = (branch_id, n);
+        Err("latest_nodes_on_branch not implemented".to_string())
+    }
 
     /// Get the most recent `DagNode` on a branch, optionally filtered by message type.
     async fn latest_node_on_branch(
@@ -966,6 +1032,34 @@ impl DagStore for InMemoryDagStore {
         )
     }
 
+    async fn get_invoke_message(
+        &self,
+        _dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::InvokeMessage>, String> {
+        Err("InMemoryDagStore does not store typed payloads — use SqliteDagStore".into())
+    }
+
+    async fn get_complete_message(
+        &self,
+        _dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::CompleteMessage>, String> {
+        Err("InMemoryDagStore does not store typed payloads — use SqliteDagStore".into())
+    }
+
+    async fn get_request_v2(
+        &self,
+        _dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::RequestV2>, String> {
+        Err("InMemoryDagStore does not store typed payloads — use SqliteDagStore".into())
+    }
+
+    async fn get_response_v2(
+        &self,
+        _dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::ResponseV2>, String> {
+        Err("InMemoryDagStore does not store typed payloads — use SqliteDagStore".into())
+    }
+
     async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String> {
         let nodes = self.nodes.lock().unwrap();
         Ok(nodes.iter().find(|n| n.id == *id).cloned())
@@ -1102,6 +1196,27 @@ impl DagStore for InMemoryDagStore {
             .filter(|b| b.session_id == *session_id)
             .cloned()
             .collect())
+    }
+
+    async fn latest_nodes_on_branch(
+        &self,
+        branch_id: super::BranchId,
+        n: u32,
+    ) -> Result<Vec<DagNode>, String> {
+        let nodes = self.nodes.lock().unwrap();
+        let n = n as usize;
+        let filtered: Vec<DagNode> = nodes
+            .iter()
+            .filter(|n| *n.branch_id() == branch_id)
+            .cloned()
+            .collect();
+        // filtered is already in insertion order (oldest-first).
+        // Take the last `n` elements and return them oldest-first.
+        if filtered.len() <= n {
+            Ok(filtered)
+        } else {
+            Ok(filtered[(filtered.len() - n)..].to_vec())
+        }
     }
 
     async fn latest_node_on_branch(
@@ -1647,6 +1762,235 @@ mod tests {
         assert!(
             err.contains("SqliteDagStore"),
             "error must name the fix: {err}"
+        );
+    }
+
+    // ========================================================================
+    // latest_nodes_on_branch tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn in_memory_latest_nodes_returns_n_most_recent() {
+        let store = InMemoryDagStore::new();
+        let branch = BranchId::from(1);
+        let session =
+            SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
+
+        // Insert 5 nodes on branch 1, chained
+        let mut parent = DagNodeId::root();
+        for i in 0..5 {
+            let id = hash_dag_node(
+                format!("node-{i}").as_bytes(),
+                &parent,
+                &MessageType::Fork,
+                &[],
+                &session,
+            );
+            let node = DagNode {
+                id: id.clone(),
+                parent_id: parent.clone(),
+                created_at: Utc::now(),
+                state: Snapshot::empty(),
+                msg_type: MessageType::Fork,
+                session: session.clone(),
+                submission: SubmissionId::from(format!("sub-{i}")),
+                branch,
+                protocol_version: "v1".to_string(),
+            };
+            // Small time offset to ensure deterministic ordering
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            store.insert_node(&node);
+            parent = id;
+        }
+
+        // Fetch last 3
+        let result = store.latest_nodes_on_branch(branch, 3).await.unwrap();
+        assert_eq!(result.len(), 3);
+        // Oldest-first: nodes 2, 3, 4 (0-indexed)
+        for node in &result {
+            assert_eq!(*node.branch_id(), branch);
+        }
+        // First returned should be node[2]
+        assert!(result[0].submission_id().as_str().ends_with("-2"));
+        assert!(result[2].submission_id().as_str().ends_with("-4"));
+    }
+
+    #[tokio::test]
+    async fn in_memory_latest_nodes_n_larger_than_chain_returns_all() {
+        let store = InMemoryDagStore::new();
+        let branch = BranchId::from(1);
+        let session =
+            SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
+
+        let mut parent = DagNodeId::root();
+        for i in 0..5 {
+            let id = hash_dag_node(
+                format!("all-{i}").as_bytes(),
+                &parent,
+                &MessageType::Fork,
+                &[],
+                &session,
+            );
+            let node = DagNode {
+                id: id.clone(),
+                parent_id: parent.clone(),
+                created_at: Utc::now(),
+                state: Snapshot::empty(),
+                msg_type: MessageType::Fork,
+                session: session.clone(),
+                submission: SubmissionId::from(format!("sub-{i}")),
+                branch,
+                protocol_version: "v1".to_string(),
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            store.insert_node(&node);
+            parent = id;
+        }
+
+        // Fetch more than available
+        let result = store.latest_nodes_on_branch(branch, 100).await.unwrap();
+        assert_eq!(result.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn in_memory_latest_nodes_unknown_branch_returns_empty() {
+        let store = InMemoryDagStore::new();
+        let result = store
+            .latest_nodes_on_branch(BranchId::from(999), 3)
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn trait_default_latest_nodes_returns_err() {
+        // A bare struct using the trait default should return Err
+        struct BareStore;
+        #[async_trait]
+        impl DagStore for BareStore {
+            async fn get_node(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<DagNode>, String> {
+                Ok(None)
+            }
+            async fn get_session_nodes(
+                &self,
+                _: &crate::domain::SessionId,
+            ) -> Result<Vec<DagNode>, String> {
+                Ok(vec![])
+            }
+            async fn get_children(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Vec<DagNode>, String> {
+                Ok(vec![])
+            }
+            async fn create_branch(
+                &self,
+                _: &str,
+                _: &crate::domain::SessionId,
+                _: Option<&crate::domain::DagNodeId>,
+            ) -> Result<crate::domain::BranchId, String> {
+                Ok(BranchId::from(1))
+            }
+            async fn get_branch_by_name(&self, _: &str) -> Result<Option<Branch>, String> {
+                Ok(None)
+            }
+            async fn get_branch(
+                &self,
+                _: crate::domain::BranchId,
+            ) -> Result<Option<Branch>, String> {
+                Ok(None)
+            }
+            async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+                Ok(vec![])
+            }
+            async fn get_nodes_by_submission(&self, _: &str) -> Result<Vec<DagNode>, String> {
+                Ok(vec![])
+            }
+            async fn get_branches_for_session(
+                &self,
+                _: &crate::domain::SessionId,
+            ) -> Result<Vec<Branch>, String> {
+                Ok(vec![])
+            }
+            async fn latest_node_on_branch(
+                &self,
+                _: crate::domain::BranchId,
+                _: Option<MessageType>,
+            ) -> Result<Option<DagNode>, String> {
+                Ok(None)
+            }
+            async fn create_session(&self, _: &Session) -> Result<(), String> {
+                Ok(())
+            }
+            async fn get_session(
+                &self,
+                _: &crate::domain::SessionId,
+            ) -> Result<Option<Session>, String> {
+                Ok(None)
+            }
+            async fn rename_branch(
+                &self,
+                _: crate::domain::BranchId,
+                _: &str,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            async fn seal_branch(
+                &self,
+                _: crate::domain::BranchId,
+                _: DateTime<Utc>,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            async fn update_session_default_branch(
+                &self,
+                _: &crate::domain::SessionId,
+                _: crate::domain::BranchId,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            async fn get_session_by_name(&self, _: &str) -> Result<Option<Session>, String> {
+                Ok(None)
+            }
+
+            async fn get_invoke_message(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::InvokeMessage>, String> {
+                Err("BareStore does not implement get_invoke_message".into())
+            }
+
+            async fn get_complete_message(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::CompleteMessage>, String> {
+                Err("BareStore does not implement get_complete_message".into())
+            }
+
+            async fn get_request_v2(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::RequestV2>, String> {
+                Err("BareStore does not implement get_request_v2".into())
+            }
+
+            async fn get_response_v2(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::ResponseV2>, String> {
+                Err("BareStore does not implement get_response_v2".into())
+            }
+        }
+
+        let result = BareStore.latest_nodes_on_branch(BranchId::from(1), 3).await;
+        let err = result.expect_err("trait default should return Err");
+        assert!(
+            err.contains("latest_nodes_on_branch"),
+            "error should mention the method name: {err}"
         );
     }
 }

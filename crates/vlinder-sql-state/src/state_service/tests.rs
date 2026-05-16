@@ -13,8 +13,9 @@ use tonic::transport::Server;
 use crate::dag_store::SqliteDagStore;
 use crate::state_service::proto::state_service_client::StateServiceClient;
 use crate::state_service::proto::{
-    GetCompleteNodeRequest, GetRequestNodeRequest, GetResponseNodeRequest,
-    GetSvcRequestNodeRequest, GetSvcResponseNodeRequest,
+    GetCompleteMessageRequest, GetCompleteNodeRequest, GetInvokeMessageRequest,
+    GetRequestNodeRequest, GetRequestV2Request, GetResponseNodeRequest, GetResponseV2Request,
+    GetSvcRequestNodeRequest, GetSvcResponseNodeRequest, LatestNodesOnBranchRequest,
 };
 use crate::state_service::StateServiceServer;
 
@@ -356,6 +357,137 @@ async fn grpc_get_svc_request_node_roundtrip() {
 }
 
 // ============================================================================
+// LatestNodesOnBranch
+// ============================================================================
+
+#[tokio::test]
+async fn grpc_latest_nodes_on_branch_returns_n_most_recent() {
+    let (mut client, store, _shutdown) = grpc_test_setup().await;
+    let branch_id: i64 = 1;
+    let session = sess_id();
+    let submission = sub_id();
+    let agent = AgentName::new("test-agent");
+    let harness = HarnessType::Grpc;
+
+    // Insert 5 nodes in a chain with staggered timestamps
+    let mut parent = DagNodeId::root();
+    for i in 0..5 {
+        let dag_id = DagNodeId::from(format!("grpc-latest-n-{i}"));
+        let msg = vlinder_core::domain::CompleteMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            state: Some(format!("state-{i}")),
+            diagnostics: vlinder_core::domain::RuntimeDiagnostics::placeholder(100),
+            content: Some(format!("result-{i}")),
+            tool_calls: None,
+            payload: format!("payload-{i}").into_bytes(),
+        };
+
+        store
+            .insert_complete_node(
+                &dag_id,
+                &parent,
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                BranchId::from(branch_id),
+                &agent,
+                harness,
+                &msg,
+            )
+            .await
+            .unwrap();
+        parent = dag_id;
+        // Stagger timestamps
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+
+    let response = client
+        .latest_nodes_on_branch(LatestNodesOnBranchRequest { branch_id, n: 3 })
+        .await
+        .expect("RPC must succeed")
+        .into_inner();
+
+    assert_eq!(response.nodes.len(), 3);
+    // Order is oldest-first
+    assert!(response.nodes[0].created_at <= response.nodes[1].created_at);
+    assert!(response.nodes[1].created_at <= response.nodes[2].created_at);
+    // All belong to the right branch
+    for node in &response.nodes {
+        assert_eq!(node.branch_id, branch_id);
+    }
+}
+
+#[tokio::test]
+async fn grpc_latest_nodes_on_branch_n_larger_than_chain_returns_all() {
+    let (mut client, store, _shutdown) = grpc_test_setup().await;
+    let branch_id: i64 = 1;
+    let session = sess_id();
+    let submission = sub_id();
+    let agent = AgentName::new("test-agent");
+    let harness = HarnessType::Grpc;
+
+    let mut parent = DagNodeId::root();
+    for i in 0..3 {
+        let dag_id = DagNodeId::from(format!("grpc-latest-n-all-{i}"));
+        let msg = vlinder_core::domain::CompleteMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            state: Some(format!("state-{i}")),
+            diagnostics: vlinder_core::domain::RuntimeDiagnostics::placeholder(100),
+            content: Some(format!("result-{i}")),
+            tool_calls: None,
+            payload: format!("payload-{i}").into_bytes(),
+        };
+
+        store
+            .insert_complete_node(
+                &dag_id,
+                &parent,
+                chrono::Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                BranchId::from(branch_id),
+                &agent,
+                harness,
+                &msg,
+            )
+            .await
+            .unwrap();
+        parent = dag_id;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+
+    let response = client
+        .latest_nodes_on_branch(LatestNodesOnBranchRequest { branch_id, n: 100 })
+        .await
+        .expect("RPC must succeed")
+        .into_inner();
+
+    assert_eq!(response.nodes.len(), 3);
+}
+
+#[tokio::test]
+async fn grpc_latest_nodes_on_branch_unknown_branch_returns_empty() {
+    let (mut client, _store, _shutdown) = grpc_test_setup().await;
+
+    let response = client
+        .latest_nodes_on_branch(LatestNodesOnBranchRequest {
+            branch_id: 999,
+            n: 3,
+        })
+        .await
+        .expect("RPC must succeed")
+        .into_inner();
+
+    assert!(response.nodes.is_empty());
+}
+
+// ============================================================================
 // GetSvcResponseNode
 // ============================================================================
 
@@ -420,4 +552,234 @@ async fn grpc_get_svc_response_node_roundtrip() {
     assert_eq!(node.message_id, msg.id.to_string());
     assert_eq!(node.correlation_id, msg.correlation_id.to_string());
     assert_eq!(node.state, msg.state);
+}
+
+// ============================================================================
+// GetInvokeMessage
+// ============================================================================
+
+#[tokio::test]
+async fn grpc_get_invoke_message_roundtrip() {
+    let (mut client, store, _shutdown) = grpc_test_setup().await;
+    let session = sess_id();
+    let submission = sub_id();
+    let branch = BranchId::from(1);
+    let dag_id = DagNodeId::from("grpc-invoke-msg-1".to_string());
+
+    let msg = vlinder_core::domain::InvokeMessage {
+        id: MessageId::new(),
+        dag_id: DagNodeId::root(),
+        dag_parent: DagNodeId::root(),
+        state: Some("abc".to_string()),
+        diagnostics: vlinder_core::domain::InvokeDiagnostics {
+            harness_version: "0.1.0".to_string(),
+        },
+        current_input: vec![vlinder_core::domain::Message::User {
+            content: "hello".to_string(),
+        }],
+    };
+
+    let key = vlinder_core::domain::DataRoutingKey {
+        session: session.clone(),
+        branch,
+        submission: submission.clone(),
+        kind: vlinder_core::domain::DataMessageKind::Invoke {
+            harness: HarnessType::Grpc,
+            runtime: vlinder_core::domain::RuntimeType::Container,
+            agent: AgentName::new("test-agent"),
+        },
+    };
+
+    store
+        .insert_invoke_node(
+            &dag_id,
+            &DagNodeId::root(),
+            chrono::Utc::now(),
+            &Snapshot::empty(),
+            &key,
+            &msg,
+        )
+        .await
+        .unwrap();
+
+    let response = client
+        .get_invoke_message(GetInvokeMessageRequest {
+            dag_node_id: dag_id.to_string(),
+        })
+        .await
+        .expect("RPC must succeed")
+        .into_inner();
+
+    let out = response.message.expect("Some, not None");
+    assert_eq!(out.id, msg.id.to_string());
+    assert_eq!(out.state, Some("abc".to_string()));
+    assert_eq!(out.dag_parent, DagNodeId::root().to_string());
+}
+
+// ============================================================================
+// GetCompleteMessage
+// ============================================================================
+
+#[tokio::test]
+async fn grpc_get_complete_message_roundtrip() {
+    let (mut client, store, _shutdown) = grpc_test_setup().await;
+    let session = sess_id();
+    let submission = sub_id();
+    let branch = BranchId::from(1);
+    let agent = AgentName::new("test-agent");
+    let dag_id = DagNodeId::from("grpc-complete-msg-1".to_string());
+
+    let msg = vlinder_core::domain::CompleteMessage {
+        id: MessageId::new(),
+        dag_id: DagNodeId::root(),
+        dag_parent: DagNodeId::root(),
+        state: Some("done".to_string()),
+        diagnostics: vlinder_core::domain::RuntimeDiagnostics::placeholder(100),
+        content: Some("final answer".to_string()),
+        tool_calls: Some(vec![vlinder_core::domain::ToolCall {
+            id: ToolCallId::new(),
+            name: "get_weather".to_string(),
+            arguments: serde_json::json!({"city": "NYC"}),
+        }]),
+        payload: b"raw".to_vec(),
+    };
+
+    store
+        .insert_complete_node(
+            &dag_id,
+            &DagNodeId::root(),
+            chrono::Utc::now(),
+            &Snapshot::empty(),
+            &session,
+            &submission,
+            branch,
+            &agent,
+            HarnessType::Grpc,
+            &msg,
+        )
+        .await
+        .unwrap();
+
+    let response = client
+        .get_complete_message(GetCompleteMessageRequest {
+            dag_node_id: dag_id.to_string(),
+        })
+        .await
+        .expect("RPC must succeed")
+        .into_inner();
+
+    let out = response.message.expect("Some, not None");
+    assert_eq!(out.id, msg.id.to_string());
+    assert_eq!(out.state, Some("done".to_string()));
+    assert_eq!(out.dag_parent, DagNodeId::root().to_string());
+}
+
+// ============================================================================
+// GetRequestV2
+// ============================================================================
+
+#[tokio::test]
+async fn grpc_get_request_v2_roundtrip() {
+    let (mut client, store, _shutdown) = grpc_test_setup().await;
+    let session = sess_id();
+    let submission = sub_id();
+    let branch = BranchId::from(1);
+    let agent = AgentName::new("test-agent");
+    let dag_id = DagNodeId::from("grpc-req-v2-1".to_string());
+
+    let msg = vlinder_core::domain::RequestV2 {
+        id: MessageId::new(),
+        dag_id: DagNodeId::root(),
+        dag_parent: DagNodeId::root(),
+        tool_call_id: ToolCallId::new(),
+        state: Some("st".to_string()),
+        diagnostics: vlinder_core::domain::SvcRequestDiagnostics::default(),
+        payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
+    };
+
+    store
+        .insert_svc_request_node(
+            &dag_id,
+            &DagNodeId::root(),
+            chrono::Utc::now(),
+            &Snapshot::empty(),
+            &session,
+            &submission,
+            branch,
+            &agent,
+            ServiceBackendV2::Mcp("brave".to_string()),
+            ServiceOperation::new("echo"),
+            Sequence::first(),
+            &msg,
+        )
+        .await
+        .unwrap();
+
+    let response = client
+        .get_request_v2(GetRequestV2Request {
+            dag_node_id: dag_id.to_string(),
+        })
+        .await
+        .expect("RPC must succeed")
+        .into_inner();
+
+    let out = response.message.expect("Some, not None");
+    assert_eq!(out.id, msg.id.to_string());
+    assert_eq!(out.tool_call_id, msg.tool_call_id.to_string());
+    assert_eq!(out.state, Some("st".to_string()));
+}
+
+// ============================================================================
+// GetResponseV2
+// ============================================================================
+
+#[tokio::test]
+async fn grpc_get_response_v2_roundtrip() {
+    let (mut client, store, _shutdown) = grpc_test_setup().await;
+    let session = sess_id();
+    let submission = sub_id();
+    let branch = BranchId::from(1);
+    let agent = AgentName::new("test-agent");
+    let dag_id = DagNodeId::from("grpc-resp-v2-1".to_string());
+
+    let msg = vlinder_core::domain::ResponseV2 {
+        id: MessageId::new(),
+        dag_id: DagNodeId::root(),
+        dag_parent: DagNodeId::root(),
+        correlation_id: MessageId::new(),
+        state: Some("final".to_string()),
+        diagnostics: vlinder_core::domain::SvcResponseDiagnostics::default(),
+        payload: b"output".to_vec(),
+    };
+
+    store
+        .insert_svc_response_node(
+            &dag_id,
+            &DagNodeId::root(),
+            chrono::Utc::now(),
+            &Snapshot::empty(),
+            &session,
+            &submission,
+            branch,
+            &agent,
+            ServiceBackendV2::Mcp("brave".to_string()),
+            ServiceOperation::new("echo"),
+            Sequence::first(),
+            &msg,
+        )
+        .await
+        .unwrap();
+
+    let response = client
+        .get_response_v2(GetResponseV2Request {
+            dag_node_id: dag_id.to_string(),
+        })
+        .await
+        .expect("RPC must succeed")
+        .into_inner();
+
+    let out = response.message.expect("Some, not None");
+    assert_eq!(out.id, msg.id.to_string());
+    assert_eq!(out.correlation_id, msg.correlation_id.to_string());
+    assert_eq!(out.state, Some("final".to_string()));
 }

@@ -10,10 +10,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use vlinder_core::domain::{
-    AgentName, CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey, InvokeMessage, Message,
-    MessageId, MessageQueue, ParsedResponse, Registry, RuntimeDiagnostics, ToolCall,
-    ToolCallParser,
+    AgentName, CompleteMessage, DagNodeId, DagStore, DataMessageKind, DataRoutingKey,
+    InvokeMessage, Message, MessageId, MessageQueue, ParsedResponse, Registry, RuntimeDiagnostics,
+    ToolCall, ToolCallParser,
 };
+
+use crate::projection::walk_chain_to_messages;
 
 use crate::handler::InvokeHandler;
 use crate::hosts::build_hosts;
@@ -189,14 +191,16 @@ pub async fn start_session_provider(
 ///
 /// 1. Reset `chain_head` to `msg.dag_id` so outgoing requests parent on the invoke.
 /// 2. Seed agent state from `msg.state` (if the agent has object storage).
-/// 3. POST conversation to agent on localhost.
-/// 4. Read response, parse, return.
+/// 3. Walk the DAG chain to reconstruct conversation history.
+/// 4. POST conversation to agent on localhost.
+/// 5. Read response, parse, return.
 ///
 /// The caller is responsible for building diagnostics, sending the
 /// `CompleteMessage` (with `complete_dag_parent = result.chain_head`), and
 /// acknowledging the invoke.
-pub fn dispatch_one_invoke(
+pub async fn dispatch_one_invoke(
     session: &SessionProvider,
+    store: &dyn DagStore,
     agent_port: u16,
     key: &DataRoutingKey,
     msg: &InvokeMessage,
@@ -220,9 +224,12 @@ pub fn dispatch_one_invoke(
 
     reset_session_state_for_invoke(session, key, msg, agent.as_str());
 
-    // Combine history + current_input into a single conversation.
-    let mut conversation: Vec<Message> = msg.history.clone();
-    conversation.extend(msg.current_input.clone());
+    // Walk the DAG chain to reconstruct the full conversation. The walk
+    // already includes the current Invoke (it was recorded before dispatch),
+    // so no separate `current_input` append is needed — doing so duplicates
+    // the current turn's messages and breaks tool-call correlation in
+    // OpenAI's strict mode.
+    let conversation = walk_chain_to_messages(store, &key.session, key.branch).await?;
 
     // Convert tool result bytes to text strings via protocol decoder.
     let conversation_for_serialization: Vec<Message> = conversation
@@ -392,6 +399,7 @@ pub struct DispatchResult {
 pub async fn dispatch_invoke(
     queue: &Arc<dyn MessageQueue + Send + Sync>,
     registry: &Arc<dyn Registry>,
+    store: &dyn DagStore,
     agent_port: u16,
     key: &DataRoutingKey,
     msg: &InvokeMessage,
@@ -456,9 +464,12 @@ pub async fn dispatch_invoke(
     );
     let provider_server = ProviderServer::start(handler, hosts, state, 3544, tools).await;
 
-    // Combine history + current_input into a single conversation.
-    let mut conversation: Vec<Message> = msg.history.clone();
-    conversation.extend(msg.current_input.clone());
+    // Walk the DAG chain to reconstruct the full conversation. The walk
+    // already includes the current Invoke (it was recorded before dispatch),
+    // so no separate `current_input` append is needed — doing so duplicates
+    // the current turn's messages and breaks tool-call correlation in
+    // OpenAI's strict mode.
+    let conversation = walk_chain_to_messages(store, &key.session, key.branch).await?;
 
     // Convert tool result bytes to text strings via protocol decoder.
     let conversation_for_serialization: Vec<Message> = conversation

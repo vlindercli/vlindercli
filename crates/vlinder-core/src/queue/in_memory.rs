@@ -408,7 +408,6 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: DagNodeId::root(),
-            history: vec![],
             current_input: vec![crate::domain::Message::User {
                 content: "hello".to_string(),
             }],
@@ -465,7 +464,6 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: DagNodeId::root(),
-            history: vec![],
             current_input: vec![crate::domain::Message::User {
                 content: "input".to_string(),
             }],
@@ -509,7 +507,6 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: crate::domain::DagNodeId::root(),
-            history: vec![],
             current_input: vec![crate::domain::Message::User {
                 content: "hello".to_string(),
             }],
@@ -556,7 +553,6 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: crate::domain::DagNodeId::root(),
-            history: vec![],
             current_input: vec![crate::domain::Message::User {
                 content: "first".to_string(),
             }],
@@ -569,7 +565,6 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: crate::domain::DagNodeId::root(),
-            history: vec![],
             current_input: vec![crate::domain::Message::User {
                 content: "second".to_string(),
             }],

@@ -22,10 +22,6 @@ pub struct InvokeMessage {
     pub state: Option<String>,
     pub diagnostics: InvokeDiagnostics,
     pub dag_parent: DagNodeId,
-    /// Prior conversation context from previous invocations.
-    /// Empty on the first invocation of a round.
-    #[serde(default)]
-    pub history: Vec<Message>,
     /// The new input that triggered this invocation.
     pub current_input: Vec<Message>,
 }
@@ -44,9 +40,6 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            history: vec![Message::User {
-                content: "hi".to_string(),
-            }],
             current_input: vec![Message::User {
                 content: "hello world".to_string(),
             }],
@@ -68,7 +61,6 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            history: vec![],
             current_input: vec![Message::User {
                 content: "test".to_string(),
             }],

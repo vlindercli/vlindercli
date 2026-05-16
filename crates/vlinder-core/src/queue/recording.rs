@@ -1108,7 +1108,6 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            history: vec![],
             current_input: vec![Message::User {
                 content: "hello".to_string(),
             }],
@@ -1528,6 +1527,14 @@ mod tests {
             ) -> Result<Vec<crate::domain::Branch>, String> {
                 Ok(vec![])
             }
+            async fn latest_nodes_on_branch(
+                &self,
+                _: crate::domain::BranchId,
+                _: u32,
+            ) -> Result<Vec<crate::domain::DagNode>, String> {
+                Err("FailStore: latest_nodes_on_branch not available".into())
+            }
+
             async fn latest_node_on_branch(
                 &self,
                 _: crate::domain::BranchId,
@@ -1622,6 +1629,34 @@ mod tests {
             ) -> Result<Option<(crate::domain::SvcRoutingKey, crate::domain::ResponseV2)>, String>
             {
                 Err("FailStore: get_svc_response_node not available".into())
+            }
+
+            async fn get_invoke_message(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::InvokeMessage>, String> {
+                Err("FailStore: get_invoke_message not available".into())
+            }
+
+            async fn get_complete_message(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::CompleteMessage>, String> {
+                Err("FailStore: get_complete_message not available".into())
+            }
+
+            async fn get_request_v2(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::RequestV2>, String> {
+                Err("FailStore: get_request_v2 not available".into())
+            }
+
+            async fn get_response_v2(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::ResponseV2>, String> {
+                Err("FailStore: get_response_v2 not available".into())
             }
         }
 

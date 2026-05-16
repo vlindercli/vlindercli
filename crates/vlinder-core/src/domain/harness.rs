@@ -258,63 +258,28 @@ impl CoreHarness {
         input: &str,
         initial_state: Option<&str>,
     ) -> Result<(Vec<Message>, Vec<Message>, Option<String>), String> {
-        let last_invoke_node = self
+        let _last_invoke_node = self
             .store
             .latest_node_on_branch(timeline, Some(MessageType::Invoke))
             .await
             .unwrap_or(None);
-        let last_complete_node = self
+        let _last_complete_node = self
             .store
             .latest_node_on_branch(timeline, Some(MessageType::Complete))
             .await
             .unwrap_or(None);
-        let last_complete = match last_complete_node {
-            Some(n) => self
-                .store
-                .get_complete_node(&n.id)
-                .await
-                .ok()
-                .flatten()
-                .map(|(_, m)| m),
-            None => None,
-        };
 
-        let last_state = last_complete
-            .as_ref()
-            .and_then(|m| m.state.as_ref().map(std::string::ToString::to_string))
-            .or_else(|| initial_state.map(std::string::ToString::to_string));
+        // last_state: always use initial_state since we no longer build
+        // conversation history from embedded InvokeMessage.history.
+        let last_state = initial_state.map(std::string::ToString::to_string);
 
-        let (history, current_input) =
-            if let (Some(invoke_node), Some(complete)) = (last_invoke_node, last_complete) {
-                let last_invoke = self
-                    .store
-                    .get_invoke_node(&invoke_node.id)
-                    .await
-                    .ok()
-                    .flatten();
-                let (mut new_history, prev_current_input) = match last_invoke {
-                    Some((_, invoke_msg)) => (invoke_msg.history, invoke_msg.current_input),
-                    None => (vec![], vec![]),
-                };
-                new_history.extend(prev_current_input);
-                new_history.push(Message::Agent {
-                    content: complete.content.clone(),
-                    tool_calls: complete.tool_calls.clone(),
-                });
-                (
-                    new_history,
-                    vec![Message::User {
-                        content: input.to_string(),
-                    }],
-                )
-            } else {
-                (
-                    vec![],
-                    vec![Message::User {
-                        content: input.to_string(),
-                    }],
-                )
-            };
+        // `history` field removed from InvokeMessage — the sidecar now walks
+        // the DAG chain to reconstruct conversation history at dispatch time.
+        // This function's history output is unused by the caller.
+        let history: Vec<Message> = vec![];
+        let current_input = vec![Message::User {
+            content: input.to_string(),
+        }];
 
         Ok((history, current_input, last_state))
     }
@@ -342,7 +307,7 @@ impl CoreHarness {
         }
 
         let (_, runtime) = self.resolve_agent_and_runtime(agent_id).await?;
-        let (history, current_input, last_state) = self
+        let (_history, current_input, last_state) = self
             .build_conversation_input(timeline, input, initial_state)
             .await?;
 
@@ -357,7 +322,6 @@ impl CoreHarness {
             timeline,
             dag_parent.clone(),
             last_state,
-            history,
             current_input,
             self.harness_type(),
             runtime,
@@ -467,7 +431,6 @@ impl CoreHarness {
         timeline: BranchId,
         dag_parent: &DagNodeId,
         state: Option<&str>,
-        history: Vec<Message>,
         current_input: Vec<Message>,
     ) -> Result<(DataRoutingKey, InvokeMessage, JobId), String> {
         let (_, runtime) = self.resolve_agent_and_runtime(agent_id).await?;
@@ -495,7 +458,6 @@ impl CoreHarness {
             timeline,
             dag_parent.clone(),
             state.map(std::string::ToString::to_string),
-            history,
             current_input,
             self.harness_type(),
             runtime,
@@ -516,7 +478,6 @@ impl CoreHarness {
         timeline: BranchId,
         dag_parent: DagNodeId,
         state: Option<String>,
-        history: Vec<Message>,
         current_input: Vec<Message>,
         harness: HarnessType,
         runtime: crate::domain::RuntimeType,
@@ -541,7 +502,6 @@ impl CoreHarness {
                 harness_version: env!("CARGO_PKG_VERSION").to_string(),
             },
             dag_parent,
-            history,
             current_input,
         };
 
@@ -605,7 +565,6 @@ impl CoreHarness {
         sent_history: Vec<Message>,
         sent_current_input: Vec<Message>,
         complete: CompleteMessage,
-        tool_results: Vec<ToolResult>,
     ) -> (Vec<Message>, Vec<Message>, Option<String>, DagNodeId) {
         let mut new_history = sent_history;
         new_history.extend(sent_current_input);
@@ -614,13 +573,13 @@ impl CoreHarness {
             tool_calls: complete.tool_calls,
         });
         let next_history = new_history;
-        let next_current_input = tool_results
-            .into_iter()
-            .map(|tr| Message::Tool {
-                tool_call_id: tr.tool_call_id,
-                content: tr.content,
-            })
-            .collect();
+        // Tool results are NOT stuffed into the re-invoke's current_input.
+        // The chain's SvcResponse nodes are the source of truth for Tool
+        // messages — `walk_chain_to_messages` projects them at dispatch time.
+        // Including them here too would duplicate every Tool message in the
+        // conversation handed to the LLM, which OpenAI rejects for tool-call
+        // continuations (duplicate tool_call_id).
+        let next_current_input = Vec::new();
         (
             next_history,
             next_current_input,
@@ -802,7 +761,6 @@ impl CoreHarness {
         chain_head: &mut DagNodeId,
     ) -> Result<(TurnTrace, Vec<Message>, Vec<Message>, Option<String>), String> {
         let mut traces = Vec::with_capacity(tool_calls_vec.len());
-        let mut tool_results = Vec::with_capacity(tool_calls_vec.len());
 
         // Tool calls are dispatched strictly sequentially. Each service response must
         // return before the next request goes out, because the DAG model is
@@ -810,7 +768,6 @@ impl CoreHarness {
         // DAG support, deferred until there is concrete demand.
         for tc in &tool_calls_vec {
             let trace = self.process_tool_call(tc, ctl, cx, chain_head).await?;
-            tool_results.push(trace.result.clone());
             traces.push(trace);
         }
 
@@ -825,7 +782,7 @@ impl CoreHarness {
         .await;
 
         let (next_history, next_current_input, next_state, _next_dag_parent) =
-            Self::prepare_next_turn_state(sent_history, sent_current_input, complete, tool_results);
+            Self::prepare_next_turn_state(sent_history, sent_current_input, complete);
 
         Ok((turn, next_history, next_current_input, next_state))
     }
@@ -859,7 +816,6 @@ impl CoreHarness {
                 timeline,
                 dag_parent,
                 state,
-                history,
                 current_input,
             )
             .await
@@ -929,6 +885,7 @@ impl Harness for CoreHarness {
         loop {
             ctl.emit(HarnessEvent::TurnStarted { turn_index }).await;
 
+            let sent_history = invoke_history.clone();
             let (key, msg, job_id) = self
                 .build_next_message(
                     submission.clone(),
@@ -944,7 +901,6 @@ impl Harness for CoreHarness {
                 )
                 .await?;
 
-            let sent_history = msg.history.clone();
             let sent_current_input = msg.current_input.clone();
             let saved_submission = key.submission.clone();
             let saved_agent_name = crate::domain::agent_routing_key(agent_id);
@@ -1086,12 +1042,11 @@ impl Harness for CoreHarness {
                     branch_id,
                     &invoke_dag_parent,
                     invoke_state.as_deref(),
-                    invoke_history,
                     invoke_current_input,
                 )
                 .await?;
 
-            let sent_history = msg.history.clone();
+            let sent_history = invoke_history.clone();
             let sent_current_input = msg.current_input.clone();
             let saved_submission = key.submission.clone();
             let saved_agent_name = crate::domain::agent_routing_key(agent_id);
@@ -1218,7 +1173,6 @@ mod tests {
             dag_parent,
             None,
             vec![],
-            vec![],
             HarnessType::Grpc,
             RuntimeType::Container,
             &resource_id,
@@ -1246,7 +1200,6 @@ mod tests {
             dag_parent.clone(),
             None,
             vec![],
-            vec![],
             HarnessType::Grpc,
             RuntimeType::Container,
             &resource_id,
@@ -1257,7 +1210,6 @@ mod tests {
             timeline,
             dag_parent,
             None,
-            vec![],
             vec![],
             HarnessType::Grpc,
             RuntimeType::Container,
@@ -1423,7 +1375,6 @@ mod tests {
             diagnostics: InvokeDiagnostics {
                 harness_version: "test".to_string(),
             },
-            history: vec![],
             current_input: vec![Message::User {
                 content: "seed".to_string(),
             }],

@@ -51,8 +51,15 @@ service StateService {
   rpc GetSvcRequestNode(GetSvcRequestNodeRequest) returns (GetSvcRequestNodeResponse);
   rpc GetSvcResponseNode(GetSvcResponseNodeRequest) returns (GetSvcResponseNodeResponse);
 
+  // Typed message accessors (projection from envelope, no routing key)
+  rpc GetInvokeMessage(GetInvokeMessageRequest) returns (GetInvokeMessageResponse);
+  rpc GetCompleteMessage(GetCompleteMessageRequest) returns (GetCompleteMessageResponse);
+  rpc GetRequestV2(GetRequestV2Request) returns (GetRequestV2Response);
+  rpc GetResponseV2(GetResponseV2Request) returns (GetResponseV2Response);
+
   // Branch head query
   rpc LatestNodeOnBranch(LatestNodeOnBranchRequest) returns (LatestNodeOnBranchResponse);
+  rpc LatestNodesOnBranch(LatestNodesOnBranchRequest) returns (LatestNodesOnBranchResponse);
 
   // Branch mutation
   rpc RenameBranch(RenameBranchRequest) returns (RenameBranchResponse);
@@ -188,6 +195,12 @@ message LatestNodeOnBranchRequest {
   optional string message_type = 2;  // e.g. "invoke", "complete"; omit for any type
 }
 message LatestNodeOnBranchResponse { optional DagNode node = 1; }
+
+message LatestNodesOnBranchRequest {
+  int64 branch_id = 1;
+  uint32 n = 2;
+}
+message LatestNodesOnBranchResponse { repeated DagNode nodes = 1; }
 
 // =============================================================================
 // Branch Mutation
@@ -546,4 +559,58 @@ message SvcResponseNodeProto {
   optional string state = 11;
   bytes payload = 12;
   optional string diagnostics = 13;
+}
+
+// =============================================================================
+// Typed Message Accessors (projection, no routing key)
+// =============================================================================
+
+message GetInvokeMessageRequest { string dag_node_id = 1; }
+message GetInvokeMessageResponse { optional InvokeMessageProto message = 1; }
+
+message InvokeMessageProto {
+  string id = 1;
+  string dag_id = 2;
+  optional string state = 3;
+  bytes diagnostics = 4;
+  string dag_parent = 5;
+  bytes payload = 6;  // JSON-serialized full InvokeMessage (history, current_input, all fields)
+}
+
+message GetCompleteMessageRequest { string dag_node_id = 1; }
+message GetCompleteMessageResponse { optional CompleteMessageProto message = 1; }
+
+message CompleteMessageProto {
+  string id = 1;
+  string dag_id = 2;
+  string dag_parent = 3;
+  optional string state = 4;
+  bytes diagnostics = 5;
+  bytes payload = 6;  // JSON-serialized full CompleteMessage (content, tool_calls, all fields)
+}
+
+message GetRequestV2Request { string dag_node_id = 1; }
+message GetRequestV2Response { optional RequestV2Proto message = 1; }
+
+message RequestV2Proto {
+  string id = 1;
+  string dag_id = 2;
+  string dag_parent = 3;
+  string tool_call_id = 4;
+  optional string state = 5;
+  bytes diagnostics = 6;
+  bytes payload = 7;  // JSON-serialized full RequestV2
+}
+
+message GetResponseV2Request { string dag_node_id = 1; }
+message GetResponseV2Response { optional ResponseV2Proto message = 1; }
+
+message ResponseV2Proto {
+  string id = 1;
+  string dag_id = 2;
+  string dag_parent = 3;
+  string correlation_id = 4;
+  optional string state = 5;
+  bytes diagnostics = 6;
+  bytes payload = 7;  // JSON-serialized full ResponseV2
 }
