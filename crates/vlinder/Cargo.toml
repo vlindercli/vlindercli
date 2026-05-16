@@ -16,6 +16,7 @@ clap = { version = "4", features = ["derive"] }
 dirs = "6"
 ratatui = "0.30"
 ratatui-textarea = "0.9"
+tuirealm = { version = "4.1", features = ["derive", "crossterm", "async-ports"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tracing = "0.1"
