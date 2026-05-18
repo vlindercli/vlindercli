@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -9,6 +10,12 @@ use vlinder_nats::NatsQueue;
 
 use crate::boundary;
 use crate::mcp_client::call_mcp_tool;
+
+/// Bearer tokens keyed by MCP provider name (e.g. `"exa" -> "<api-key>"`).
+///
+/// Providers absent from the map are called without an `Authorization` header,
+/// preserving the unauthenticated path used by local MCP servers like Brave.
+pub type McpAuthMap = HashMap<String, String>;
 
 /// Build response key from request key (swap `SvcRequest` → `SvcResponse`).
 fn response_key_from_request(req_key: &SvcRoutingKey) -> SvcRoutingKey {
@@ -81,7 +88,11 @@ async fn send_error_response(
 }
 
 #[allow(clippy::too_many_lines)]
-pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Result<()> {
+pub async fn run_mcp_worker(
+    queue: NatsQueue,
+    registry: Arc<dyn Registry>,
+    auth: McpAuthMap,
+) -> Result<()> {
     loop {
         let (key, req, ack) = match queue.receive_svc_request_mcp().await {
             Ok(result) => result,
@@ -128,7 +139,8 @@ pub async fn run_mcp_worker(queue: NatsQueue, registry: Arc<dyn Registry>) -> Re
             .collect();
 
         let result = if let Some(url) = server_url {
-            call_mcp_tool(&url, &operation, arguments).await
+            let bearer = auth.get(&provider_name).map(String::as_str);
+            call_mcp_tool(&url, &operation, arguments, bearer).await
         } else {
             let msg = if provider_name.is_empty() {
                 "MCP worker: no provider in routing key".to_string()

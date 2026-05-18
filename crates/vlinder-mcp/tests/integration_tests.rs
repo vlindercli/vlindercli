@@ -21,7 +21,8 @@ fn spawn_mcp_worker(queue: NatsQueue) -> tokio::task::JoinHandle<anyhow::Result<
     use vlinder_core::domain::{InMemoryRegistry, InMemorySecretStore, Registry, SecretStore};
     let secret_store: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
     let registry: Arc<dyn Registry> = Arc::new(InMemoryRegistry::new(secret_store));
-    tokio::spawn(async move { vlinder_mcp::run_mcp_worker(queue, registry).await })
+    let auth = std::collections::HashMap::new();
+    tokio::spawn(async move { vlinder_mcp::run_mcp_worker(queue, registry, auth).await })
 }
 
 /// Build a V2 service request key for the echo tool.

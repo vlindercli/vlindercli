@@ -717,10 +717,20 @@ pub async fn run_mcp_worker(config: &Config, shutdown: CancellationToken) {
         .await
         .expect("Failed to connect to registry");
 
-    tracing::info!("MCP service worker ready");
+    // Pass through every `[mcp.<name>]` entry with a non-empty api_key.
+    // No per-provider knowledge here — adding a new authed MCP server is
+    // entirely a config change.
+    let auth: std::collections::HashMap<String, String> = config
+        .mcp
+        .iter()
+        .filter(|(_, v)| !v.api_key.is_empty())
+        .map(|(k, v)| (k.clone(), v.api_key.clone()))
+        .collect();
+
+    tracing::info!(authed_providers = auth.len(), "MCP service worker ready");
 
     tokio::select! {
-        result = vlinder_mcp::run_mcp_worker(queue, registry) => {
+        result = vlinder_mcp::run_mcp_worker(queue, registry, auth) => {
             if let Err(e) = result {
                 tracing::error!(error = %e, "MCP worker exited with error");
             }

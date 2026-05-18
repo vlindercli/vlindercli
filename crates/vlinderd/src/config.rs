@@ -9,6 +9,7 @@
 //! or alternative config sources.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 // ============================================================================
@@ -105,6 +106,12 @@ pub struct Config {
     pub ollama: OllamaConfig,
     #[serde(default)]
     pub openrouter: OpenRouterConfig,
+    /// Per-MCP-server auth, keyed by the registered MCP server name.
+    ///
+    /// TOML: `[mcp.<name>] api_key = "..."`. Env override:
+    /// `VLINDER_MCP_<NAME>_API_KEY` (highest priority).
+    #[serde(default)]
+    pub mcp: HashMap<String, McpProviderConfig>,
     pub queue: QueueConfig,
     pub state: StateConfig,
     #[serde(default)]
@@ -133,6 +140,19 @@ pub struct OpenRouterConfig {
     /// `OpenRouter` API endpoint
     pub endpoint: String,
     /// API key for authentication
+    pub api_key: String,
+}
+
+/// Per-MCP-server configuration, deserialised from `[mcp.<name>]` sections.
+///
+/// Currently holds only the bearer token used as `Authorization: Bearer …` on
+/// outbound MCP requests. Servers that do not require auth (e.g. a brave MCP
+/// running on localhost) simply omit the section entirely.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct McpProviderConfig {
+    /// Bearer token sent as `Authorization: Bearer <api_key>`. Empty string
+    /// means "no auth header" — the unauthenticated path stays the default.
     pub api_key: String,
 }
 
@@ -480,6 +500,7 @@ impl Config {
             logging: LoggingConfig::default(),
             ollama: OllamaConfig::default(),
             openrouter: OpenRouterConfig::default(),
+            mcp: HashMap::new(),
             queue: QueueConfig {
                 backend: QueueBackend::Memory,
                 nats_url: "nats://localhost:4222".to_string(),
@@ -515,6 +536,21 @@ impl Config {
         }
         if let Ok(v) = std::env::var("VLINDER_OPENROUTER_API_KEY") {
             self.openrouter.api_key = v;
+        }
+
+        // MCP per-provider api keys — VLINDER_MCP_<NAME>_API_KEY overlays
+        // `[mcp.<name>] api_key` from the config file. Dynamic over provider
+        // names: any MCP server registered as `<name>` picks up its key from
+        // either source without code changes here.
+        for (key, value) in std::env::vars() {
+            if let Some(rest) = key.strip_prefix("VLINDER_MCP_") {
+                if let Some(name) = rest.strip_suffix("_API_KEY") {
+                    if name.is_empty() {
+                        continue;
+                    }
+                    self.mcp.entry(name.to_lowercase()).or_default().api_key = value;
+                }
+            }
         }
 
         // Queue
