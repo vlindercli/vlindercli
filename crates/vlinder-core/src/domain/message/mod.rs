@@ -31,7 +31,9 @@ pub mod identity;
 pub mod invoke;
 pub mod promote;
 pub mod request;
+pub mod request_v2;
 pub mod response;
+pub mod response_v2;
 pub mod session_start;
 
 // Re-export everything at the module level for backwards compatibility.
@@ -40,13 +42,15 @@ pub use delete_agent::DeleteAgentMessage;
 pub use deploy_agent::DeployAgentMessage;
 pub use fork::ForkMessage;
 pub use identity::{
-    BranchId, DagNodeId, HarnessType, Instance, MessageId, Sequence, SequenceCounter, SessionId,
-    StateHash, SubmissionId,
+    BranchId, DagNodeId, ExternalSessionId, HarnessType, Instance, MessageId, Sequence,
+    SequenceCounter, SessionId, StateHash, SubmissionId, ToolCallId,
 };
 pub use invoke::InvokeMessage;
 pub use promote::PromoteMessage;
 pub use request::RequestMessage;
+pub use request_v2::RequestV2;
 pub use response::ResponseMessage;
+pub use response_v2::ResponseV2;
 pub use session_start::SessionStartMessage;
 
 /// Protocol version stamped on every message at construction time.

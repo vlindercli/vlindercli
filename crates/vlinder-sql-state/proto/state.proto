@@ -45,8 +45,21 @@ service StateService {
   rpc InsertDeployAgentNode(InsertDeployAgentNodeRequest) returns (InsertDeployAgentNodeResponse);
   rpc InsertDeleteAgentNode(InsertDeleteAgentNodeRequest) returns (InsertDeleteAgentNodeResponse);
 
+  // V2 service nodes (MCP)
+  rpc InsertSvcRequestNode(InsertSvcRequestNodeRequest) returns (InsertSvcRequestNodeResponse);
+  rpc InsertSvcResponseNode(InsertSvcResponseNodeRequest) returns (InsertSvcResponseNodeResponse);
+  rpc GetSvcRequestNode(GetSvcRequestNodeRequest) returns (GetSvcRequestNodeResponse);
+  rpc GetSvcResponseNode(GetSvcResponseNodeRequest) returns (GetSvcResponseNodeResponse);
+
+  // Typed message accessors (projection from envelope, no routing key)
+  rpc GetInvokeMessage(GetInvokeMessageRequest) returns (GetInvokeMessageResponse);
+  rpc GetCompleteMessage(GetCompleteMessageRequest) returns (GetCompleteMessageResponse);
+  rpc GetRequestV2(GetRequestV2Request) returns (GetRequestV2Response);
+  rpc GetResponseV2(GetResponseV2Request) returns (GetResponseV2Response);
+
   // Branch head query
   rpc LatestNodeOnBranch(LatestNodeOnBranchRequest) returns (LatestNodeOnBranchResponse);
+  rpc LatestNodesOnBranch(LatestNodesOnBranchRequest) returns (LatestNodesOnBranchResponse);
 
   // Branch mutation
   rpc RenameBranch(RenameBranchRequest) returns (RenameBranchResponse);
@@ -136,6 +149,7 @@ message GetBranchResponse { optional Branch branch = 1; }
 
 message SessionProto {
   string id = 1;
+  string external_id = 6;
   string name = 2;
   string agent_name = 3;
   int64 default_branch = 4;
@@ -181,6 +195,12 @@ message LatestNodeOnBranchRequest {
   optional string message_type = 2;  // e.g. "invoke", "complete"; omit for any type
 }
 message LatestNodeOnBranchResponse { optional DagNode node = 1; }
+
+message LatestNodesOnBranchRequest {
+  int64 branch_id = 1;
+  uint32 n = 2;
+}
+message LatestNodesOnBranchResponse { repeated DagNode nodes = 1; }
 
 // =============================================================================
 // Branch Mutation
@@ -271,11 +291,18 @@ message GetCompleteNodeResponse {
 }
 
 message CompleteNodeProto {
-  string message_id = 1;
-  optional string state = 2;
-  bytes diagnostics = 3;
-  bytes payload = 4;
-  string dag_hash = 5;
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string harness = 5;
+  // Payload
+  string message_id = 6;
+  optional string state = 7;
+  bytes diagnostics = 8;
+  bytes payload = 9;
+  string dag_hash = 10;
 }
 
 message GetRequestNodeRequest { string dag_hash = 1; }
@@ -284,12 +311,21 @@ message GetRequestNodeResponse {
 }
 
 message RequestNodeProto {
-  string message_id = 1;
-  optional string state = 2;
-  bytes diagnostics = 3;
-  bytes payload = 4;
-  string dag_hash = 5;
-  optional string checkpoint = 6;
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string service = 5;
+  string operation = 6;
+  uint32 sequence = 7;
+  // Payload
+  string message_id = 8;
+  optional string state = 9;
+  bytes diagnostics = 10;
+  bytes payload = 11;
+  string dag_hash = 12;
+  optional string checkpoint = 13;
 }
 
 message InsertRequestNodeRequest {
@@ -321,14 +357,23 @@ message GetResponseNodeResponse {
 }
 
 message ResponseNodeProto {
-  string message_id = 1;
-  string correlation_id = 2;
-  optional string state = 3;
-  bytes diagnostics = 4;
-  bytes payload = 5;
-  uint32 status_code = 6;
-  string dag_hash = 7;
-  optional string checkpoint = 8;
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string service = 5;
+  string operation = 6;
+  uint32 sequence = 7;
+  // Payload
+  string message_id = 8;
+  string correlation_id = 9;
+  optional string state = 10;
+  bytes diagnostics = 11;
+  bytes payload = 12;
+  uint32 status_code = 13;
+  string dag_hash = 14;
+  optional string checkpoint = 15;
 }
 
 message InsertResponseNodeRequest {
@@ -416,4 +461,156 @@ message InsertDeleteAgentNodeRequest {
 message InsertDeleteAgentNodeResponse {
   bool success = 1;
   optional string error = 2;
+}
+
+// =============================================================================
+// V2 Service Nodes (MCP)
+// =============================================================================
+
+message InsertSvcRequestNodeRequest {
+  string dag_hash = 1;
+  string parent_hash = 2;
+  string created_at = 3;
+  string snapshot = 4;
+  string session_id = 5;
+  string submission_id = 6;
+  int64 branch_id = 7;
+  string agent = 8;
+  string service_type = 9;
+  string service_backend = 10;
+  string operation = 11;
+  uint32 sequence = 12;
+  string message_id = 13;
+  string tool_call_id = 14;
+  bytes arguments = 15;
+  optional string state = 16;
+  optional string diagnostics = 17;
+}
+message InsertSvcRequestNodeResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message InsertSvcResponseNodeRequest {
+  string dag_hash = 1;
+  string parent_hash = 2;
+  string created_at = 3;
+  string snapshot = 4;
+  string session_id = 5;
+  string submission_id = 6;
+  int64 branch_id = 7;
+  string agent = 8;
+  string service_type = 9;
+  string service_backend = 10;
+  string operation = 11;
+  uint32 sequence = 12;
+  string message_id = 13;
+  string correlation_id = 14;
+  bytes payload = 15;
+  optional string state = 16;
+  optional string diagnostics = 17;
+}
+message InsertSvcResponseNodeResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+message GetSvcRequestNodeRequest { string dag_hash = 1; }
+message GetSvcRequestNodeResponse {
+  optional SvcRequestNodeProto node = 1;
+}
+
+message SvcRequestNodeProto {
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string service_type = 5;
+  string service_backend = 6;
+  string operation = 7;
+  uint32 sequence = 8;
+  // Payload
+  string message_id = 9;
+  string tool_call_id = 10;
+  optional string state = 11;
+  bytes arguments = 12;
+  optional string diagnostics = 13;
+}
+
+message GetSvcResponseNodeRequest { string dag_hash = 1; }
+message GetSvcResponseNodeResponse {
+  optional SvcResponseNodeProto node = 1;
+}
+
+message SvcResponseNodeProto {
+  // Routing
+  string session_id = 1;
+  int64 branch = 2;
+  string submission_id = 3;
+  string agent = 4;
+  string service_type = 5;
+  string service_backend = 6;
+  string operation = 7;
+  uint32 sequence = 8;
+  // Payload
+  string message_id = 9;
+  string correlation_id = 10;
+  optional string state = 11;
+  bytes payload = 12;
+  optional string diagnostics = 13;
+}
+
+// =============================================================================
+// Typed Message Accessors (projection, no routing key)
+// =============================================================================
+
+message GetInvokeMessageRequest { string dag_node_id = 1; }
+message GetInvokeMessageResponse { optional InvokeMessageProto message = 1; }
+
+message InvokeMessageProto {
+  string id = 1;
+  string dag_id = 2;
+  optional string state = 3;
+  bytes diagnostics = 4;
+  string dag_parent = 5;
+  bytes payload = 6;  // JSON-serialized full InvokeMessage (history, current_input, all fields)
+}
+
+message GetCompleteMessageRequest { string dag_node_id = 1; }
+message GetCompleteMessageResponse { optional CompleteMessageProto message = 1; }
+
+message CompleteMessageProto {
+  string id = 1;
+  string dag_id = 2;
+  string dag_parent = 3;
+  optional string state = 4;
+  bytes diagnostics = 5;
+  bytes payload = 6;  // JSON-serialized full CompleteMessage (content, tool_calls, all fields)
+}
+
+message GetRequestV2Request { string dag_node_id = 1; }
+message GetRequestV2Response { optional RequestV2Proto message = 1; }
+
+message RequestV2Proto {
+  string id = 1;
+  string dag_id = 2;
+  string dag_parent = 3;
+  string tool_call_id = 4;
+  optional string state = 5;
+  bytes diagnostics = 6;
+  bytes payload = 7;  // JSON-serialized full RequestV2
+}
+
+message GetResponseV2Request { string dag_node_id = 1; }
+message GetResponseV2Response { optional ResponseV2Proto message = 1; }
+
+message ResponseV2Proto {
+  string id = 1;
+  string dag_id = 2;
+  string dag_parent = 3;
+  string correlation_id = 4;
+  optional string state = 5;
+  bytes diagnostics = 6;
+  bytes payload = 7;  // JSON-serialized full ResponseV2
 }

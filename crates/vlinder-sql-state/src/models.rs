@@ -9,8 +9,8 @@ use diesel::prelude::*;
 
 use crate::schema::{
     agents, branches, complete_nodes, dag_nodes, delete_agent_nodes, deploy_agent_nodes,
-    fork_nodes, invoke_nodes, models, promote_nodes, readiness_checks, request_nodes,
-    response_nodes, sessions,
+    fork_nodes, invoke_nodes, mcp_servers, models, promote_nodes, readiness_checks, request_nodes,
+    response_nodes, sessions, svc_request_nodes, svc_response_nodes,
 };
 
 // ============================================================================
@@ -254,6 +254,7 @@ pub struct NewBranch<'a> {
 #[diesel(table_name = sessions)]
 pub struct SessionRow {
     pub id: String,
+    pub external_id: String,
     pub name: String,
     pub agent_name: String,
     pub default_branch: i64,
@@ -264,6 +265,7 @@ pub struct SessionRow {
 #[diesel(table_name = sessions)]
 pub struct NewSession<'a> {
     pub id: &'a str,
+    pub external_id: &'a str,
     pub name: &'a str,
     pub agent_name: &'a str,
     pub default_branch: i64,
@@ -395,4 +397,97 @@ pub struct NewDeleteAgentNode<'a> {
     pub dag_hash: &'a str,
     pub agent_name: &'a str,
     pub message_id: &'a str,
+}
+
+// ============================================================================
+// svc_request_nodes
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = svc_request_nodes)]
+pub struct SvcRequestNodeRow {
+    pub dag_hash: String,
+    pub agent: String,
+    pub service_type: String,
+    pub service_backend: String,
+    pub operation: String,
+    pub sequence: i32,
+    pub message_id: String,
+    pub tool_call_id: String,
+    pub state: Option<String>,
+    pub diagnostics: Option<String>,
+    pub arguments: Vec<u8>,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = svc_request_nodes)]
+pub struct NewSvcRequestNode<'a> {
+    pub dag_hash: &'a str,
+    pub agent: &'a str,
+    pub service_type: &'a str,
+    pub service_backend: &'a str,
+    pub operation: &'a str,
+    pub sequence: i32,
+    pub message_id: &'a str,
+    pub tool_call_id: &'a str,
+    pub state: Option<&'a str>,
+    pub diagnostics: Option<&'a str>,
+    #[diesel(column_name = arguments)]
+    pub payload: &'a [u8],
+}
+
+// ============================================================================
+// svc_response_nodes
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = svc_response_nodes)]
+pub struct SvcResponseNodeRow {
+    pub dag_hash: String,
+    pub agent: String,
+    pub service_type: String,
+    pub service_backend: String,
+    pub operation: String,
+    pub sequence: i32,
+    pub message_id: String,
+    pub correlation_id: String,
+    pub state: Option<String>,
+    pub diagnostics: Option<String>,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = svc_response_nodes)]
+pub struct NewSvcResponseNode<'a> {
+    pub dag_hash: &'a str,
+    pub agent: &'a str,
+    pub service_type: &'a str,
+    pub service_backend: &'a str,
+    pub operation: &'a str,
+    pub sequence: i32,
+    pub message_id: &'a str,
+    pub correlation_id: &'a str,
+    pub state: Option<&'a str>,
+    pub diagnostics: Option<&'a str>,
+    pub payload: &'a [u8],
+}
+
+// ============================================================================
+// mcp_servers
+// ============================================================================
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = mcp_servers)]
+pub struct McpServerRow {
+    pub name: String,
+    pub url: String,
+    pub tools_json: String,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = mcp_servers)]
+pub struct NewMcpServer<'a> {
+    pub name: &'a str,
+    pub url: &'a str,
+    pub tools_json: &'a str,
 }

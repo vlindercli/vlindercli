@@ -7,10 +7,16 @@ mod catalog;
 #[cfg(feature = "worker")]
 mod worker;
 
+#[cfg(feature = "toolcall")]
+mod tool_call_parser;
+
 #[cfg(feature = "worker")]
 pub use catalog::OpenRouterCatalog;
 #[cfg(feature = "worker")]
 pub use worker::OpenRouterWorker;
+
+#[cfg(feature = "toolcall")]
+pub use tool_call_parser::OpenAiToolCallParser;
 
 use async_openai::types::chat::{CreateChatCompletionRequest, CreateChatCompletionResponse};
 use vlinder_core::domain::{

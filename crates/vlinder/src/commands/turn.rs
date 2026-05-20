@@ -1,5 +1,7 @@
 use clap::Subcommand;
 
+use vlinder_core::domain::Message;
+
 use crate::config::CliConfig;
 
 use super::connect::open_dag_store;
@@ -41,41 +43,134 @@ async fn get(submission_id: &str) {
     }
 
     for node in &nodes {
-        let (from, to, operation, checkpoint, state, payload) =
-            if node.message_type() == vlinder_core::domain::MessageType::Invoke {
-                if let Ok(Some((key, msg))) = store.get_invoke_node(&node.id).await {
-                    let vlinder_core::domain::DataMessageKind::Invoke { harness, agent, .. } =
-                        &key.kind
-                    else {
-                        continue;
-                    };
-                    (
-                        harness.as_str().to_string(),
-                        agent.to_string(),
-                        None::<String>,
-                        None::<String>,
-                        msg.state.clone(),
-                        msg.payload,
-                    )
-                } else {
+        let (from, to, operation, checkpoint, state, payload) = if node.message_type()
+            == vlinder_core::domain::MessageType::Invoke
+        {
+            if let Ok(Some((key, msg))) = store.get_invoke_node(&node.id).await {
+                let vlinder_core::domain::DataMessageKind::Invoke { harness, agent, .. } =
+                    &key.kind
+                else {
                     continue;
-                }
-            } else if node.message_type() == vlinder_core::domain::MessageType::Complete {
-                if let Ok(Some(msg)) = store.get_complete_node(&node.id).await {
-                    (
-                        "agent".to_string(),
-                        "harness".to_string(),
-                        None::<String>,
-                        None::<String>,
-                        msg.state,
-                        msg.payload,
-                    )
-                } else {
-                    continue;
-                }
+                };
+                (
+                    harness.as_str().to_string(),
+                    agent.to_string(),
+                    None::<String>,
+                    None::<String>,
+                    msg.state.clone(),
+                    format_current_input(&msg.current_input).into_bytes(),
+                )
             } else {
                 continue;
-            };
+            }
+        } else if node.message_type() == vlinder_core::domain::MessageType::Complete {
+            if let Ok(Some((key, msg))) = store.get_complete_node(&node.id).await {
+                let vlinder_core::domain::DataMessageKind::Complete { agent, harness } = &key.kind
+                else {
+                    continue;
+                };
+                (
+                    agent.to_string(),
+                    harness.as_str().to_string(),
+                    None::<String>,
+                    None::<String>,
+                    msg.state,
+                    msg.payload,
+                )
+            } else {
+                continue;
+            }
+        } else if node.message_type() == vlinder_core::domain::MessageType::Request {
+            if let Ok(Some((key, msg))) = store.get_request_node(&node.id).await {
+                let vlinder_core::domain::DataMessageKind::Request {
+                    agent,
+                    service,
+                    operation,
+                    sequence,
+                } = &key.kind
+                else {
+                    continue;
+                };
+                (
+                    agent.to_string(),
+                    service.to_string(),
+                    Some(operation.to_string()),
+                    Some(sequence.to_string()),
+                    msg.state,
+                    msg.payload,
+                )
+            } else {
+                continue;
+            }
+        } else if node.message_type() == vlinder_core::domain::MessageType::Response {
+            if let Ok(Some((key, msg))) = store.get_response_node(&node.id).await {
+                let vlinder_core::domain::DataMessageKind::Response {
+                    agent,
+                    service,
+                    operation,
+                    sequence,
+                } = &key.kind
+                else {
+                    continue;
+                };
+                (
+                    service.to_string(),
+                    agent.to_string(),
+                    Some(operation.to_string()),
+                    Some(sequence.to_string()),
+                    msg.state,
+                    msg.payload,
+                )
+            } else {
+                continue;
+            }
+        } else if node.message_type() == vlinder_core::domain::MessageType::SvcRequest {
+            if let Ok(Some((key, msg))) = store.get_svc_request_node(&node.id).await {
+                let vlinder_core::domain::SvcMessageKind::SvcRequest {
+                    agent,
+                    service,
+                    operation,
+                    sequence,
+                } = &key.kind
+                else {
+                    continue;
+                };
+                (
+                    agent.to_string(),
+                    service.backend_str().to_string(),
+                    Some(operation.to_string()),
+                    Some(sequence.to_string()),
+                    msg.state,
+                    msg.payload,
+                )
+            } else {
+                continue;
+            }
+        } else if node.message_type() == vlinder_core::domain::MessageType::SvcResponse {
+            if let Ok(Some((key, msg))) = store.get_svc_response_node(&node.id).await {
+                let vlinder_core::domain::SvcMessageKind::SvcResponse {
+                    agent,
+                    service,
+                    operation,
+                    sequence,
+                } = &key.kind
+                else {
+                    continue;
+                };
+                (
+                    service.backend_str().to_string(),
+                    agent.to_string(),
+                    Some(operation.to_string()),
+                    Some(sequence.to_string()),
+                    msg.state,
+                    msg.payload,
+                )
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
         println!("Hash:       {}", node.id);
         println!("Parent:     {}", node.parent_id);
         println!("Type:       {}", node.message_type().as_str());
@@ -86,7 +181,7 @@ async fn get(submission_id: &str) {
             println!("Operation:  {op}");
         }
         if let Some(ckpt) = checkpoint {
-            println!("Checkpoint: {ckpt}");
+            println!("Sequence:   {ckpt}");
         }
         if let Some(state) = state {
             println!("State:      {state}");
@@ -101,4 +196,23 @@ async fn get(submission_id: &str) {
         }
         println!();
     }
+}
+
+/// Format the `current_input` messages for display in the CLI.
+fn format_current_input(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .map(|m| match m {
+            Message::User { content } => format!("User: {content}"),
+            Message::Agent { content, .. } => {
+                format!("Agent: {}", content.as_deref().unwrap_or(""))
+            }
+            Message::System { content } => format!("System: {content}"),
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => format!("Tool({tool_call_id}): {}", String::from_utf8_lossy(content)),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

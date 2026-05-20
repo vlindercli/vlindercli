@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use vlinder_core::domain::{
-    ContainerId, DataMessageKind, DataRoutingKey, HealthWindow, ImageDigest, ImageRef,
-    InvokeMessage, MessageQueue, Registry, RuntimeDiagnostics,
+    ContainerId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, HealthWindow, ImageDigest,
+    ImageRef, InvokeMessage, MessageQueue, Registry, RuntimeDiagnostics,
 };
 
 use vlinder_provider_server::dispatch as shared;
@@ -19,6 +19,7 @@ use crate::health;
 pub struct DispatchContext {
     pub queue: Arc<dyn MessageQueue + Send + Sync>,
     pub registry: Arc<dyn Registry>,
+    pub store: Arc<dyn DagStore>,
     pub container_port: u16,
     pub container_id: ContainerId,
     pub image_ref: Option<ImageRef>,
@@ -29,6 +30,7 @@ pub struct DispatchContext {
 pub async fn handle_invoke(
     ctx: &DispatchContext,
     health: &mut HealthWindow,
+    session_provider: &shared::SessionProvider,
     key: &DataRoutingKey,
     msg: &InvokeMessage,
 ) {
@@ -37,7 +39,9 @@ pub async fn handle_invoke(
         return;
     };
 
-    match shared::dispatch_invoke(&ctx.queue, &ctx.registry, ctx.container_port, key, msg).await {
+    match shared::dispatch_one_invoke(session_provider, &*ctx.store, ctx.container_port, key, msg)
+        .await
+    {
         Ok(result) => {
             let diagnostics = health::build_diagnostics(
                 health,
@@ -47,25 +51,31 @@ pub async fn handle_invoke(
                 ctx.image_ref.as_ref(),
                 ctx.image_digest.as_ref(),
             );
-            shared::send_complete(
+            shared::send_complete_with_parsed(
                 ctx.queue.as_ref(),
                 key,
                 agent,
                 result.output,
+                result.content,
+                result.tool_calls,
                 result.state,
                 diagnostics,
+                result.chain_head,
             )
             .await;
         }
         Err(e) => {
             tracing::warn!(event = "dispatch.error", error = %e, "Dispatch failed");
-            shared::send_complete(
+            shared::send_complete_with_parsed(
                 ctx.queue.as_ref(),
                 key,
                 agent,
                 format!("[error] {e}").into_bytes(),
                 None,
+                None,
+                None,
                 RuntimeDiagnostics::placeholder(0),
+                DagNodeId::root(),
             )
             .await;
         }

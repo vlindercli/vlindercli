@@ -1,7 +1,7 @@
-mod cli;
 mod commands;
 mod config;
 mod tracing_setup;
+mod tui;
 
 #[tokio::main]
 async fn main() {

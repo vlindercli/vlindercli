@@ -160,6 +160,139 @@ impl TryFrom<proto::SessionSummary> for SessionSummary {
     }
 }
 
+// =============================================================================
+// InvokeMessage → proto::InvokeMessageProto / proto::InvokeMessageProto → InvokeMessage
+// =============================================================================
+
+#[cfg(feature = "server")]
+pub fn invoke_message_to_proto(
+    msg: &vlinder_core::domain::InvokeMessage,
+) -> proto::InvokeMessageProto {
+    proto::InvokeMessageProto {
+        id: msg.id.to_string(),
+        dag_id: msg.dag_id.to_string(),
+        state: msg.state.clone(),
+        diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
+        dag_parent: msg.dag_parent.to_string(),
+        payload: serde_json::to_vec(msg).unwrap_or_default(),
+    }
+}
+
+pub fn proto_to_invoke_message(
+    proto: proto::InvokeMessageProto,
+) -> vlinder_core::domain::InvokeMessage {
+    let diagnostics = serde_json::from_slice(&proto.diagnostics).unwrap_or(
+        vlinder_core::domain::InvokeDiagnostics {
+            harness_version: String::new(),
+        },
+    );
+    serde_json::from_slice(&proto.payload).unwrap_or(vlinder_core::domain::InvokeMessage {
+        id: vlinder_core::domain::MessageId::from(proto.id),
+        dag_id: vlinder_core::domain::DagNodeId::from(proto.dag_id),
+        state: proto.state,
+        diagnostics,
+        dag_parent: vlinder_core::domain::DagNodeId::from(proto.dag_parent),
+        current_input: vec![],
+    })
+}
+
+// =============================================================================
+// CompleteMessage → proto::CompleteMessageProto / proto::CompleteMessageProto → CompleteMessage
+// =============================================================================
+
+#[cfg(feature = "server")]
+pub fn complete_message_to_proto(
+    msg: &vlinder_core::domain::CompleteMessage,
+) -> proto::CompleteMessageProto {
+    proto::CompleteMessageProto {
+        id: msg.id.to_string(),
+        dag_id: msg.dag_id.to_string(),
+        dag_parent: msg.dag_parent.to_string(),
+        state: msg.state.clone(),
+        diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
+        payload: serde_json::to_vec(msg).unwrap_or_default(),
+    }
+}
+
+pub fn proto_to_complete_message(
+    proto: proto::CompleteMessageProto,
+) -> vlinder_core::domain::CompleteMessage {
+    let diagnostics = serde_json::from_slice(&proto.diagnostics)
+        .unwrap_or(vlinder_core::domain::RuntimeDiagnostics::placeholder(0));
+    serde_json::from_slice(&proto.payload).unwrap_or(vlinder_core::domain::CompleteMessage {
+        id: vlinder_core::domain::MessageId::from(proto.id),
+        dag_id: vlinder_core::domain::DagNodeId::from(proto.dag_id),
+        dag_parent: vlinder_core::domain::DagNodeId::from(proto.dag_parent),
+        state: proto.state,
+        diagnostics,
+        content: None,
+        tool_calls: None,
+        payload: vec![],
+    })
+}
+
+// =============================================================================
+// RequestV2 → proto::RequestV2Proto / proto::RequestV2Proto → RequestV2
+// =============================================================================
+
+#[cfg(feature = "server")]
+pub fn request_v2_to_proto(msg: &vlinder_core::domain::RequestV2) -> proto::RequestV2Proto {
+    proto::RequestV2Proto {
+        id: msg.id.to_string(),
+        dag_id: msg.dag_id.to_string(),
+        dag_parent: msg.dag_parent.to_string(),
+        tool_call_id: msg.tool_call_id.to_string(),
+        state: msg.state.clone(),
+        diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
+        payload: serde_json::to_vec(msg).unwrap_or_default(),
+    }
+}
+
+pub fn proto_to_request_v2(proto: proto::RequestV2Proto) -> vlinder_core::domain::RequestV2 {
+    let diagnostics = serde_json::from_slice(&proto.diagnostics)
+        .unwrap_or(vlinder_core::domain::SvcRequestDiagnostics::default());
+    serde_json::from_slice(&proto.payload).unwrap_or(vlinder_core::domain::RequestV2 {
+        id: vlinder_core::domain::MessageId::from(proto.id),
+        dag_id: vlinder_core::domain::DagNodeId::from(proto.dag_id),
+        dag_parent: vlinder_core::domain::DagNodeId::from(proto.dag_parent),
+        tool_call_id: vlinder_core::domain::ToolCallId::from(proto.tool_call_id),
+        state: proto.state,
+        diagnostics,
+        payload: vec![],
+    })
+}
+
+// =============================================================================
+// ResponseV2 → proto::ResponseV2Proto / proto::ResponseV2Proto → ResponseV2
+// =============================================================================
+
+#[cfg(feature = "server")]
+pub fn response_v2_to_proto(msg: &vlinder_core::domain::ResponseV2) -> proto::ResponseV2Proto {
+    proto::ResponseV2Proto {
+        id: msg.id.to_string(),
+        dag_id: msg.dag_id.to_string(),
+        dag_parent: msg.dag_parent.to_string(),
+        correlation_id: msg.correlation_id.to_string(),
+        state: msg.state.clone(),
+        diagnostics: serde_json::to_vec(&msg.diagnostics).unwrap_or_default(),
+        payload: serde_json::to_vec(msg).unwrap_or_default(),
+    }
+}
+
+pub fn proto_to_response_v2(proto: proto::ResponseV2Proto) -> vlinder_core::domain::ResponseV2 {
+    let diagnostics = serde_json::from_slice(&proto.diagnostics)
+        .unwrap_or(vlinder_core::domain::SvcResponseDiagnostics::default());
+    serde_json::from_slice(&proto.payload).unwrap_or(vlinder_core::domain::ResponseV2 {
+        id: vlinder_core::domain::MessageId::from(proto.id),
+        dag_id: vlinder_core::domain::DagNodeId::from(proto.dag_id),
+        dag_parent: vlinder_core::domain::DagNodeId::from(proto.dag_parent),
+        correlation_id: vlinder_core::domain::MessageId::from(proto.correlation_id),
+        state: proto.state,
+        diagnostics,
+        payload: vec![],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

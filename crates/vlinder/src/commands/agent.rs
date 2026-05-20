@@ -2,15 +2,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{Subcommand, ValueEnum};
+use tokio::sync::mpsc;
 
 use crate::config::CliConfig;
 use vlinder_core::domain::{
-    Agent, AgentManifest, AgentStatus, BranchId, DagNodeId, DagStore, Registry,
+    Agent, AgentManifest, AgentStatus, BranchId, DagNodeId, DagStore, ExternalSessionId,
+    HarnessEvent, McpManifest, McpServer, Registry, RunCtl, RunResult, SessionId,
 };
 use vlinder_sql_registry::registry_service::GrpcRegistryClient;
 
 use super::connect::{connect_harness, connect_registry, open_dag_store};
-use super::repl;
+use crate::tui;
 
 #[derive(Clone, Debug, PartialEq, ValueEnum)]
 pub enum Language {
@@ -150,7 +152,7 @@ async fn deploy(path: Option<PathBuf>) {
     let manifest_path = resolve_manifest_path(&absolute_path);
     let manifest = AgentManifest::load(&manifest_path).unwrap_or_else(|e| {
         eprintln!("Failed to load agent manifest: {e:?}");
-        eprintln!("Check if the directory `{}` contains a valid `agent.toml` file. If you want to pass a different directory, please use `vlinder agent deploy --path /path/to/your/toml/file`",
+        eprintln!("Check if `{}` points to a valid agent.toml file. If you want to pass a different directory, please use `vlinder agent deploy --path /path/to/your/toml/file`",
         manifest_path.display());
         std::process::exit(1);
     });
@@ -159,6 +161,17 @@ async fn deploy(path: Option<PathBuf>) {
 
     // Auto-deploy models before submitting the deploy request
     let agent_dir = resolve_agent_dir(&absolute_path);
+    match auto_deploy_mcp_servers(&agent_dir, &manifest, &client).await {
+        Ok(deployed) => {
+            for name in &deployed {
+                println!("  MCP Server: {name} (auto-deployed)");
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
     match auto_deploy_models(&agent_dir, &manifest, &client).await {
         Ok(deployed) => {
             for name in &deployed {
@@ -220,6 +233,18 @@ pub(super) async fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Regi
         std::process::exit(1);
     });
 
+    // Auto-deploy MCP servers from <agent_dir>/mcp/<name>.toml
+    match auto_deploy_mcp_servers(agent_dir, &manifest, registry).await {
+        Ok(deployed) => {
+            for name in &deployed {
+                println!("  MCP Server: {name} (auto-deployed)");
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
     // Auto-deploy models from <agent_dir>/models/<name>.toml
     match auto_deploy_models(agent_dir, &manifest, registry).await {
         Ok(deployed) => {
@@ -242,6 +267,7 @@ pub(super) async fn deploy_agent_from_path(agent_dir: &Path, registry: &dyn Regi
         })
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Option<&str>) {
     let config = CliConfig::load();
     let registry = connect_registry(&config).await;
@@ -263,7 +289,9 @@ async fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Op
     let (session_id, branch_id, sealed, initial_state, dag_parent) = match (session, branch) {
         (None, None) => {
             // New session → create session + default branch, resolve tip
-            let (session_id, branch_id) = harness.start_session(name).await;
+            let ext_id = ExternalSessionId::new(SessionId::new().as_str())
+                .expect("UUID is always a valid ExternalSessionId");
+            let (session_id, branch_id) = harness.start_session(name, ext_id).await;
             (session_id, branch_id, false, None, DagNodeId::root())
         }
         (Some(session_name), None) => {
@@ -276,27 +304,84 @@ async fn run(name: &str, session: Option<&str>, branch: Option<&str>, prompt: Op
         }
     };
 
-    let invoke = |input: &str| -> String {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(harness.run_agent(
-                &agent_id,
-                input,
-                session_id.clone(),
-                branch_id,
-                sealed,
-                initial_state.clone(),
-                dag_parent.clone(),
-            ))
-        })
-        .unwrap_or_else(|e| format!("[error] {e}"))
-    };
-
     if let Some(message) = prompt {
         // Non-interactive: send single message, print response, exit.
-        println!("{}", invoke(message));
+        let ctl = RunCtl::quiet();
+        let result = harness
+            .run_agent(
+                &agent_id,
+                message,
+                session_id,
+                branch_id,
+                sealed,
+                initial_state,
+                dag_parent,
+                &ctl,
+            )
+            .await
+            .unwrap_or_else(|e| RunResult {
+                content: Some(format!("[error] {e}")),
+                pending_tool_calls: None,
+                turns: Vec::new(),
+                state_snapshot: None,
+            });
+        println!("{}", result.content.unwrap_or_default());
     } else {
-        // Interactive REPL.
-        repl::run(invoke);
+        // Interactive REPL — create event channel for streaming tool traces.
+        let (event_tx, event_rx) = mpsc::channel::<HarnessEvent>(32);
+
+        // Clone before the `move` closure so they're still available for
+        // the chain walk below.
+        let session_id_for_walk = session_id.clone();
+        let branch_id_for_walk = branch_id;
+
+        let invoke = move |input: String| {
+            let harness = harness.clone();
+            let agent_id = agent_id.clone();
+            let session_id = session_id.clone();
+            let initial_state = initial_state.clone();
+            let dag_parent = dag_parent.clone();
+            let ctl_tx = event_tx.clone();
+            async move {
+                let ctl = RunCtl::streaming(ctl_tx);
+                harness
+                    .run_agent(
+                        &agent_id,
+                        &input,
+                        session_id,
+                        branch_id,
+                        sealed,
+                        initial_state,
+                        dag_parent,
+                        &ctl,
+                    )
+                    .await
+                    .unwrap_or_else(|e| RunResult {
+                        content: Some(format!("[error] {e}")),
+                        pending_tool_calls: None,
+                        turns: Vec::new(),
+                        state_snapshot: None,
+                    })
+            }
+        };
+
+        let initial_transcript = if let Some(store) = open_dag_store(&config).await {
+            tui::projection::walk_chain_to_entries(
+                store.as_ref(),
+                &session_id_for_walk,
+                branch_id_for_walk,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to load initial transcript; starting empty");
+                Vec::new()
+            })
+        } else {
+            tracing::warn!("no state service available; starting with empty transcript");
+            Vec::new()
+        };
+
+        tui::run(invoke, event_rx, initial_transcript).await;
     }
 }
 
@@ -410,7 +495,7 @@ async fn resolve_branch_tip(
                 .await
                 .ok()
                 .flatten()
-                .and_then(|m| m.state)
+                .and_then(|(_, m)| m.state)
                 .unwrap_or_default()
         } else {
             String::new()
@@ -432,9 +517,20 @@ async fn resolve_branch_tip(
     (branch.id, false, initial_state, tip_hash)
 }
 
-/// Resolve a session by name or UUID.
+/// Resolve a session by name, external ID, or UUID.
 async fn resolve_session(store: &dyn DagStore, name_or_id: &str) -> vlinder_core::domain::Session {
-    // Try UUID first
+    // Try external ID first
+    if let Ok(ext_id) = ExternalSessionId::new(name_or_id) {
+        if let Some(session) = store
+            .get_session_by_external_id(&ext_id)
+            .await
+            .ok()
+            .flatten()
+        {
+            return session;
+        }
+    }
+    // Try UUID second
     if let Ok(sid) = vlinder_core::domain::SessionId::try_from(name_or_id.to_string()) {
         if let Some(session) = store.get_session(&sid).await.ok().flatten() {
             return session;
@@ -705,6 +801,50 @@ pub(super) async fn auto_deploy_models(
     Ok(deployed)
 }
 
+/// Auto-deploy MCP servers found in `<agent_dir>/mcp/<name>.toml` for each
+/// MCP server referenced in the manifest's requirements.
+pub(super) async fn auto_deploy_mcp_servers(
+    agent_dir: &Path,
+    manifest: &AgentManifest,
+    registry: &dyn Registry,
+) -> Result<Vec<String>, String> {
+    let mcp_dir = agent_dir.join("mcp");
+    if !mcp_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mcp_names: std::collections::HashSet<&str> = manifest
+        .requirements
+        .mcp
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
+
+    let mut deployed = Vec::new();
+    for mcp_name in &mcp_names {
+        let mcp_toml = mcp_dir.join(format!("{mcp_name}.toml"));
+        if mcp_toml.exists() {
+            let mcp_manifest = McpManifest::load(&mcp_toml).map_err(|e| {
+                format!(
+                    "Failed to load MCP manifest '{}': {}",
+                    mcp_toml.display(),
+                    e
+                )
+            })?;
+            let tools = mcp_manifest
+                .load_tools(&mcp_dir)
+                .map_err(|e| format!("Failed to load tools for '{mcp_name}': {e}"))?;
+            let server = McpServer::from_manifest(mcp_manifest, tools);
+            registry
+                .register_mcp_server(server.clone())
+                .await
+                .map_err(|e| format!("Failed to register MCP server '{mcp_name}': {e}"))?;
+            deployed.push(mcp_name.to_string());
+        }
+    }
+    Ok(deployed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -741,8 +881,8 @@ mod tests {
                 models: model_map,
                 services: std::collections::HashMap::new(),
                 mounts: std::collections::HashMap::new(),
+                mcp: Vec::new(),
             },
-            prompts: None,
             object_storage: None,
             vector_storage: None,
         }

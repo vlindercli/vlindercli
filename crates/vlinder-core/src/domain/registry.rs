@@ -13,8 +13,8 @@
 //! - `GrpcRegistryClient` — `crate::registry_service`
 
 use crate::domain::{
-    Agent, AgentManifest, Fleet, Model, ObjectStorageType, Provider, ResourceId, RuntimeType,
-    VectorStorageType,
+    Agent, AgentManifest, Fleet, McpServer, Model, ObjectStorageType, Provider, ResourceId,
+    RuntimeType, VectorStorageType,
 };
 
 use async_trait::async_trait;
@@ -107,11 +107,14 @@ pub enum RegistrationError {
     FleetConfigMismatch(String),
     /// Fleet references an agent that is not registered.
     FleetAgentNotRegistered(String, String),
+    /// MCP server referenced by name is not registered.
+    McpServerNotRegistered(String),
     /// Error forwarded from a remote registry (gRPC).
     /// Contains the server's error message as-is — already user-friendly.
     Remote(String),
 }
 
+#[allow(clippy::too_many_lines)]
 impl std::fmt::Display for RegistrationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -185,6 +188,12 @@ impl std::fmt::Display for RegistrationError {
                 f,
                 "fleet '{name}' already registered with different configuration",
             ),
+            RegistrationError::McpServerNotRegistered(name) => {
+                write!(
+                    f,
+                    "MCP server '{name}' is not registered\n\nAdd it first: vlinder mcp add"
+                )
+            }
             RegistrationError::FleetAgentNotRegistered(fleet, agent) => {
                 write!(f, "fleet '{fleet}' references agent '{agent}' which is not registered\n\nDeploy the agent first: vlinder agent deploy")
             }
@@ -349,6 +358,32 @@ pub trait Registry: Send + Sync {
     /// Get all registered fleets.
     async fn get_fleets(&self) -> Vec<Fleet>;
 
+    // --- MCP Server operations ---
+
+    /// Register an MCP server (assigns registry-issued identity).
+    async fn register_mcp_server(&self, _server: McpServer) -> Result<(), RegistrationError> {
+        Err(RegistrationError::Persistence(
+            "register_mcp_server not implemented".into(),
+        ))
+    }
+
+    /// Get an MCP server by name.
+    async fn get_mcp_server(&self, _name: &str) -> Option<McpServer> {
+        None
+    }
+
+    /// Get all registered MCP servers.
+    async fn get_mcp_servers(&self) -> Vec<McpServer> {
+        Vec::new()
+    }
+
+    /// Delete an MCP server by name. Returns true if the server existed.
+    async fn delete_mcp_server(&self, _name: &str) -> Result<bool, RegistrationError> {
+        Err(RegistrationError::Persistence(
+            "delete_mcp_server not implemented".into(),
+        ))
+    }
+
     // --- Capability registration ---
 
     fn register_runtime(&self, runtime_type: RuntimeType);
@@ -449,6 +484,14 @@ mod tests {
         assert!(msg.contains("echo"));
         assert!(msg.contains("fleet-a"));
         assert!(msg.contains("fleet-b"));
+    }
+
+    #[test]
+    fn display_mcp_server_not_registered() {
+        let err = RegistrationError::McpServerNotRegistered("brave".into());
+        let msg = format!("{err}");
+        assert!(msg.contains("brave"));
+        assert!(msg.contains("vlinder mcp add"));
     }
 
     #[test]

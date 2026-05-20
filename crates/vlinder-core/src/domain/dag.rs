@@ -19,8 +19,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
-use super::message::identity::{Instance, StateHash};
+use super::message::identity::{ExternalSessionId, Instance, StateHash};
 use super::session::Session;
+
+#[cfg(test)]
+use super::diagnostics::{SvcRequestDiagnostics, SvcResponseDiagnostics};
 
 /// Snapshot of all store states at a point in the DAG (ADR 116).
 ///
@@ -68,6 +71,8 @@ pub enum MessageType {
     Promote,
     DeployAgent,
     DeleteAgent,
+    SvcRequest,
+    SvcResponse,
 }
 
 impl MessageType {
@@ -81,6 +86,8 @@ impl MessageType {
             MessageType::Promote => "promote",
             MessageType::DeployAgent => "deploy-agent",
             MessageType::DeleteAgent => "delete-agent",
+            MessageType::SvcRequest => "svc_request",
+            MessageType::SvcResponse => "svc_response",
         }
     }
 
@@ -89,7 +96,9 @@ impl MessageType {
             MessageType::Invoke
             | MessageType::Request
             | MessageType::Response
-            | MessageType::Complete => Plane::Data,
+            | MessageType::Complete
+            | MessageType::SvcRequest
+            | MessageType::SvcResponse => Plane::Data,
             MessageType::Fork | MessageType::Promote => Plane::Session,
             MessageType::DeployAgent | MessageType::DeleteAgent => Plane::Infra,
         }
@@ -111,6 +120,8 @@ impl std::str::FromStr for MessageType {
             "promote" => Ok(MessageType::Promote),
             "deploy-agent" => Ok(MessageType::DeployAgent),
             "delete-agent" => Ok(MessageType::DeleteAgent),
+            "svc_request" => Ok(MessageType::SvcRequest),
+            "svc_response" => Ok(MessageType::SvcResponse),
             _ => Err(format!("unknown message type: {s}")),
         }
     }
@@ -282,6 +293,24 @@ pub trait DagWorker: Send {
         _created_at: DateTime<Utc>,
     ) {
     }
+
+    /// Persist a V2 service request (harness-mediated dispatch path).
+    async fn on_svc_request(
+        &mut self,
+        _key: &super::SvcRoutingKey,
+        _msg: &super::RequestV2,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
+
+    /// Persist a V2 service response (harness-mediated dispatch path).
+    async fn on_svc_response(
+        &mut self,
+        _key: &super::SvcRoutingKey,
+        _msg: &super::ResponseV2,
+        _created_at: DateTime<Utc>,
+    ) {
+    }
 }
 
 /// Persistence layer for DAG nodes.
@@ -426,6 +455,106 @@ pub trait DagStore: Send + Sync {
         Err("insert_delete_agent_node not implemented".to_string())
     }
 
+    /// Insert a typed `svc_request` node. Writes to `dag_nodes` + `svc_request_nodes`.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_request_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        agent: &super::AgentName,
+        service: super::ServiceBackendV2,
+        operation: super::ServiceOperation,
+        sequence: super::Sequence,
+        msg: &super::RequestV2,
+    ) -> Result<(), String> {
+        let _ = (
+            dag_id, parent_id, created_at, state, session, submission, branch, agent, service,
+            operation, sequence, msg,
+        );
+        Err("insert_svc_request_node not implemented".into())
+    }
+
+    /// Insert a typed `svc_response` node. Writes to `dag_nodes` + `svc_response_nodes`.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_response_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        agent: &super::AgentName,
+        service: super::ServiceBackendV2,
+        operation: super::ServiceOperation,
+        sequence: super::Sequence,
+        msg: &super::ResponseV2,
+    ) -> Result<(), String> {
+        let _ = (
+            dag_id, parent_id, created_at, state, session, submission, branch, agent, service,
+            operation, sequence, msg,
+        );
+        Err("insert_svc_response_node not implemented".into())
+    }
+
+    /// Retrieve typed `InvokeMessage` payload by DAG node ID.
+    ///
+    /// Returns `Ok(Some(msg))` if the node exists and is of type `Invoke`.
+    /// Returns `Ok(None)` if the ID is unknown or the node is a different type.
+    /// Returns `Err` on store errors.
+    async fn get_invoke_message(
+        &self,
+        dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::InvokeMessage>, String> {
+        let _ = dag_id;
+        Err("get_invoke_message not implemented".to_string())
+    }
+
+    /// Retrieve typed `CompleteMessage` payload by DAG node ID.
+    ///
+    /// Returns `Ok(Some(msg))` if the node exists and is of type `Complete`.
+    /// Returns `Ok(None)` if the ID is unknown or the node is a different type.
+    /// Returns `Err` on store errors.
+    async fn get_complete_message(
+        &self,
+        dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::CompleteMessage>, String> {
+        let _ = dag_id;
+        Err("get_complete_message not implemented".to_string())
+    }
+
+    /// Retrieve typed `RequestV2` payload by DAG node ID.
+    ///
+    /// Returns `Ok(Some(msg))` if the node exists and is of type `SvcRequest`.
+    /// Returns `Ok(None)` if the ID is unknown or the node is a different type.
+    /// Returns `Err` on store errors.
+    async fn get_request_v2(
+        &self,
+        dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::RequestV2>, String> {
+        let _ = dag_id;
+        Err("get_request_v2 not implemented".to_string())
+    }
+
+    /// Retrieve typed `ResponseV2` payload by DAG node ID.
+    ///
+    /// Returns `Ok(Some(msg))` if the node exists and is of type `SvcResponse`.
+    /// Returns `Ok(None)` if the ID is unknown or the node is a different type.
+    /// Returns `Err` on store errors.
+    async fn get_response_v2(
+        &self,
+        dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::ResponseV2>, String> {
+        let _ = dag_id;
+        Err("get_response_v2 not implemented".to_string())
+    }
+
     /// Retrieve a node by its content-addressed ID.
     async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String>;
 
@@ -482,28 +611,49 @@ pub trait DagStore: Send + Sync {
     }
 
     /// Retrieve typed complete data by DAG node hash.
+    /// Returns the routing key and complete message, symmetric with [`get_invoke_node`].
     async fn get_complete_node(
         &self,
         dag_hash: &super::DagNodeId,
-    ) -> Result<Option<super::CompleteMessage>, String> {
+    ) -> Result<Option<(super::DataRoutingKey, super::CompleteMessage)>, String> {
         let _ = dag_hash;
         Ok(None)
     }
 
     /// Retrieve typed request data by DAG node hash.
+    /// Returns the routing key and request message, symmetric with [`get_invoke_node`].
     async fn get_request_node(
         &self,
         dag_hash: &super::DagNodeId,
-    ) -> Result<Option<super::RequestMessage>, String> {
+    ) -> Result<Option<(super::DataRoutingKey, super::RequestMessage)>, String> {
         let _ = dag_hash;
         Ok(None)
     }
 
     /// Retrieve typed response data by DAG node hash.
+    /// Returns the routing key and response message, symmetric with [`get_invoke_node`].
     async fn get_response_node(
         &self,
         dag_hash: &super::DagNodeId,
-    ) -> Result<Option<super::ResponseMessage>, String> {
+    ) -> Result<Option<(super::DataRoutingKey, super::ResponseMessage)>, String> {
+        let _ = dag_hash;
+        Ok(None)
+    }
+
+    /// Retrieve typed `svc_request` data by DAG node hash.
+    async fn get_svc_request_node(
+        &self,
+        dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::SvcRoutingKey, super::RequestV2)>, String> {
+        let _ = dag_hash;
+        Ok(None)
+    }
+
+    /// Retrieve typed `svc_response` data by DAG node hash.
+    async fn get_svc_response_node(
+        &self,
+        dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::SvcRoutingKey, super::ResponseV2)>, String> {
         let _ = dag_hash;
         Ok(None)
     }
@@ -513,6 +663,20 @@ pub trait DagStore: Send + Sync {
         &self,
         session_id: &super::SessionId,
     ) -> Result<Vec<Branch>, String>;
+
+    /// Get up to `n` most recent `DagNode` values on a branch, ordered **oldest-first**
+    /// (chain-order), so consumers can prepend or iterate chronologically without re-sorting.
+    ///
+    /// `n` is an upper bound — fewer nodes may be returned if the chain is shorter than `n`.
+    /// Returns an empty `Vec` (not an error) if the branch has no nodes.
+    async fn latest_nodes_on_branch(
+        &self,
+        branch_id: super::BranchId,
+        n: u32,
+    ) -> Result<Vec<DagNode>, String> {
+        let _ = (branch_id, n);
+        Err("latest_nodes_on_branch not implemented".to_string())
+    }
 
     /// Get the most recent `DagNode` on a branch, optionally filtered by message type.
     async fn latest_node_on_branch(
@@ -550,6 +714,14 @@ pub trait DagStore: Send + Sync {
 
     /// Look up a session by its friendly name.
     async fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String>;
+
+    /// Look up a session by its external ID.
+    async fn get_session_by_external_id(
+        &self,
+        _external_id: &ExternalSessionId,
+    ) -> Result<Option<Session>, String> {
+        Err("session lookup by external ID not supported by this store".into())
+    }
 
     // -------------------------------------------------------------------------
     // Idempotency guard (ADR 125)
@@ -732,11 +904,160 @@ impl DagStore for InMemoryDagStore {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_request_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        _agent: &super::AgentName,
+        _service: super::ServiceBackendV2,
+        _operation: super::ServiceOperation,
+        _sequence: super::Sequence,
+        _msg: &super::RequestV2,
+    ) -> Result<(), String> {
+        let node = DagNode {
+            id: dag_id.clone(),
+            parent_id: parent_id.clone(),
+            created_at,
+            state: state.clone(),
+            msg_type: MessageType::SvcRequest,
+            session: session.clone(),
+            submission: submission.clone(),
+            branch,
+            protocol_version: "v1".to_string(),
+        };
+        self.insert_node(&node);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_svc_response_node(
+        &self,
+        dag_id: &super::DagNodeId,
+        parent_id: &super::DagNodeId,
+        created_at: DateTime<Utc>,
+        state: &Snapshot,
+        session: &super::SessionId,
+        submission: &super::SubmissionId,
+        branch: super::BranchId,
+        _agent: &super::AgentName,
+        _service: super::ServiceBackendV2,
+        _operation: super::ServiceOperation,
+        _sequence: super::Sequence,
+        _msg: &super::ResponseV2,
+    ) -> Result<(), String> {
+        let node = DagNode {
+            id: dag_id.clone(),
+            parent_id: parent_id.clone(),
+            created_at,
+            state: state.clone(),
+            msg_type: MessageType::SvcResponse,
+            session: session.clone(),
+            submission: submission.clone(),
+            branch,
+            protocol_version: "v1".to_string(),
+        };
+        self.insert_node(&node);
+        Ok(())
+    }
+
+    async fn get_invoke_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::DataRoutingKey, super::InvokeMessage)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
     async fn get_complete_node(
         &self,
         _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::DataRoutingKey, super::CompleteMessage)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
+    async fn get_request_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::DataRoutingKey, super::RequestMessage)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
+    async fn get_response_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::DataRoutingKey, super::ResponseMessage)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
+    async fn get_svc_request_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::SvcRoutingKey, super::RequestV2)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
+    async fn get_svc_response_node(
+        &self,
+        _dag_hash: &super::DagNodeId,
+    ) -> Result<Option<(super::SvcRoutingKey, super::ResponseV2)>, String> {
+        Err(
+            "InMemoryDagStore does not implement typed routing-key getters; \
+             configure tests with SqliteDagStore + tempdir for routing coverage"
+                .into(),
+        )
+    }
+
+    async fn get_invoke_message(
+        &self,
+        _dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::InvokeMessage>, String> {
+        Err("InMemoryDagStore does not store typed payloads — use SqliteDagStore".into())
+    }
+
+    async fn get_complete_message(
+        &self,
+        _dag_id: &super::DagNodeId,
     ) -> Result<Option<super::CompleteMessage>, String> {
-        Ok(None)
+        Err("InMemoryDagStore does not store typed payloads — use SqliteDagStore".into())
+    }
+
+    async fn get_request_v2(
+        &self,
+        _dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::RequestV2>, String> {
+        Err("InMemoryDagStore does not store typed payloads — use SqliteDagStore".into())
+    }
+
+    async fn get_response_v2(
+        &self,
+        _dag_id: &super::DagNodeId,
+    ) -> Result<Option<super::ResponseV2>, String> {
+        Err("InMemoryDagStore does not store typed payloads — use SqliteDagStore".into())
     }
 
     async fn get_node(&self, id: &super::DagNodeId) -> Result<Option<DagNode>, String> {
@@ -877,6 +1198,27 @@ impl DagStore for InMemoryDagStore {
             .collect())
     }
 
+    async fn latest_nodes_on_branch(
+        &self,
+        branch_id: super::BranchId,
+        n: u32,
+    ) -> Result<Vec<DagNode>, String> {
+        let nodes = self.nodes.lock().unwrap();
+        let n = n as usize;
+        let filtered: Vec<DagNode> = nodes
+            .iter()
+            .filter(|n| *n.branch_id() == branch_id)
+            .cloned()
+            .collect();
+        // filtered is already in insertion order (oldest-first).
+        // Take the last `n` elements and return them oldest-first.
+        if filtered.len() <= n {
+            Ok(filtered)
+        } else {
+            Ok(filtered[(filtered.len() - n)..].to_vec())
+        }
+    }
+
     async fn latest_node_on_branch(
         &self,
         branch_id: super::BranchId,
@@ -949,6 +1291,17 @@ impl DagStore for InMemoryDagStore {
     async fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, String> {
         let sessions = self.sessions.lock().unwrap();
         Ok(sessions.iter().find(|s| s.name == name).cloned())
+    }
+
+    async fn get_session_by_external_id(
+        &self,
+        external_id: &ExternalSessionId,
+    ) -> Result<Option<Session>, String> {
+        let sessions = self.sessions.lock().unwrap();
+        Ok(sessions
+            .iter()
+            .find(|s| s.external_id == *external_id)
+            .cloned())
     }
 }
 
@@ -1077,6 +1430,8 @@ mod tests {
             MessageType::Promote,
             MessageType::DeployAgent,
             MessageType::DeleteAgent,
+            MessageType::SvcRequest,
+            MessageType::SvcResponse,
         ] {
             assert_eq!(MessageType::from_str(mt.as_str()), Ok(mt));
         }
@@ -1095,11 +1450,35 @@ mod tests {
         assert_eq!(MessageType::Promote.plane(), Plane::Session);
         assert_eq!(MessageType::DeployAgent.plane(), Plane::Infra);
         assert_eq!(MessageType::DeleteAgent.plane(), Plane::Infra);
+        assert_eq!(MessageType::SvcRequest.plane(), Plane::Data);
+        assert_eq!(MessageType::SvcResponse.plane(), Plane::Data);
+    }
+
+    #[test]
+    fn msg_type_as_str_and_plane_and_fromstr() {
+        // SvcRequest
+        assert_eq!(MessageType::SvcRequest.as_str(), "svc_request");
+        assert_eq!(MessageType::SvcRequest.plane(), Plane::Data);
+        assert_eq!(
+            MessageType::from_str("svc_request"),
+            Ok(MessageType::SvcRequest)
+        );
+
+        // SvcResponse
+        assert_eq!(MessageType::SvcResponse.as_str(), "svc_response");
+        assert_eq!(MessageType::SvcResponse.plane(), Plane::Data);
+        assert_eq!(
+            MessageType::from_str("svc_response"),
+            Ok(MessageType::SvcResponse)
+        );
     }
 
     // --- hash_dag_node tests ---
 
-    use crate::domain::{DagNodeId, SessionId};
+    use crate::domain::{
+        AgentName, BranchId, DagNodeId, MessageId, RequestV2, ResponseV2, Sequence,
+        ServiceBackendV2, ServiceOperation, SessionId, SubmissionId, ToolCallId,
+    };
 
     fn did(s: &str) -> DagNodeId {
         DagNodeId::from(s.to_string())
@@ -1205,5 +1584,413 @@ mod tests {
             &sid(SES_1),
         );
         assert_eq!(h1, h2);
+    }
+
+    // --- InMemoryDagStore tests ---
+
+    #[tokio::test]
+    async fn inmemory_insert_svc_request_and_response_nodes() {
+        let store = InMemoryDagStore::new();
+
+        let dag_id = did("abc");
+        let parent_id = did("parent");
+        let session =
+            SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
+        let submission = SubmissionId::from("sub-1".to_string());
+        let branch = BranchId::from(1);
+        let agent = AgentName::new("test-agent");
+        let service = ServiceBackendV2::Mcp("brave".to_string());
+        let operation = ServiceOperation::new("echo");
+        let sequence = Sequence::first();
+
+        // Insert svc_request node
+        let req_msg = RequestV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            tool_call_id: ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
+        };
+        store
+            .insert_svc_request_node(
+                &dag_id,
+                &parent_id,
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service.clone(),
+                operation.clone(),
+                sequence,
+                &req_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&dag_id).await.unwrap().unwrap();
+        assert_eq!(node.msg_type, MessageType::SvcRequest);
+        assert_eq!(node.protocol_version, "v1");
+
+        // Insert svc_response node
+        let response_dag_id = did("xyz");
+        let response_msg = ResponseV2 {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            correlation_id: MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            payload: b"result".to_vec(),
+        };
+        store
+            .insert_svc_response_node(
+                &response_dag_id,
+                &parent_id,
+                Utc::now(),
+                &Snapshot::empty(),
+                &session,
+                &submission,
+                branch,
+                &agent,
+                service,
+                operation,
+                sequence.next(),
+                &response_msg,
+            )
+            .await
+            .unwrap();
+
+        let node = store.get_node(&response_dag_id).await.unwrap().unwrap();
+        assert_eq!(node.msg_type, MessageType::SvcResponse);
+        assert_eq!(node.protocol_version, "v1");
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_invoke_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_invoke_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_complete_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_complete_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_request_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_request_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_response_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_response_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_svc_request_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_svc_request_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_get_svc_response_node_returns_loud_err() {
+        let store = InMemoryDagStore::new();
+        let id = did("nonexistent");
+        let result = store.get_svc_response_node(&id).await;
+        let err = result.expect_err("InMemoryDagStore must return Err, not Ok(None)");
+        assert!(
+            err.contains("InMemoryDagStore"),
+            "error must name the bad store: {err}"
+        );
+        assert!(
+            err.contains("SqliteDagStore"),
+            "error must name the fix: {err}"
+        );
+    }
+
+    // ========================================================================
+    // latest_nodes_on_branch tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn in_memory_latest_nodes_returns_n_most_recent() {
+        let store = InMemoryDagStore::new();
+        let branch = BranchId::from(1);
+        let session =
+            SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
+
+        // Insert 5 nodes on branch 1, chained
+        let mut parent = DagNodeId::root();
+        for i in 0..5 {
+            let id = hash_dag_node(
+                format!("node-{i}").as_bytes(),
+                &parent,
+                &MessageType::Fork,
+                &[],
+                &session,
+            );
+            let node = DagNode {
+                id: id.clone(),
+                parent_id: parent.clone(),
+                created_at: Utc::now(),
+                state: Snapshot::empty(),
+                msg_type: MessageType::Fork,
+                session: session.clone(),
+                submission: SubmissionId::from(format!("sub-{i}")),
+                branch,
+                protocol_version: "v1".to_string(),
+            };
+            // Small time offset to ensure deterministic ordering
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            store.insert_node(&node);
+            parent = id;
+        }
+
+        // Fetch last 3
+        let result = store.latest_nodes_on_branch(branch, 3).await.unwrap();
+        assert_eq!(result.len(), 3);
+        // Oldest-first: nodes 2, 3, 4 (0-indexed)
+        for node in &result {
+            assert_eq!(*node.branch_id(), branch);
+        }
+        // First returned should be node[2]
+        assert!(result[0].submission_id().as_str().ends_with("-2"));
+        assert!(result[2].submission_id().as_str().ends_with("-4"));
+    }
+
+    #[tokio::test]
+    async fn in_memory_latest_nodes_n_larger_than_chain_returns_all() {
+        let store = InMemoryDagStore::new();
+        let branch = BranchId::from(1);
+        let session =
+            SessionId::try_from("d4761d76-dee4-4ebf-9df4-43b52efa4f78".to_string()).unwrap();
+
+        let mut parent = DagNodeId::root();
+        for i in 0..5 {
+            let id = hash_dag_node(
+                format!("all-{i}").as_bytes(),
+                &parent,
+                &MessageType::Fork,
+                &[],
+                &session,
+            );
+            let node = DagNode {
+                id: id.clone(),
+                parent_id: parent.clone(),
+                created_at: Utc::now(),
+                state: Snapshot::empty(),
+                msg_type: MessageType::Fork,
+                session: session.clone(),
+                submission: SubmissionId::from(format!("sub-{i}")),
+                branch,
+                protocol_version: "v1".to_string(),
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            store.insert_node(&node);
+            parent = id;
+        }
+
+        // Fetch more than available
+        let result = store.latest_nodes_on_branch(branch, 100).await.unwrap();
+        assert_eq!(result.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn in_memory_latest_nodes_unknown_branch_returns_empty() {
+        let store = InMemoryDagStore::new();
+        let result = store
+            .latest_nodes_on_branch(BranchId::from(999), 3)
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[tokio::test]
+    async fn trait_default_latest_nodes_returns_err() {
+        // A bare struct using the trait default should return Err
+        struct BareStore;
+        #[async_trait]
+        impl DagStore for BareStore {
+            async fn get_node(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<DagNode>, String> {
+                Ok(None)
+            }
+            async fn get_session_nodes(
+                &self,
+                _: &crate::domain::SessionId,
+            ) -> Result<Vec<DagNode>, String> {
+                Ok(vec![])
+            }
+            async fn get_children(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Vec<DagNode>, String> {
+                Ok(vec![])
+            }
+            async fn create_branch(
+                &self,
+                _: &str,
+                _: &crate::domain::SessionId,
+                _: Option<&crate::domain::DagNodeId>,
+            ) -> Result<crate::domain::BranchId, String> {
+                Ok(BranchId::from(1))
+            }
+            async fn get_branch_by_name(&self, _: &str) -> Result<Option<Branch>, String> {
+                Ok(None)
+            }
+            async fn get_branch(
+                &self,
+                _: crate::domain::BranchId,
+            ) -> Result<Option<Branch>, String> {
+                Ok(None)
+            }
+            async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+                Ok(vec![])
+            }
+            async fn get_nodes_by_submission(&self, _: &str) -> Result<Vec<DagNode>, String> {
+                Ok(vec![])
+            }
+            async fn get_branches_for_session(
+                &self,
+                _: &crate::domain::SessionId,
+            ) -> Result<Vec<Branch>, String> {
+                Ok(vec![])
+            }
+            async fn latest_node_on_branch(
+                &self,
+                _: crate::domain::BranchId,
+                _: Option<MessageType>,
+            ) -> Result<Option<DagNode>, String> {
+                Ok(None)
+            }
+            async fn create_session(&self, _: &Session) -> Result<(), String> {
+                Ok(())
+            }
+            async fn get_session(
+                &self,
+                _: &crate::domain::SessionId,
+            ) -> Result<Option<Session>, String> {
+                Ok(None)
+            }
+            async fn rename_branch(
+                &self,
+                _: crate::domain::BranchId,
+                _: &str,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            async fn seal_branch(
+                &self,
+                _: crate::domain::BranchId,
+                _: DateTime<Utc>,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            async fn update_session_default_branch(
+                &self,
+                _: &crate::domain::SessionId,
+                _: crate::domain::BranchId,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            async fn get_session_by_name(&self, _: &str) -> Result<Option<Session>, String> {
+                Ok(None)
+            }
+
+            async fn get_invoke_message(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::InvokeMessage>, String> {
+                Err("BareStore does not implement get_invoke_message".into())
+            }
+
+            async fn get_complete_message(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::CompleteMessage>, String> {
+                Err("BareStore does not implement get_complete_message".into())
+            }
+
+            async fn get_request_v2(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::RequestV2>, String> {
+                Err("BareStore does not implement get_request_v2".into())
+            }
+
+            async fn get_response_v2(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::ResponseV2>, String> {
+                Err("BareStore does not implement get_response_v2".into())
+            }
+        }
+
+        let result = BareStore.latest_nodes_on_branch(BranchId::from(1), 3).await;
+        let err = result.expect_err("trait default should return Err");
+        assert!(
+            err.contains("latest_nodes_on_branch"),
+            "error should mention the method name: {err}"
+        );
     }
 }

@@ -3,11 +3,11 @@
 #[cfg(test)]
 use crate::domain::InvokeDiagnostics;
 use crate::domain::{
-    noop_ack, Acknowledgement, AgentName, BranchId, CompleteMessage, DataMessageKind,
-    DataRoutingKey, DeleteAgentMessage, DeployAgentMessage, ForkMessage, HarnessType,
-    InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage, QueueError,
-    RequestMessage, ResponseMessage, Sequence, ServiceBackend, SessionRoutingKey,
-    SessionStartMessage, SubmissionId,
+    noop_ack, Acknowledgement, AgentName, BranchId, CompleteMessage, DagNodeId, DataMessageKind,
+    DataRoutingKey, DeleteAgentMessage, DeployAgentMessage, ExternalSessionId, ForkMessage,
+    HarnessType, InfraRoutingKey, InvokeMessage, MessageQueue, Operation, PromoteMessage,
+    QueueError, RequestMessage, RequestV2, ResponseMessage, ResponseV2, Sequence, ServiceBackend,
+    SessionRoutingKey, SessionStartMessage, SubmissionId, SvcMessageKind, SvcRoutingKey,
 };
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
@@ -25,6 +25,8 @@ pub struct InMemoryQueue {
     completes: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<CompleteMessage>>>>,
     requests: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<RequestMessage>>>>,
     responses: Arc<Mutex<HashMap<DataRoutingKey, VecDeque<ResponseMessage>>>>,
+    svc_requests: Arc<Mutex<HashMap<SvcRoutingKey, VecDeque<RequestV2>>>>,
+    svc_responses: Arc<Mutex<HashMap<SvcRoutingKey, VecDeque<ResponseV2>>>>,
 }
 
 impl InMemoryQueue {
@@ -34,6 +36,8 @@ impl InMemoryQueue {
             completes: Arc::new(Mutex::new(HashMap::new())),
             requests: Arc::new(Mutex::new(HashMap::new())),
             responses: Arc::new(Mutex::new(HashMap::new())),
+            svc_requests: Arc::new(Mutex::new(HashMap::new())),
+            svc_responses: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -46,13 +50,18 @@ impl Default for InMemoryQueue {
 
 #[async_trait]
 impl MessageQueue for InMemoryQueue {
-    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError> {
+    async fn send_invoke(
+        &self,
+        key: DataRoutingKey,
+        msg: InvokeMessage,
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .invokes
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_invoke(
@@ -83,13 +92,14 @@ impl MessageQueue for InMemoryQueue {
         &self,
         key: DataRoutingKey,
         msg: CompleteMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .completes
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_complete(
@@ -123,13 +133,14 @@ impl MessageQueue for InMemoryQueue {
         &self,
         key: DataRoutingKey,
         msg: RequestMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .requests
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_request(
@@ -166,13 +177,14 @@ impl MessageQueue for InMemoryQueue {
         &self,
         key: DataRoutingKey,
         msg: ResponseMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let mut q = self
             .responses
             .lock()
             .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
         q.entry(key).or_default().push_back(msg);
-        Ok(())
+        Ok(dag_id)
     }
 
     async fn receive_response(
@@ -234,6 +246,7 @@ impl MessageQueue for InMemoryQueue {
         &self,
         _key: SessionRoutingKey,
         _msg: SessionStartMessage,
+        _external_id: ExternalSessionId,
     ) -> Result<BranchId, QueueError> {
         // InMemoryQueue doesn't have a store — return a placeholder.
         // RecordingQueue wraps this and returns the real branch ID.
@@ -254,6 +267,100 @@ impl MessageQueue for InMemoryQueue {
         _msg: DeleteAgentMessage,
     ) -> Result<(), QueueError> {
         Ok(())
+    }
+
+    async fn send_svc_request(
+        &self,
+        key: SvcRoutingKey,
+        msg: RequestV2,
+    ) -> Result<DagNodeId, QueueError> {
+        let mut q = self
+            .svc_requests
+            .lock()
+            .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
+        q.entry(key).or_default().push_back(msg);
+        Ok(dag_id)
+    }
+
+    async fn receive_svc_request_mcp(
+        &self,
+    ) -> Result<(SvcRoutingKey, RequestV2, Acknowledgement), QueueError> {
+        let mut q = self
+            .svc_requests
+            .lock()
+            .map_err(|e| QueueError::ReceiveFailed(format!("lock poisoned: {e}")))?;
+
+        for (key, queue) in q.iter_mut() {
+            if let Some(msg) = queue.pop_front() {
+                let key = key.clone();
+                return Ok((key, msg, noop_ack()));
+            }
+        }
+
+        Err(QueueError::Timeout)
+    }
+
+    async fn send_svc_response(
+        &self,
+        key: SvcRoutingKey,
+        msg: ResponseV2,
+    ) -> Result<DagNodeId, QueueError> {
+        let mut q = self
+            .svc_responses
+            .lock()
+            .map_err(|e| QueueError::SendFailed(format!("lock poisoned: {e}")))?;
+        let dag_id = msg.dag_id.clone();
+        q.entry(key).or_default().push_back(msg);
+        Ok(dag_id)
+    }
+
+    async fn receive_svc_response(
+        &self,
+        key: &SvcRoutingKey,
+    ) -> Result<(SvcRoutingKey, ResponseV2, Acknowledgement), QueueError> {
+        let mut q = self
+            .svc_responses
+            .lock()
+            .map_err(|e| QueueError::ReceiveFailed(format!("lock poisoned: {e}")))?;
+
+        // First try exact key match (response key directly)
+        if let Some(queue) = q.get_mut(key) {
+            if let Some(msg) = queue.pop_front() {
+                let key = key.clone();
+                return Ok((key, msg, noop_ack()));
+            }
+        }
+
+        // For SvcRequest keys, also look up the corresponding SvcResponse key.
+        // This mirrors NATS semantics where receive_svc_response takes a request
+        // key and the worker sends on a SvcResponse subject.
+        if let SvcMessageKind::SvcRequest {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        {
+            let response_key = SvcRoutingKey {
+                session: key.session.clone(),
+                branch: key.branch,
+                submission: key.submission.clone(),
+                kind: SvcMessageKind::SvcResponse {
+                    agent: agent.clone(),
+                    service: service.clone(),
+                    operation: operation.clone(),
+                    sequence: *sequence,
+                },
+            };
+            if let Some(queue) = q.get_mut(&response_key) {
+                if let Some(msg) = queue.pop_front() {
+                    return Ok((response_key, msg, noop_ack()));
+                }
+            }
+        }
+
+        Err(QueueError::Timeout)
     }
 }
 
@@ -301,7 +408,9 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello".to_vec(),
+            current_input: vec![crate::domain::Message::User {
+                content: "hello".to_string(),
+            }],
         };
         let original_id = msg.id.clone();
 
@@ -319,7 +428,13 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(received.payload, b"hello");
+        // Verify the received message's current_input
+        assert_eq!(received.current_input.len(), 1);
+        if let crate::domain::Message::User { content } = &received.current_input[0] {
+            assert_eq!(content, "hello");
+        } else {
+            panic!("expected User message");
+        }
 
         ack().await.unwrap();
     }
@@ -349,7 +464,9 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"input".to_vec(),
+            current_input: vec![crate::domain::Message::User {
+                content: "input".to_string(),
+            }],
         };
 
         queue.send_invoke(key, msg).await.unwrap();
@@ -390,7 +507,9 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: crate::domain::DagNodeId::root(),
-            payload: b"hello".to_vec(),
+            current_input: vec![crate::domain::Message::User {
+                content: "hello".to_string(),
+            }],
         }
     }
 
@@ -434,7 +553,9 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: crate::domain::DagNodeId::root(),
-            payload: b"first".to_vec(),
+            current_input: vec![crate::domain::Message::User {
+                content: "first".to_string(),
+            }],
         };
         let msg2 = InvokeMessage {
             id: crate::domain::MessageId::from("msg-second".to_string()),
@@ -444,7 +565,9 @@ mod tests {
                 harness_version: String::new(),
             },
             dag_parent: crate::domain::DagNodeId::root(),
-            payload: b"second".to_vec(),
+            current_input: vec![crate::domain::Message::User {
+                content: "second".to_string(),
+            }],
         };
 
         queue.send_invoke(key.clone(), msg1.clone()).await.unwrap();

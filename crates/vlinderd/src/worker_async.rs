@@ -257,7 +257,7 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
     use vlinder_nats::{
         complete_parse_subject, delete_agent_parse_subject, deploy_agent_parse_subject,
         fork_parse_subject, invoke_parse_subject, promote_parse_subject, request_parse_subject,
-        response_parse_subject,
+        response_parse_subject, svc_request_parse_subject, svc_response_parse_subject,
     };
 
     let queue = crate::queue_factory::from_config_async(config)
@@ -354,6 +354,34 @@ pub async fn run_dag_git_worker(config: &Config, shutdown: CancellationToken) {
                                 tracing::warn!(
                                     subject = subject.as_str(),
                                     "DAG git: failed to deserialize PromoteMessage"
+                                );
+                            }
+                        } else if let Some(key) = svc_request_parse_subject(&subject) {
+                            if let Ok(request_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::RequestV2>(
+                                    &payload,
+                                )
+                            {
+                                git_worker.on_svc_request(&key, &request_msg, created_at).await;
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize RequestV2"
+                                );
+                            }
+                        } else if let Some(key) = svc_response_parse_subject(&subject) {
+                            if let Ok(response_msg) =
+                                serde_json::from_slice::<vlinder_core::domain::ResponseV2>(
+                                    &payload,
+                                )
+                            {
+                                git_worker
+                                    .on_svc_response(&key, &response_msg, created_at)
+                                    .await;
+                            } else {
+                                tracing::warn!(
+                                    subject = subject.as_str(),
+                                    "DAG git: failed to deserialize ResponseV2"
                                 );
                             }
                         } else if deploy_agent_parse_subject(&subject).is_some()
@@ -489,6 +517,7 @@ pub async fn run_harness_worker(config: &Config, shutdown: CancellationToken) {
     use tonic::transport::Server;
     use vlinder_core::domain::{CoreHarness, HarnessType};
     use vlinder_harness::harness_service::HarnessServer;
+    use vlinder_mcp::McpProtocol;
 
     let queue = crate::queue_factory::recording_from_config_async(config)
         .await
@@ -500,7 +529,13 @@ pub async fn run_harness_worker(config: &Config, shutdown: CancellationToken) {
         .await
         .expect("Failed to connect to state service");
 
-    let harness = CoreHarness::new(queue, registry, store, HarnessType::Grpc);
+    let harness = CoreHarness::new(
+        queue,
+        registry,
+        store,
+        HarnessType::Grpc,
+        Arc::new(McpProtocol),
+    );
 
     let addr_str = config
         .distributed
@@ -664,6 +699,36 @@ pub async fn run_agent_lambda_worker(config: &Config, shutdown: CancellationToke
     runtime.shutdown().await;
 }
 
+pub async fn run_mcp_worker(config: &Config, shutdown: CancellationToken) {
+    let nats_config = vlinder_nats::NatsConfig {
+        url: config.queue.nats_url.clone(),
+        creds_file: None,
+        creds_content: None,
+    };
+    let queue = match vlinder_nats::NatsQueue::connect_async(&nats_config).await {
+        Ok(q) => q,
+        Err(e) => {
+            tracing::error!(error = %e, "MCP worker: failed to connect to NATS");
+            return;
+        }
+    };
+
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+
+    tracing::info!("MCP service worker ready");
+
+    tokio::select! {
+        result = vlinder_mcp::run_mcp_worker(queue, registry) => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "MCP worker exited with error");
+            }
+        }
+        () = shutdown.cancelled() => {}
+    }
+}
+
 pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: CancellationToken) {
     use crate::worker_role::WorkerRole;
 
@@ -709,6 +774,9 @@ pub async fn run_worker_loop(role: crate::worker_role::WorkerRole, shutdown: Can
             unreachable!("DagGit must be run via spawn_blocking — do not pass to run_worker_loop")
         }
         WorkerRole::SessionViewer => run_session_viewer_worker(&config, shutdown).await,
+        WorkerRole::Mcp => run_mcp_worker(&config, shutdown).await,
+        #[cfg(feature = "api-server")]
+        WorkerRole::ApiServer => run_api_server_worker(&config, shutdown).await,
     }
 
     tracing::info!(role = %role, "Worker shutdown complete");
@@ -737,4 +805,58 @@ pub async fn run_session_viewer_worker(_config: &Config, shutdown: CancellationT
 
     shutdown.cancelled().await;
     server.stop().await;
+}
+
+#[cfg(feature = "api-server")]
+pub async fn run_api_server_worker(config: &Config, shutdown: CancellationToken) {
+    use crate::config::dag_db_path;
+    use vlinder_core::domain::{CoreHarness, HarnessType};
+    use vlinder_core::queue::RecordingQueue;
+    use vlinder_mcp::McpProtocol;
+    use vlinder_openai_server::ApiServer;
+    use vlinder_sql_state::SqliteDagStore;
+
+    let port = std::env::var("VLINDER_OPENAI_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7890u16);
+
+    let inner_queue = crate::queue_factory::from_config_async(config)
+        .await
+        .expect("Failed to create queue for api-server worker");
+    let registry = crate::registry_factory::from_config_async(config)
+        .await
+        .expect("Failed to connect to registry");
+
+    let db_path = dag_db_path();
+    let store = SqliteDagStore::open(&db_path).expect("Failed to open DAG store for api-server");
+    let store: Arc<dyn vlinder_core::domain::DagStore> = Arc::new(store);
+
+    // Wrap the queue in a RecordingQueue so sessions created by the API
+    // server are persisted to the local SQLite store.
+    let queue: Arc<dyn vlinder_core::domain::MessageQueue + Send + Sync> =
+        Arc::new(RecordingQueue::new(inner_queue, Arc::clone(&store)));
+
+    let harness: Arc<dyn vlinder_core::domain::Harness + Send + Sync> = Arc::new(CoreHarness::new(
+        queue,
+        Arc::clone(&registry) as _,
+        Arc::clone(&store) as _,
+        HarnessType::Api,
+        Arc::new(McpProtocol),
+    ));
+
+    let server = ApiServer::new(harness, registry, store);
+    let handle = server
+        .start(port)
+        .await
+        .expect("Failed to start api-server");
+
+    tracing::info!(
+        port = handle.port(),
+        "OpenAI-compatible API server started: http://127.0.0.1:{}",
+        handle.port()
+    );
+
+    shutdown.cancelled().await;
+    handle.stop();
 }

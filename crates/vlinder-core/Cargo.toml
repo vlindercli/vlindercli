@@ -21,7 +21,10 @@ async-openai = { version = "0.32", default-features = false, features = ["chat-c
 http = "1"
 http-serde-ext = "1"
 async-trait = "0.1"
-tokio = { version = "1", features = ["time", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["time", "rt-multi-thread", "macros", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

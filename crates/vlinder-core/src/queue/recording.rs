@@ -19,6 +19,9 @@ use crate::domain::{
     SessionRoutingKey, SessionStartMessage, Snapshot, StateHash, SubmissionId,
 };
 
+#[cfg(test)]
+use crate::domain::{SvcRequestDiagnostics, SvcResponseDiagnostics};
+
 /// A `MessageQueue` decorator that synchronously records DAG nodes on send.
 ///
 /// Every `send_*` call: clone → convert to `ObservableMessage` → build
@@ -75,8 +78,9 @@ impl RecordingQueue {
             .unwrap_or_else(Snapshot::empty);
 
         let diagnostics_json = serde_json::to_vec(&msg.diagnostics).unwrap_or_default();
+        let payload_json = serde_json::to_vec(msg).unwrap_or_default();
         let id = hash_dag_node(
-            &msg.payload,
+            &payload_json,
             &parent_id,
             &MessageType::Invoke,
             &diagnostics_json,
@@ -112,16 +116,17 @@ impl RecordingQueue {
     }
 
     /// Record a DAG node for a complete message (data-plane path).
-    async fn record_complete(&self, key: &DataRoutingKey, msg: &CompleteMessage) {
-        let branch_id = key.branch;
-
-        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
-            Ok(Some(node)) => Some(node),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!(error = %e, branch = branch_id.as_i64(), "Failed to query latest node on branch");
-                None
-            }
+    async fn record_complete(&self, key: &DataRoutingKey, msg: &CompleteMessage) -> DagNodeId {
+        let parent_node = if msg.dag_parent.is_empty() || msg.dag_parent == DagNodeId::root() {
+            None
+        } else {
+            self.store
+                .get_node(&msg.dag_parent)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to look up dag_parent");
+                    None
+                })
         };
 
         let parent_id = parent_node
@@ -151,7 +156,7 @@ impl RecordingQueue {
 
         let crate::domain::DataMessageKind::Complete { agent, harness } = &key.kind else {
             tracing::error!("record_complete called with non-Complete key");
-            return;
+            return DagNodeId::root();
         };
 
         if let Err(e) = self
@@ -179,18 +184,25 @@ impl RecordingQueue {
                 "failed to record complete node — DAG chain may have a gap"
             );
         }
+
+        id
     }
     /// Record a DAG node for a request message (data-plane path).
-    async fn record_request(&self, key: &DataRoutingKey, msg: &crate::domain::RequestMessage) {
-        let branch_id = key.branch;
-
-        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
-            Ok(Some(node)) => Some(node),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!(error = %e, branch = branch_id.as_i64(), "Failed to query latest node on branch");
-                None
-            }
+    async fn record_request(
+        &self,
+        key: &DataRoutingKey,
+        msg: &crate::domain::RequestMessage,
+    ) -> DagNodeId {
+        let parent_node = if msg.dag_parent.is_empty() || msg.dag_parent == DagNodeId::root() {
+            None
+        } else {
+            self.store
+                .get_node(&msg.dag_parent)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to look up dag_parent");
+                    None
+                })
         };
 
         let parent_id = parent_node
@@ -226,7 +238,7 @@ impl RecordingQueue {
         } = &key.kind
         else {
             tracing::error!("record_request called with non-Request key");
-            return;
+            return DagNodeId::root();
         };
 
         if let Err(e) = self
@@ -258,19 +270,26 @@ impl RecordingQueue {
                 "failed to record request node — DAG chain may have a gap"
             );
         }
+
+        id
     }
 
     /// Record a DAG node for a response message (data-plane path).
-    async fn record_response(&self, key: &DataRoutingKey, msg: &crate::domain::ResponseMessage) {
-        let branch_id = key.branch;
-
-        let parent_node = match self.store.latest_node_on_branch(branch_id, None).await {
-            Ok(Some(node)) => Some(node),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!(error = %e, branch = branch_id.as_i64(), "Failed to query latest node on branch");
-                None
-            }
+    async fn record_response(
+        &self,
+        key: &DataRoutingKey,
+        msg: &crate::domain::ResponseMessage,
+    ) -> DagNodeId {
+        let parent_node = if msg.dag_parent.is_empty() || msg.dag_parent == DagNodeId::root() {
+            None
+        } else {
+            self.store
+                .get_node(&msg.dag_parent)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to look up dag_parent");
+                    None
+                })
         };
 
         let parent_id = parent_node
@@ -306,7 +325,7 @@ impl RecordingQueue {
         } = &key.kind
         else {
             tracing::error!("record_response called with non-Response key");
-            return;
+            return DagNodeId::root();
         };
 
         if let Err(e) = self
@@ -338,6 +357,198 @@ impl RecordingQueue {
                 "failed to record response node — DAG chain may have a gap"
             );
         }
+
+        id
+    }
+
+    /// Record a DAG node for a harness-mediated service request (V2 path).
+    ///
+    /// Hashes the full message, inherits KV state from the parent,
+    /// stamps `dag_id` on the message, and returns the computed `DagNodeId`.
+    async fn record_svc_request(
+        &self,
+        key: &crate::domain::SvcRoutingKey,
+        msg: &mut crate::domain::RequestV2,
+    ) -> DagNodeId {
+        let parent_node = if msg.dag_parent.is_empty() || msg.dag_parent == DagNodeId::root() {
+            None
+        } else {
+            self.store
+                .get_node(&msg.dag_parent)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to look up dag_parent");
+                    None
+                })
+        };
+
+        let parent_id = parent_node
+            .as_ref()
+            .map_or_else(DagNodeId::root, |n| n.id.clone());
+        let parent_state = parent_node
+            .as_ref()
+            .map(|n| &n.state)
+            .cloned()
+            .unwrap_or_else(Snapshot::empty);
+
+        // Hash the full message (fixes gap 1: was hashing only arguments)
+        let payload_json = serde_json::to_vec(msg).unwrap_or_default();
+        let id = hash_dag_node(
+            &payload_json,
+            &parent_id,
+            &MessageType::SvcRequest,
+            &[],
+            &key.session,
+        );
+
+        // State inheritance (fixes gap 2: was using parent_state directly)
+        let state = match &msg.state {
+            Some(s) if !s.is_empty() => {
+                parent_state.with_state(Instance::from("kv"), StateHash::from(s.clone()))
+            }
+            _ => parent_state,
+        };
+
+        let crate::domain::SvcMessageKind::SvcRequest {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        else {
+            tracing::error!("record_svc_request called with non-SvcRequest key");
+            return DagNodeId::root();
+        };
+
+        // Stamp dag_id on the message (fixes gap 3)
+        msg.dag_id = id.clone();
+
+        if let Err(e) = self
+            .store
+            .insert_svc_request_node(
+                &id,
+                &parent_id,
+                Utc::now(),
+                &state,
+                &key.session,
+                &key.submission,
+                key.branch,
+                agent,
+                service.clone(),
+                operation.clone(),
+                *sequence,
+                msg,
+            )
+            .await
+        {
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                service = %service.service_type_str(),
+                operation = %operation.as_str(),
+                error = %e,
+                "failed to record svc_request node — DAG chain may have a gap"
+            );
+        }
+
+        id
+    }
+
+    /// Record a DAG node for a harness-mediated service response (V2 path).
+    ///
+    /// Hashes the full message, inherits KV state from the parent,
+    /// stamps `dag_id` on the message, and returns the computed `DagNodeId`.
+    async fn record_svc_response(
+        &self,
+        key: &crate::domain::SvcRoutingKey,
+        msg: &mut crate::domain::ResponseV2,
+    ) -> DagNodeId {
+        let parent_node = if msg.dag_parent.is_empty() || msg.dag_parent == DagNodeId::root() {
+            None
+        } else {
+            self.store
+                .get_node(&msg.dag_parent)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to look up dag_parent");
+                    None
+                })
+        };
+
+        let parent_id = parent_node
+            .as_ref()
+            .map_or_else(DagNodeId::root, |n| n.id.clone());
+        let parent_state = parent_node
+            .as_ref()
+            .map(|n| &n.state)
+            .cloned()
+            .unwrap_or_else(Snapshot::empty);
+
+        // Hash the full message (fixes gap 1: was hashing only content bytes)
+        let payload_json = serde_json::to_vec(msg).unwrap_or_default();
+        let id = hash_dag_node(
+            &payload_json,
+            &parent_id,
+            &MessageType::SvcResponse,
+            &[],
+            &key.session,
+        );
+
+        // State inheritance (fixes gap 2: was using parent_state directly)
+        let state = match &msg.state {
+            Some(s) if !s.is_empty() => {
+                parent_state.with_state(Instance::from("kv"), StateHash::from(s.clone()))
+            }
+            _ => parent_state,
+        };
+
+        let crate::domain::SvcMessageKind::SvcResponse {
+            agent,
+            service,
+            operation,
+            sequence,
+        } = &key.kind
+        else {
+            tracing::error!("record_svc_response called with non-SvcResponse key");
+            return DagNodeId::root();
+        };
+
+        // Stamp dag_id on the message (fixes gap 3)
+        msg.dag_id = id.clone();
+
+        if let Err(e) = self
+            .store
+            .insert_svc_response_node(
+                &id,
+                &parent_id,
+                Utc::now(),
+                &state,
+                &key.session,
+                &key.submission,
+                key.branch,
+                agent,
+                service.clone(),
+                operation.clone(),
+                *sequence,
+                msg,
+            )
+            .await
+        {
+            tracing::warn!(
+                dag_id = %id,
+                submission = %key.submission,
+                agent = %agent,
+                branch = key.branch.as_i64(),
+                service = %service.service_type_str(),
+                operation = %operation.as_str(),
+                error = %e,
+                "failed to record svc_response node — DAG chain may have a gap"
+            );
+        }
+
+        id
     }
 }
 
@@ -367,10 +578,11 @@ impl MessageQueue for RecordingQueue {
         &self,
         key: DataRoutingKey,
         mut msg: InvokeMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         let dag_id = self.record_invoke(&key, &msg).await;
-        msg.dag_id = dag_id;
-        self.inner.send_invoke(key, msg).await
+        msg.dag_id = dag_id.clone();
+        self.inner.send_invoke(key, msg).await?;
+        Ok(dag_id)
     }
 
     async fn receive_invoke(
@@ -383,28 +595,34 @@ impl MessageQueue for RecordingQueue {
     async fn send_complete(
         &self,
         key: DataRoutingKey,
-        msg: CompleteMessage,
-    ) -> Result<(), QueueError> {
-        self.record_complete(&key, &msg).await;
-        self.inner.send_complete(key, msg).await
+        mut msg: CompleteMessage,
+    ) -> Result<DagNodeId, QueueError> {
+        let dag_id = self.record_complete(&key, &msg).await;
+        msg.dag_id = dag_id.clone();
+        self.inner.send_complete(key, msg).await?;
+        Ok(dag_id)
     }
 
     async fn send_request(
         &self,
         key: DataRoutingKey,
-        msg: crate::domain::RequestMessage,
-    ) -> Result<(), QueueError> {
-        self.record_request(&key, &msg).await;
-        self.inner.send_request(key, msg).await
+        mut msg: crate::domain::RequestMessage,
+    ) -> Result<DagNodeId, QueueError> {
+        let dag_id = self.record_request(&key, &msg).await;
+        msg.dag_id = dag_id.clone();
+        self.inner.send_request(key, msg).await?;
+        Ok(dag_id)
     }
 
     async fn send_response(
         &self,
         key: DataRoutingKey,
-        msg: crate::domain::ResponseMessage,
-    ) -> Result<(), QueueError> {
-        self.record_response(&key, &msg).await;
-        self.inner.send_response(key, msg).await
+        mut msg: crate::domain::ResponseMessage,
+    ) -> Result<DagNodeId, QueueError> {
+        let dag_id = self.record_response(&key, &msg).await;
+        msg.dag_id = dag_id.clone();
+        self.inner.send_response(key, msg).await?;
+        Ok(dag_id)
     }
 
     // -------------------------------------------------------------------------
@@ -455,6 +673,59 @@ impl MessageQueue for RecordingQueue {
         self.inner
             .receive_response(submission, agent, service, operation, sequence)
             .await
+    }
+
+    // -------------------------------------------------------------------------
+    // V2 harness-mediated service dispatch
+    // -------------------------------------------------------------------------
+
+    async fn send_svc_request(
+        &self,
+        key: crate::domain::SvcRoutingKey,
+        mut msg: crate::domain::RequestV2,
+    ) -> Result<DagNodeId, QueueError> {
+        let dag_id = self.record_svc_request(&key, &mut msg).await;
+        self.inner.send_svc_request(key, msg).await?;
+        Ok(dag_id)
+    }
+
+    async fn receive_svc_request_mcp(
+        &self,
+    ) -> Result<
+        (
+            crate::domain::SvcRoutingKey,
+            crate::domain::RequestV2,
+            Acknowledgement,
+        ),
+        QueueError,
+    > {
+        self.inner.receive_svc_request_mcp().await
+    }
+
+    async fn send_svc_response(
+        &self,
+        key: crate::domain::SvcRoutingKey,
+        msg: crate::domain::ResponseV2,
+    ) -> Result<DagNodeId, QueueError> {
+        let dag_id = msg.dag_id.clone();
+        self.inner.send_svc_response(key, msg).await?;
+        Ok(dag_id)
+    }
+
+    async fn receive_svc_response(
+        &self,
+        key: &crate::domain::SvcRoutingKey,
+    ) -> Result<
+        (
+            crate::domain::SvcRoutingKey,
+            crate::domain::ResponseV2,
+            Acknowledgement,
+        ),
+        QueueError,
+    > {
+        let (key, mut response, ack) = self.inner.receive_svc_response(key).await?;
+        let _dag_id = self.record_svc_response(&key, &mut response).await;
+        Ok((key, response, ack))
     }
 
     // -------------------------------------------------------------------------
@@ -540,6 +811,7 @@ impl MessageQueue for RecordingQueue {
         &self,
         key: SessionRoutingKey,
         msg: SessionStartMessage,
+        external_id: crate::domain::ExternalSessionId,
     ) -> Result<crate::domain::BranchId, QueueError> {
         let SessionMessageKind::Start { agent_name } = &key.kind else {
             return Err(QueueError::SendFailed("expected Start kind".into()));
@@ -549,6 +821,7 @@ impl MessageQueue for RecordingQueue {
         let placeholder_branch = crate::domain::BranchId::from(1);
         let session = crate::domain::Session::new(
             key.session.clone(),
+            external_id.clone(),
             agent_name.as_str(),
             placeholder_branch,
         );
@@ -571,7 +844,10 @@ impl MessageQueue for RecordingQueue {
             tracing::warn!(error = %e, "Failed to update session default branch");
         }
 
-        let _ = self.inner.send_session_start(key, msg).await;
+        let _ = self
+            .inner
+            .send_session_start(key, msg, external_id.clone())
+            .await;
         Ok(default_branch)
     }
 
@@ -772,11 +1048,17 @@ impl RecordingQueue {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use crate::domain::{
-        AgentName, BranchId, DagNode, DataMessageKind, DataRoutingKey, HarnessType,
-        InMemoryDagStore, InvokeDiagnostics, InvokeMessage, MessageId, MessageType,
-        RuntimeDiagnostics, RuntimeType, SessionId, SubmissionId,
+        Acknowledgement, AgentName, BranchId, DagNode, DataMessageKind, DataRoutingKey,
+        DeleteAgentMessage, DeployAgentMessage, ExternalSessionId, ForkMessage, HarnessType,
+        InMemoryDagStore, InfraRoutingKey, InvokeDiagnostics, InvokeMessage, Message, MessageId,
+        MessageType, ObjectStorageType, Operation, PromoteMessage, RequestDiagnostics,
+        RequestMessage, RequestV2, ResponseMessage, ResponseV2, RuntimeDiagnostics, RuntimeType,
+        Sequence, ServiceBackend, ServiceDiagnostics, SessionId, SessionRoutingKey,
+        SessionStartMessage, SubmissionId, SvcRoutingKey,
     };
     use crate::queue::InMemoryQueue;
 
@@ -826,7 +1108,9 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello".to_vec(),
+            current_input: vec![Message::User {
+                content: "hello".to_string(),
+            }],
         };
         (key, msg)
     }
@@ -844,9 +1128,62 @@ mod tests {
         let msg = CompleteMessage {
             id: crate::domain::MessageId::new(),
             dag_id: crate::domain::DagNodeId::root(),
+            dag_parent: crate::domain::DagNodeId::root(),
             state: None,
             diagnostics: RuntimeDiagnostics::placeholder(0),
+            content: None,
+            tool_calls: None,
             payload: b"done".to_vec(),
+        };
+        (key, msg)
+    }
+
+    fn test_request() -> (DataRoutingKey, RequestMessage) {
+        let key = DataRoutingKey {
+            session: test_session(),
+            branch: BranchId::from(1),
+            submission: test_submission(),
+            kind: DataMessageKind::Request {
+                agent: test_agent_id(),
+                service: ServiceBackend::Kv(ObjectStorageType::InMemory),
+                operation: Operation::Get,
+                sequence: Sequence::first(),
+            },
+        };
+        let msg = RequestMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            state: None,
+            diagnostics: RequestDiagnostics::default(),
+            payload: b"request-payload".to_vec(),
+            checkpoint: None,
+        };
+        (key, msg)
+    }
+
+    fn test_response() -> (DataRoutingKey, ResponseMessage) {
+        let key = DataRoutingKey {
+            session: test_session(),
+            branch: BranchId::from(1),
+            submission: test_submission(),
+            kind: DataMessageKind::Response {
+                agent: test_agent_id(),
+                service: ServiceBackend::Kv(ObjectStorageType::InMemory),
+                operation: Operation::Get,
+                sequence: Sequence::first(),
+            },
+        };
+        let msg = ResponseMessage {
+            id: MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            correlation_id: MessageId::new(),
+            state: None,
+            diagnostics: ServiceDiagnostics::placeholder(),
+            payload: b"response-payload".to_vec(),
+            status_code: 200,
+            checkpoint: None,
         };
         (key, msg)
     }
@@ -865,6 +1202,202 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].message_type(), MessageType::Invoke);
         assert_eq!(nodes[0].parent_id, DagNodeId::root());
+    }
+
+    // ── CaptureQueue: wraps InMemoryQueue and captures dag_id on send_* ──
+
+    /// Wraps `InMemoryQueue` to capture `msg.dag_id` before forwarding
+    /// through `send_complete`, `send_request`, and `send_response`.
+    struct CaptureQueue {
+        inner: Arc<InMemoryQueue>,
+        last_request_dag_id: Arc<Mutex<Option<DagNodeId>>>,
+        last_response_dag_id: Arc<Mutex<Option<DagNodeId>>>,
+        last_complete_dag_id: Arc<Mutex<Option<DagNodeId>>>,
+    }
+
+    impl CaptureQueue {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(InMemoryQueue::new()),
+                last_request_dag_id: Arc::new(Mutex::new(None)),
+                last_response_dag_id: Arc::new(Mutex::new(None)),
+                last_complete_dag_id: Arc::new(Mutex::new(None)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl MessageQueue for CaptureQueue {
+        async fn send_invoke(
+            &self,
+            key: DataRoutingKey,
+            msg: InvokeMessage,
+        ) -> Result<DagNodeId, QueueError> {
+            self.inner.send_invoke(key, msg).await
+        }
+
+        async fn receive_invoke(
+            &self,
+            agent: &AgentName,
+        ) -> Result<(DataRoutingKey, InvokeMessage, Acknowledgement), QueueError> {
+            self.inner.receive_invoke(agent).await
+        }
+
+        async fn send_complete(
+            &self,
+            key: DataRoutingKey,
+            msg: CompleteMessage,
+        ) -> Result<DagNodeId, QueueError> {
+            let dag_id = msg.dag_id.clone();
+            *self.last_complete_dag_id.lock().unwrap() = Some(dag_id);
+            self.inner.send_complete(key, msg).await
+        }
+
+        async fn receive_complete(
+            &self,
+            submission: &SubmissionId,
+            harness: HarnessType,
+            agent: &AgentName,
+        ) -> Result<(DataRoutingKey, CompleteMessage, Acknowledgement), QueueError> {
+            self.inner
+                .receive_complete(submission, harness, agent)
+                .await
+        }
+
+        async fn send_request(
+            &self,
+            key: DataRoutingKey,
+            msg: RequestMessage,
+        ) -> Result<DagNodeId, QueueError> {
+            let dag_id = msg.dag_id.clone();
+            *self.last_request_dag_id.lock().unwrap() = Some(dag_id);
+            self.inner.send_request(key, msg).await
+        }
+
+        async fn receive_request(
+            &self,
+            service: ServiceBackend,
+            operation: Operation,
+        ) -> Result<(DataRoutingKey, RequestMessage, Acknowledgement), QueueError> {
+            self.inner.receive_request(service, operation).await
+        }
+
+        async fn send_response(
+            &self,
+            key: DataRoutingKey,
+            msg: ResponseMessage,
+        ) -> Result<DagNodeId, QueueError> {
+            let dag_id = msg.dag_id.clone();
+            *self.last_response_dag_id.lock().unwrap() = Some(dag_id);
+            self.inner.send_response(key, msg).await
+        }
+
+        async fn receive_response(
+            &self,
+            submission: &SubmissionId,
+            agent: &AgentName,
+            service: ServiceBackend,
+            operation: Operation,
+            sequence: Sequence,
+        ) -> Result<(DataRoutingKey, ResponseMessage, Acknowledgement), QueueError> {
+            self.inner
+                .receive_response(submission, agent, service, operation, sequence)
+                .await
+        }
+
+        async fn send_fork(
+            &self,
+            key: SessionRoutingKey,
+            msg: ForkMessage,
+        ) -> Result<(), QueueError> {
+            self.inner.send_fork(key, msg).await
+        }
+
+        async fn receive_fork(
+            &self,
+        ) -> Result<(SessionRoutingKey, ForkMessage, Acknowledgement), QueueError> {
+            self.inner.receive_fork().await
+        }
+
+        async fn send_promote(
+            &self,
+            key: SessionRoutingKey,
+            msg: PromoteMessage,
+        ) -> Result<(), QueueError> {
+            self.inner.send_promote(key, msg).await
+        }
+
+        async fn receive_promote(
+            &self,
+        ) -> Result<(SessionRoutingKey, PromoteMessage, Acknowledgement), QueueError> {
+            self.inner.receive_promote().await
+        }
+
+        async fn send_session_start(
+            &self,
+            key: SessionRoutingKey,
+            msg: SessionStartMessage,
+            external_id: ExternalSessionId,
+        ) -> Result<BranchId, QueueError> {
+            self.inner.send_session_start(key, msg, external_id).await
+        }
+
+        async fn send_deploy_agent(
+            &self,
+            key: InfraRoutingKey,
+            msg: DeployAgentMessage,
+        ) -> Result<(), QueueError> {
+            self.inner.send_deploy_agent(key, msg).await
+        }
+
+        async fn send_delete_agent(
+            &self,
+            key: InfraRoutingKey,
+            msg: DeleteAgentMessage,
+        ) -> Result<(), QueueError> {
+            self.inner.send_delete_agent(key, msg).await
+        }
+
+        async fn receive_deploy_agent(
+            &self,
+        ) -> Result<(InfraRoutingKey, DeployAgentMessage, Acknowledgement), QueueError> {
+            self.inner.receive_deploy_agent().await
+        }
+
+        async fn receive_delete_agent(
+            &self,
+        ) -> Result<(InfraRoutingKey, DeleteAgentMessage, Acknowledgement), QueueError> {
+            self.inner.receive_delete_agent().await
+        }
+
+        async fn send_svc_request(
+            &self,
+            key: SvcRoutingKey,
+            msg: RequestV2,
+        ) -> Result<DagNodeId, QueueError> {
+            self.inner.send_svc_request(key, msg).await
+        }
+
+        async fn receive_svc_request_mcp(
+            &self,
+        ) -> Result<(SvcRoutingKey, RequestV2, Acknowledgement), QueueError> {
+            self.inner.receive_svc_request_mcp().await
+        }
+
+        async fn send_svc_response(
+            &self,
+            key: SvcRoutingKey,
+            msg: ResponseV2,
+        ) -> Result<DagNodeId, QueueError> {
+            self.inner.send_svc_response(key, msg).await
+        }
+
+        async fn receive_svc_response(
+            &self,
+            key: &SvcRoutingKey,
+        ) -> Result<(SvcRoutingKey, ResponseV2, Acknowledgement), QueueError> {
+            self.inner.receive_svc_response(key).await
+        }
     }
 
     #[tokio::test]
@@ -896,11 +1429,15 @@ mod tests {
 
         let (mut key1, mut msg1) = test_invoke();
         key1.session = ses_aaa.clone();
-        msg1.payload = b"hello-aaa".to_vec();
+        msg1.current_input = vec![Message::User {
+            content: "hello-aaa".to_string(),
+        }];
 
         let (mut key2, mut msg2) = test_invoke();
         key2.session = ses_bbb.clone();
-        msg2.payload = b"hello-bbb".to_vec();
+        msg2.current_input = vec![Message::User {
+            content: "hello-bbb".to_string(),
+        }];
 
         queue.send_invoke(key1, msg1).await.unwrap();
         queue.send_invoke(key2, msg2).await.unwrap();
@@ -990,6 +1527,14 @@ mod tests {
             ) -> Result<Vec<crate::domain::Branch>, String> {
                 Ok(vec![])
             }
+            async fn latest_nodes_on_branch(
+                &self,
+                _: crate::domain::BranchId,
+                _: u32,
+            ) -> Result<Vec<crate::domain::DagNode>, String> {
+                Err("FailStore: latest_nodes_on_branch not available".into())
+            }
+
             async fn latest_node_on_branch(
                 &self,
                 _: crate::domain::BranchId,
@@ -1033,6 +1578,86 @@ mod tests {
             ) -> Result<Option<crate::domain::Session>, String> {
                 Ok(None)
             }
+
+            async fn get_complete_node(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<
+                Option<(
+                    crate::domain::DataRoutingKey,
+                    crate::domain::CompleteMessage,
+                )>,
+                String,
+            > {
+                Err("FailStore: get_complete_node not available".into())
+            }
+
+            async fn get_request_node(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<
+                Option<(crate::domain::DataRoutingKey, crate::domain::RequestMessage)>,
+                String,
+            > {
+                Err("FailStore: get_request_node not available".into())
+            }
+
+            async fn get_response_node(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<
+                Option<(
+                    crate::domain::DataRoutingKey,
+                    crate::domain::ResponseMessage,
+                )>,
+                String,
+            > {
+                Err("FailStore: get_response_node not available".into())
+            }
+
+            async fn get_svc_request_node(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<(crate::domain::SvcRoutingKey, crate::domain::RequestV2)>, String>
+            {
+                Err("FailStore: get_svc_request_node not available".into())
+            }
+
+            async fn get_svc_response_node(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<(crate::domain::SvcRoutingKey, crate::domain::ResponseV2)>, String>
+            {
+                Err("FailStore: get_svc_response_node not available".into())
+            }
+
+            async fn get_invoke_message(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::InvokeMessage>, String> {
+                Err("FailStore: get_invoke_message not available".into())
+            }
+
+            async fn get_complete_message(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::CompleteMessage>, String> {
+                Err("FailStore: get_complete_message not available".into())
+            }
+
+            async fn get_request_v2(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::RequestV2>, String> {
+                Err("FailStore: get_request_v2 not available".into())
+            }
+
+            async fn get_response_v2(
+                &self,
+                _: &crate::domain::DagNodeId,
+            ) -> Result<Option<crate::domain::ResponseV2>, String> {
+                Err("FailStore: get_response_v2 not available".into())
+            }
         }
 
         let store: Arc<dyn DagStore> = Arc::new(FailStore);
@@ -1061,7 +1686,9 @@ mod tests {
 
         // Send a second invoke (same session) — normally chains off first
         let (key2, mut msg2) = test_invoke();
-        msg2.payload = b"second".to_vec();
+        msg2.current_input = vec![Message::User {
+            content: "second".to_string(),
+        }];
         queue.send_invoke(key2, msg2).await.unwrap();
 
         let nodes = store.get_session_nodes(&sid).await.unwrap();
@@ -1071,7 +1698,9 @@ mod tests {
         // Send a third invoke with explicit dag_parent pointing to first node,
         // bypassing the chain cache (which would point to second node)
         let (key3, mut msg3) = test_invoke();
-        msg3.payload = b"forked".to_vec();
+        msg3.current_input = vec![Message::User {
+            content: "forked".to_string(),
+        }];
         msg3.dag_parent = first_id.clone();
         queue.send_invoke(key3, msg3).await.unwrap();
 
@@ -1080,6 +1709,282 @@ mod tests {
         assert_eq!(
             nodes[2].parent_id, first_id,
             "dag_parent should override chain cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_svc_request_dag_id_is_non_root() {
+        let store = test_store().await;
+        let inner: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
+        let queue = RecordingQueue::new(Arc::clone(&inner), Arc::clone(&store));
+
+        let session = test_session();
+        let submission = test_submission();
+        let agent = test_agent_id();
+        let branch = BranchId::from(1);
+        let service = crate::domain::ServiceBackendV2::Mcp("brave".to_string());
+        let operation = crate::domain::ServiceOperation::new("echo");
+        let sequence = crate::domain::Sequence::first();
+
+        let svc_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcRequest {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let request_msg = crate::domain::RequestV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            tool_call_id: crate::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({})).unwrap(),
+        };
+
+        queue.send_svc_request(svc_key, request_msg).await.unwrap();
+
+        let node = store.get_session_nodes(&session).await.unwrap();
+        assert_eq!(node.len(), 1);
+        assert!(!node[0].id.is_empty(), "dag_id should be a non-empty hash");
+        assert!(
+            node[0].id.as_str().len() > 10,
+            "dag_id should be a full SHA-256 hash, got: {}",
+            node[0].id
+        );
+    }
+
+    // ── Tests: recording stamps msg.dag_id symmetrically ──
+
+    #[tokio::test]
+    async fn send_request_stamps_dag_id_on_outgoing_msg() {
+        let store = test_store().await;
+        let capture = Arc::new(CaptureQueue::new());
+        let queue = RecordingQueue::new(
+            capture.clone() as Arc<dyn MessageQueue + Send + Sync>,
+            store,
+        );
+
+        let (key, msg) = test_request();
+        let returned = queue.send_request(key, msg).await.unwrap();
+
+        let stamped = capture.last_request_dag_id.lock().unwrap().clone().unwrap();
+        assert_eq!(stamped, returned);
+        assert_ne!(stamped, DagNodeId::root());
+    }
+
+    #[tokio::test]
+    async fn send_response_stamps_dag_id_on_outgoing_msg() {
+        let store = test_store().await;
+        let capture = Arc::new(CaptureQueue::new());
+        let queue = RecordingQueue::new(
+            capture.clone() as Arc<dyn MessageQueue + Send + Sync>,
+            store,
+        );
+
+        let (key, msg) = test_response();
+        let returned = queue.send_response(key, msg).await.unwrap();
+
+        let stamped = capture
+            .last_response_dag_id
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert_eq!(stamped, returned);
+        assert_ne!(stamped, DagNodeId::root());
+    }
+
+    #[tokio::test]
+    async fn send_complete_stamps_dag_id_on_outgoing_msg() {
+        let store = test_store().await;
+        let capture = Arc::new(CaptureQueue::new());
+        let queue = RecordingQueue::new(
+            capture.clone() as Arc<dyn MessageQueue + Send + Sync>,
+            store,
+        );
+
+        let (key, msg) = test_complete();
+        let returned = queue.send_complete(key, msg).await.unwrap();
+
+        let stamped = capture
+            .last_complete_dag_id
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert_eq!(stamped, returned);
+        assert_ne!(stamped, DagNodeId::root());
+    }
+
+    #[tokio::test]
+    async fn send_svc_request_and_receive_svc_response_record_nodes() {
+        let store = test_store().await;
+        let inner: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
+        let queue = RecordingQueue::new(Arc::clone(&inner), Arc::clone(&store));
+
+        let session = test_session();
+        let submission = test_submission();
+        let agent = test_agent_id();
+        let branch = BranchId::from(1);
+        let service = crate::domain::ServiceBackendV2::Mcp("brave".to_string());
+        let operation = crate::domain::ServiceOperation::new("echo");
+        let sequence = crate::domain::Sequence::first();
+
+        let svc_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcRequest {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let request_msg = crate::domain::RequestV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            tool_call_id: crate::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
+        };
+
+        // send_svc_request — should record node and forward
+        queue
+            .send_svc_request(svc_key.clone(), request_msg)
+            .await
+            .unwrap();
+
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].message_type(), MessageType::SvcRequest);
+        assert_eq!(nodes[0].protocol_version(), "v1");
+
+        // Now send a svc_response into the inner queue and receive it via RecordingQueue
+        let response_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcResponse {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let response_msg = crate::domain::ResponseV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            correlation_id: crate::domain::MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            payload: b"result".to_vec(),
+        };
+
+        // Put response into inner queue first
+        inner
+            .send_svc_response(response_key.clone(), response_msg)
+            .await
+            .unwrap();
+
+        // receive_svc_response — should receive from inner and record node
+        let result = queue.receive_svc_response(&response_key).await;
+        assert!(result.is_ok());
+
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[1].message_type(), MessageType::SvcResponse);
+        assert_eq!(nodes[1].protocol_version(), "v1");
+    }
+
+    #[tokio::test]
+    async fn send_svc_response_and_receive_svc_request_mcp_delegate_no_recording() {
+        let store = test_store().await;
+        let inner: Arc<dyn MessageQueue + Send + Sync> = Arc::new(InMemoryQueue::new());
+        let queue = RecordingQueue::new(Arc::clone(&inner), Arc::clone(&store));
+
+        let session = test_session();
+        let submission = test_submission();
+        let agent = test_agent_id();
+        let branch = BranchId::from(1);
+        let service = crate::domain::ServiceBackendV2::Mcp("brave".to_string());
+        let operation = crate::domain::ServiceOperation::new("echo");
+        let sequence = crate::domain::Sequence::first();
+
+        // send_svc_response should delegate without recording
+        let response_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcResponse {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let response_msg = crate::domain::ResponseV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            correlation_id: crate::domain::MessageId::new(),
+            state: None,
+            diagnostics: SvcResponseDiagnostics::default(),
+            payload: b"result".to_vec(),
+        };
+
+        queue
+            .send_svc_response(response_key, response_msg)
+            .await
+            .unwrap();
+
+        // No nodes should be recorded
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert!(nodes.is_empty(), "send_svc_response should not record");
+
+        // Put a request into inner and verify receive_svc_request_mcp delegates
+        let request_key = crate::domain::SvcRoutingKey {
+            session: session.clone(),
+            branch,
+            submission: submission.clone(),
+            kind: crate::domain::SvcMessageKind::SvcRequest {
+                agent: agent.clone(),
+                service: service.clone(),
+                operation: operation.clone(),
+                sequence,
+            },
+        };
+        let request_msg = crate::domain::RequestV2 {
+            id: crate::domain::MessageId::new(),
+            dag_id: DagNodeId::root(),
+            dag_parent: DagNodeId::root(),
+            tool_call_id: crate::domain::ToolCallId::new(),
+            state: None,
+            diagnostics: SvcRequestDiagnostics::default(),
+            payload: serde_json::to_vec(&serde_json::json!({"key": "val"})).unwrap(),
+        };
+        inner
+            .send_svc_request(request_key, request_msg)
+            .await
+            .unwrap();
+
+        let result = queue.receive_svc_request_mcp().await;
+        assert!(result.is_ok());
+
+        // Still no nodes recorded
+        let nodes = store.get_session_nodes(&session).await.unwrap();
+        assert!(
+            nodes.is_empty(),
+            "receive_svc_request_mcp should not record"
         );
     }
 }

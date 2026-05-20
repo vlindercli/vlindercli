@@ -1,0 +1,17 @@
+[package]
+name = "vlinder-mcp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rmcp = { version = "1.6", features = ["client", "transport-streamable-http-client-reqwest"] }
+vlinder-core = { path = "../vlinder-core" }
+vlinder-nats = { path = "../vlinder-nats" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+tracing = "0.1"
+anyhow = "1"
+
+[lints]
+workspace = true

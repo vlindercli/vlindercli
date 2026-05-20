@@ -1,12 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
+use tokio::sync::mpsc;
 
 use crate::config::CliConfig;
-use vlinder_core::domain::{agent_routing_key, DagNodeId, Fleet, FleetManifest, Registry};
+use vlinder_core::domain::{
+    agent_routing_key, DagNodeId, ExternalSessionId, Fleet, FleetManifest, HarnessEvent, Registry,
+    RunCtl, RunResult, SessionId,
+};
 
-use super::connect::{connect_harness, connect_registry};
-use super::repl;
+use super::connect::{connect_harness, connect_registry, open_dag_store};
+use crate::tui;
 
 #[derive(Subcommand, Debug, PartialEq)]
 pub enum FleetCommand {
@@ -174,6 +178,7 @@ async fn deploy_fleet_models(fleet_dir: &Path, registry: &dyn Registry) -> Vec<S
     deployed
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(name: &str, prompt: Option<&str>) {
     let config = CliConfig::load();
     let registry = connect_registry(&config).await;
@@ -193,7 +198,11 @@ pub async fn run(name: &str, prompt: Option<&str>) {
     let harness = connect_harness(&config).await;
 
     // New session — start fresh, no prior state
-    let (session_id, branch_id) = harness.start_session(entry_agent_name.as_str()).await;
+    let ext_id = ExternalSessionId::new(SessionId::new().as_str())
+        .expect("UUID is always a valid ExternalSessionId");
+    let (session_id, branch_id) = harness
+        .start_session(entry_agent_name.as_str(), ext_id)
+        .await;
 
     tracing::debug!(fleet = %fleet.name, "Fleet session started");
 
@@ -202,26 +211,85 @@ pub async fn run(name: &str, prompt: Option<&str>) {
         fleet.name, entry_agent_name
     );
 
-    let invoke = |input: &str| -> String {
-        let enriched_input = format!("{fleet_context}\n\n{input}");
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(harness.run_agent(
+    if let Some(message) = prompt {
+        // Non-interactive: send single message, print response, exit.
+        let context_input = format!("{fleet_context}\n\n{message}");
+        let ctl = RunCtl::quiet();
+        let result = harness
+            .run_agent(
                 &entry_agent_id,
-                &enriched_input,
-                session_id.clone(),
+                &context_input,
+                session_id,
                 branch_id,
                 false,
                 None,
                 DagNodeId::root(),
-            ))
-        })
-        .unwrap_or_else(|e| format!("[error] {e}"))
-    };
-
-    if let Some(message) = prompt {
-        println!("{}", invoke(message));
+                &ctl,
+            )
+            .await
+            .unwrap_or_else(|e| RunResult {
+                content: Some(format!("[error] {e}")),
+                pending_tool_calls: None,
+                turns: Vec::new(),
+                state_snapshot: None,
+            });
+        println!("{}", result.content.unwrap_or_default());
     } else {
-        repl::run(invoke);
+        // Interactive REPL — create event channel for streaming tool traces.
+        let (event_tx, event_rx) = mpsc::channel::<HarnessEvent>(32);
+
+        // Clone before the `move` closure so they're still available for
+        // the chain walk below.
+        let session_id_for_walk = session_id.clone();
+        let branch_id_for_walk = branch_id;
+
+        let invoke = move |input: String| {
+            let harness = harness.clone();
+            let entry_agent_id = entry_agent_id.clone();
+            let session_id = session_id.clone();
+            let fleet_context = fleet_context.clone();
+            let ctl_tx = event_tx.clone();
+            async move {
+                let enriched_input = format!("{fleet_context}\n\n{input}");
+                let ctl = RunCtl::streaming(ctl_tx);
+                harness
+                    .run_agent(
+                        &entry_agent_id,
+                        &enriched_input,
+                        session_id,
+                        branch_id,
+                        false,
+                        None,
+                        DagNodeId::root(),
+                        &ctl,
+                    )
+                    .await
+                    .unwrap_or_else(|e| RunResult {
+                        content: Some(format!("[error] {e}")),
+                        pending_tool_calls: None,
+                        turns: Vec::new(),
+                        state_snapshot: None,
+                    })
+            }
+        };
+
+        let initial_transcript = if let Some(store) = open_dag_store(&config).await {
+            tui::projection::walk_chain_to_entries(
+                store.as_ref(),
+                &session_id_for_walk,
+                branch_id_for_walk,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to load initial transcript; starting empty");
+                Vec::new()
+            })
+        } else {
+            tracing::warn!("no state service available; starting with empty transcript");
+            Vec::new()
+        };
+
+        tui::run(invoke, event_rx, initial_transcript).await;
     }
 }
 

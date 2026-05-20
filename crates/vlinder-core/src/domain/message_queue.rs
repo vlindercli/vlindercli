@@ -10,10 +10,11 @@
 //! `AckFn` acknowledges successful processing.
 
 use super::{
-    AgentName, CompleteMessage, DataMessageKind, DataRoutingKey, DeleteAgentMessage,
-    DeployAgentMessage, ForkMessage, HarnessType, InfraRoutingKey, InvokeMessage, Operation,
-    PromoteMessage, RequestMessage, ResourceId, ResponseMessage, Sequence, ServiceBackend,
-    SessionRoutingKey, SessionStartMessage, SubmissionId,
+    AgentName, CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey, DeleteAgentMessage,
+    DeployAgentMessage, ExternalSessionId, ForkMessage, HarnessType, InfraRoutingKey,
+    InvokeMessage, Operation, PromoteMessage, RequestMessage, RequestV2, ResourceId,
+    ResponseMessage, ResponseV2, Sequence, ServiceBackend, SessionRoutingKey, SessionStartMessage,
+    SubmissionId, SvcRoutingKey,
 };
 use async_trait::async_trait;
 use std::fmt;
@@ -80,7 +81,11 @@ pub trait MessageQueue: Send + Sync {
     ///
     /// Routing key and payload are separate: the key goes into the subject,
     /// the payload goes into the NATS message body.
-    async fn send_invoke(&self, key: DataRoutingKey, msg: InvokeMessage) -> Result<(), QueueError>;
+    async fn send_invoke(
+        &self,
+        key: DataRoutingKey,
+        msg: InvokeMessage,
+    ) -> Result<DagNodeId, QueueError>;
 
     /// Receive an invoke from the data plane (ADR 121).
     ///
@@ -99,7 +104,7 @@ pub trait MessageQueue: Send + Sync {
         &self,
         _key: DataRoutingKey,
         _msg: CompleteMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         Err(QueueError::SendFailed(
             "send_complete not implemented".into(),
         ))
@@ -124,7 +129,7 @@ pub trait MessageQueue: Send + Sync {
         &self,
         _key: DataRoutingKey,
         _msg: RequestMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         Err(QueueError::SendFailed(
             "send_request not implemented".into(),
         ))
@@ -148,7 +153,7 @@ pub trait MessageQueue: Send + Sync {
         &self,
         _key: DataRoutingKey,
         _msg: ResponseMessage,
-    ) -> Result<(), QueueError> {
+    ) -> Result<DagNodeId, QueueError> {
         Err(QueueError::SendFailed(
             "send_response not implemented".into(),
         ))
@@ -199,6 +204,7 @@ pub trait MessageQueue: Send + Sync {
         &self,
         key: SessionRoutingKey,
         msg: SessionStartMessage,
+        external_id: ExternalSessionId,
     ) -> Result<super::BranchId, QueueError>;
 
     // -------------------------------------------------------------------------
@@ -284,6 +290,51 @@ pub trait MessageQueue: Send + Sync {
         )
         .await
     }
+    // -------------------------------------------------------------------------
+    // V2 harness‑mediated service dispatch (strangler fig)
+    // -------------------------------------------------------------------------
+
+    /// Send a harness‑mediated service request (V2 path).
+    async fn send_svc_request(
+        &self,
+        _key: SvcRoutingKey,
+        _msg: RequestV2,
+    ) -> Result<DagNodeId, QueueError> {
+        Err(QueueError::SendFailed(
+            "send_svc_request not implemented".into(),
+        ))
+    }
+
+    /// Receive a harness‑mediated service request (V2 path).
+    /// Used by service workers (e.g., vlinder‑mcp).
+    /// Subscribes on the MCP wildcard filter — all MCP providers
+    /// and operations. The caller reads service/operation from
+    /// the returned `SvcRoutingKey`.
+    async fn receive_svc_request_mcp(
+        &self,
+    ) -> Result<(SvcRoutingKey, RequestV2, Acknowledgement), QueueError> {
+        Err(QueueError::Timeout)
+    }
+
+    /// Send a harness‑mediated service response (V2 path).
+    async fn send_svc_response(
+        &self,
+        _key: SvcRoutingKey,
+        _msg: ResponseV2,
+    ) -> Result<DagNodeId, QueueError> {
+        Err(QueueError::SendFailed(
+            "send_svc_response not implemented".into(),
+        ))
+    }
+
+    /// Receive a harness‑mediated service response (V2 path).
+    /// Used by the harness to collect tool results.
+    async fn receive_svc_response(
+        &self,
+        _key: &SvcRoutingKey,
+    ) -> Result<(SvcRoutingKey, ResponseV2, Acknowledgement), QueueError> {
+        Err(QueueError::Timeout)
+    }
 }
 
 // --- Request-reply internals ---
@@ -296,10 +347,10 @@ async fn send_and_wait<T, FutSend, FutRecv>(
     receive: impl Fn() -> FutRecv,
 ) -> Result<T, QueueError>
 where
-    FutSend: Future<Output = Result<(), QueueError>>,
+    FutSend: Future<Output = Result<DagNodeId, QueueError>>,
     FutRecv: Future<Output = Result<(T, Acknowledgement), QueueError>>,
 {
-    send().await?;
+    let _ = send().await?;
     loop {
         match receive().await {
             Ok((reply, ack)) => {

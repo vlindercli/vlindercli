@@ -243,7 +243,19 @@ async fn render_session(
                 .await
                 .ok()
                 .flatten()
-                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
+                .map(|(_, msg)| {
+                    msg.current_input
+                        .last()
+                        .map(|m| match m {
+                            vlinder_core::domain::Message::User { content }
+                            | vlinder_core::domain::Message::System { content } => content.clone(),
+                            vlinder_core::domain::Message::Agent { content, .. } => {
+                                content.clone().unwrap_or_default()
+                            }
+                            vlinder_core::domain::Message::Tool { .. } => String::new(),
+                        })
+                        .unwrap_or_default()
+                })
                 .unwrap_or_default();
             let _ = writeln!(
                 messages,
@@ -284,7 +296,19 @@ async fn render_node(
                 .await
                 .ok()
                 .flatten()
-                .map(|(_, msg)| String::from_utf8_lossy(&msg.payload).to_string())
+                .map(|(_, msg)| {
+                    msg.current_input
+                        .last()
+                        .map(|m| match m {
+                            vlinder_core::domain::Message::User { content }
+                            | vlinder_core::domain::Message::System { content } => content.clone(),
+                            vlinder_core::domain::Message::Agent { content, .. } => {
+                                content.clone().unwrap_or_default()
+                            }
+                            vlinder_core::domain::Message::Tool { .. } => String::new(),
+                        })
+                        .unwrap_or_default()
+                })
                 .unwrap_or_default();
             let ts = node.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
             let _ = writeln!(
@@ -303,7 +327,7 @@ async fn render_node(
                 .await
                 .ok()
                 .flatten()
-                .map(|m| String::from_utf8_lossy(&m.payload).to_string())
+                .map(|(_, m)| String::from_utf8_lossy(&m.payload).to_string())
                 .unwrap_or_default();
             let ts = node.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
             let _ = writeln!(
@@ -436,7 +460,9 @@ mod tests {
                 harness_version: "0.1.0".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"summarize this article".to_vec(),
+            current_input: vec![vlinder_core::domain::Message::User {
+                content: "summarize this article".to_string(),
+            }],
         };
         store
             .insert_invoke_node(
@@ -455,8 +481,11 @@ mod tests {
         let complete_msg = vlinder_core::domain::CompleteMessage {
             id: MessageId::new(),
             dag_id: complete_id.clone(),
+            dag_parent: vlinder_core::domain::DagNodeId::root(),
             state: None,
             diagnostics: vlinder_core::domain::RuntimeDiagnostics::placeholder(100),
+            content: None,
+            tool_calls: None,
             payload: b"This article discusses several topics.".to_vec(),
         };
         store
@@ -476,7 +505,8 @@ mod tests {
             .unwrap();
 
         // Create a session so the viewer can look it up
-        let session = Session::new(sess_id(), "pensieve", BranchId::from(1));
+        let ext_id = vlinder_core::domain::ExternalSessionId::new("lib-test-ext-id").unwrap();
+        let session = Session::new(sess_id(), ext_id, "pensieve", BranchId::from(1));
         store.create_session(&session).await.unwrap();
 
         store
@@ -544,9 +574,6 @@ mod tests {
 
         let (status, body) = get_body(port, "/session/d4761d76-dee4-4ebf-9df4-43b52efa4f78");
         assert_eq!(status, 200);
-        // InMemoryDagStore doesn't implement get_invoke_node/get_complete_node,
-        // so payload text won't appear. Just verify the page renders with the
-        // session structure (User/Agent message divs).
         assert!(body.contains("pensieve"), "body: {body}");
         assert!(
             body.contains("msg user"),

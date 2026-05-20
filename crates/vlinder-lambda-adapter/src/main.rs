@@ -138,13 +138,16 @@ async fn send_error_result(
     let error_queue = create_invocation_queue(queue_backend, secret_url, store).await;
     match error_queue {
         Ok(eq) => {
-            shared::send_complete(
+            shared::send_complete_with_parsed(
                 eq.as_ref(),
                 key,
                 agent,
                 format!("[error] {error}").into_bytes(),
                 None,
+                None,
+                None,
                 vlinder_core::domain::RuntimeDiagnostics::placeholder(0),
+                vlinder_core::domain::DagNodeId::root(),
             )
             .await;
         }
@@ -253,7 +256,7 @@ async fn dispatch_loop(
                     }
                     // Dispatch the invocation as usual.
                     let dispatch_result =
-                        shared::dispatch_invoke(&queue, registry, agent_port, &key, &invoke).await;
+                        shared::dispatch_invoke(&queue, registry, &**store, agent_port, &key, &invoke).await;
 
                     match dispatch_result {
                         Ok(result) => {
@@ -296,13 +299,16 @@ async fn dispatch_loop(
                                 &region,
                                 result.duration_ms,
                             );
-                            shared::send_complete(
+                            shared::send_complete_with_parsed(
                                 queue.as_ref(),
                                 &key,
                                 agent,
                                 result.output,
+                                result.content,
+                                result.tool_calls,
                                 final_state,
                                 diagnostics,
+                                result.chain_head,
                             )
                             .await;
                             Ok(())

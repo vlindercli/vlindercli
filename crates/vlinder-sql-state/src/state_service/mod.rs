@@ -15,6 +15,9 @@ pub use client::{ping_state_service_async, GrpcStateClient};
 #[cfg(feature = "server")]
 pub use server::StateServiceServer;
 
+#[cfg(test)]
+mod tests;
+
 /// Generated protobuf types — tonic does not emit `#[automatically_derived]` yet,
 /// so we suppress pedantic lints manually until it does.
 #[allow(

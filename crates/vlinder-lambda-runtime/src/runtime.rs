@@ -316,8 +316,11 @@ impl LambdaRuntime {
                         let complete = CompleteMessage {
                             id: MessageId::new(),
                             dag_id: DagNodeId::root(),
+                            dag_parent: DagNodeId::root(),
                             state: None,
                             diagnostics: RuntimeDiagnostics::placeholder(0),
+                            content: None,
+                            tool_calls: None,
                             payload: format!("[error] Lambda invoke failed: {e}").into_bytes(),
                         };
                         let _ = queue.send_complete(complete_key, complete).await;
@@ -760,7 +763,9 @@ mod tests {
                 harness_version: "test".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello lambda".to_vec(),
+            current_input: vec![vlinder_core::domain::Message::User {
+                content: "hello lambda".to_string(),
+            }],
         };
         queue.send_invoke(key, msg).await.unwrap();
 
@@ -821,7 +826,9 @@ mod tests {
                 harness_version: "test".to_string(),
             },
             dag_parent: DagNodeId::root(),
-            payload: b"hello".to_vec(),
+            current_input: vec![vlinder_core::domain::Message::User {
+                content: "hello".to_string(),
+            }],
         };
         queue.send_invoke(key, msg).await.unwrap();
 

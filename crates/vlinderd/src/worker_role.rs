@@ -44,12 +44,16 @@ pub enum WorkerRole {
     /// Catalog service — gRPC interface to model catalogs (Ollama, `OpenRouter`)
     #[cfg(any(feature = "ollama", feature = "openrouter"))]
     Catalog,
+    /// MCP service worker — dispatches tool calls to MCP servers
+    Mcp,
     /// Infra plane worker — processes deploy/delete agent messages
     Infra,
     /// DAG git worker — writes messages as git commits for time-travel
     DagGit,
     /// Session viewer HTTP server — read-only conversation browser
     SessionViewer,
+    /// OpenAI-compatible API server (Chat Completions, Models, Embeddings stub)
+    ApiServer,
 }
 
 impl WorkerRole {
@@ -83,9 +87,11 @@ impl WorkerRole {
             WorkerRole::State => "state",
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             WorkerRole::Catalog => "catalog",
+            WorkerRole::Mcp => "mcp",
             WorkerRole::Infra => "infra",
             WorkerRole::DagGit => "dag-git",
             WorkerRole::SessionViewer => "session-viewer",
+            WorkerRole::ApiServer => "api-server",
         }
     }
 
@@ -110,9 +116,11 @@ impl WorkerRole {
             WorkerRole::State => "State service",
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             WorkerRole::Catalog => "Catalog service",
+            WorkerRole::Mcp => "MCP service worker",
             WorkerRole::Infra => "Infra plane worker",
             WorkerRole::DagGit => "DAG git worker",
             WorkerRole::SessionViewer => "Session viewer HTTP server",
+            WorkerRole::ApiServer => "OpenAI-compatible API server",
         }
     }
 }
@@ -146,9 +154,11 @@ impl FromStr for WorkerRole {
             "state" => Ok(WorkerRole::State),
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             "catalog" => Ok(WorkerRole::Catalog),
+            "mcp" => Ok(WorkerRole::Mcp),
             "infra" => Ok(WorkerRole::Infra),
             "dag-git" => Ok(WorkerRole::DagGit),
             "session-viewer" => Ok(WorkerRole::SessionViewer),
+            "api-server" => Ok(WorkerRole::ApiServer),
             _ => Err(ParseWorkerRoleError(s.to_string())),
         }
     }
@@ -249,9 +259,11 @@ mod tests {
             WorkerRole::State,
             #[cfg(any(feature = "ollama", feature = "openrouter"))]
             WorkerRole::Catalog,
+            WorkerRole::Mcp,
             WorkerRole::Infra,
             WorkerRole::DagGit,
             WorkerRole::SessionViewer,
+            WorkerRole::ApiServer,
         ] {
             let env_val = role.as_env_value();
             let parsed: WorkerRole = env_val.parse().unwrap();

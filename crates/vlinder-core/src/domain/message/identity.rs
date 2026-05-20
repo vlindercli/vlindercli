@@ -42,6 +42,41 @@ impl From<String> for MessageId {
     }
 }
 
+// --- ToolCallId ---
+
+/// Unique identifier for a tool call within a turn.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ToolCallId(String);
+
+impl ToolCallId {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for ToolCallId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for ToolCallId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for ToolCallId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
 // --- DagNodeId (ADR 067) ---
 
 /// Content-addressed hash identifying a single DAG node.
@@ -85,8 +120,11 @@ impl From<String> for DagNodeId {
 
 /// Unique identifier for a user-initiated submission.
 ///
-/// Value is a git commit SHA — directly pasteable into `git show`.
-/// A submission groups all messages related to a single user request.
+/// Minted once per user turn (in `Harness::run_agent`) and carried through
+/// every cycle of the invoke/reinvoke loop — so all messages belonging to
+/// one user request share a single `SubmissionId`.
+///
+/// Value is a UUID (v4).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SubmissionId(String);
@@ -253,6 +291,46 @@ impl fmt::Display for StateHash {
 impl From<String> for StateHash {
     fn from(s: String) -> Self {
         Self(s)
+    }
+}
+
+// --- ExternalSessionId ---
+
+/// User-supplied external identifier for a session.
+///
+/// Customers can bring their own ID (e.g., `ticket-123`, `user_42`).
+/// Allowed characters: `[a-zA-Z0-9_-]`, length 1-128.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ExternalSessionId(String);
+
+impl ExternalSessionId {
+    pub fn new(s: &str) -> Result<Self, String> {
+        if s.is_empty() {
+            return Err("external session ID must not be empty".into());
+        }
+        if s.len() > 128 {
+            return Err("external session ID must be ≤128 chars".into());
+        }
+        if !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(format!(
+                "external session ID contains invalid chars (allowed: a-z A-Z 0-9 _ -): {s}"
+            ));
+        }
+        Ok(Self(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ExternalSessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -644,5 +722,57 @@ mod tests {
         assert!(set.contains(&HarnessType::Cli));
         assert!(set.contains(&HarnessType::Web));
         assert!(!set.contains(&HarnessType::Api));
+    }
+
+    mod external_session_id_tests {
+        use super::ExternalSessionId;
+
+        #[test]
+        fn valid_simple() {
+            assert!(ExternalSessionId::new("ticket-123").is_ok());
+        }
+
+        #[test]
+        fn valid_underscore() {
+            assert!(ExternalSessionId::new("user_42").is_ok());
+        }
+
+        #[test]
+        fn valid_uuid() {
+            let uuid = uuid::Uuid::new_v4().to_string();
+            assert!(ExternalSessionId::new(&uuid).is_ok());
+        }
+
+        #[test]
+        fn reject_empty() {
+            assert!(ExternalSessionId::new("").is_err());
+        }
+
+        #[test]
+        fn reject_dot() {
+            assert!(ExternalSessionId::new("bad.id").is_err());
+        }
+
+        #[test]
+        fn reject_star() {
+            assert!(ExternalSessionId::new("bad*id").is_err());
+        }
+
+        #[test]
+        fn reject_space() {
+            assert!(ExternalSessionId::new("bad id").is_err());
+        }
+
+        #[test]
+        fn reject_too_long() {
+            let long = "a".repeat(129);
+            assert!(ExternalSessionId::new(&long).is_err());
+        }
+
+        #[test]
+        fn accept_max_length() {
+            let max = "a".repeat(128);
+            assert!(ExternalSessionId::new(&max).is_ok());
+        }
     }
 }

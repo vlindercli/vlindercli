@@ -5,10 +5,11 @@ edition = "2021"
 publish = false
 
 [features]
-default = ["ollama", "openrouter", "sqlite-kv", "sqlite-vec"]
+default = ["ollama", "openrouter", "sqlite-kv", "sqlite-vec", "mcp"]
 amqp = ["dep:vlinder-amqp"]
 ollama = ["dep:vlinder-ollama"]
 openrouter = ["dep:vlinder-infer-openrouter"]
+mcp = ["dep:vlinder-mcp"]
 sqlite-kv = ["dep:vlinder-sqlite-kv"]
 sqlite-vec = ["dep:vlinder-sqlite-vec"]
 
@@ -18,8 +19,9 @@ vlinder-nats = { path = "../vlinder-nats", default-features = false, features = 
 vlinder-amqp = { path = "../vlinder-amqp", optional = true }
 vlinder-sql-registry = { path = "../vlinder-sql-registry", default-features = false, features = ["client"] }
 vlinder-sql-state = { path = "../vlinder-sql-state", default-features = false, features = ["client"] }
-vlinder-ollama = { path = "../vlinder-ollama", optional = true, default-features = false, features = ["routing"] }
-vlinder-infer-openrouter = { path = "../vlinder-infer-openrouter", optional = true, default-features = false, features = ["routing"] }
+vlinder-mcp = { path = "../vlinder-mcp", optional = true }
+vlinder-ollama = { path = "../vlinder-ollama", optional = true, default-features = false, features = ["routing", "toolcall"] }
+vlinder-infer-openrouter = { path = "../vlinder-infer-openrouter", optional = true, default-features = false, features = ["routing", "toolcall"] }
 vlinder-sqlite-vec = { path = "../vlinder-sqlite-vec", optional = true, default-features = false, features = ["routing"] }
 vlinder-sqlite-kv = { path = "../vlinder-sqlite-kv", optional = true, default-features = false, features = ["routing"] }
 axum = "0.7"
@@ -28,6 +30,12 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = "0.1"
 ureq = "2"
+
+[dev-dependencies]
+chrono = "0.4"
+tower = "0.5"
+vlinder-sql-state = { path = "../vlinder-sql-state", features = ["server"] }
+tempfile = "3"
 
 [lints]
 workspace = true

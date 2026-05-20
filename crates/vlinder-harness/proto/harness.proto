@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package vlinder.harness;
 
+import "google/protobuf/empty.proto";
+
 // =============================================================================
 // Harness Service — agent session and invocation (ADR 101)
 // =============================================================================
@@ -11,11 +13,13 @@ service Harness {
   rpc Ping(PingRequest) returns (SemVer);
 
   // Start a conversation session for an agent (ADR 054).
-  // Establishes all per-run context: timeline, state, DAG parent.
   rpc StartSession(StartSessionRequest) returns (StartSessionResponse);
 
-  // Run an agent to completion — send input, block for response.
-  rpc RunAgent(RunAgentRequest) returns (RunAgentResponse);
+  // Run an agent to completion with bidirectional streaming.
+  rpc RunAgent(stream RunAgentClientMsg) returns (stream RunAgentServerMsg);
+
+  // Run agent with caller-provided messages, bidirectional streaming.
+  rpc RunAgentWithMessages(stream RunAgentClientMsg) returns (stream RunAgentServerMsg);
 
   // Create a timeline fork by sending ForkMessage through the queue.
   rpc ForkTimeline(ForkTimelineRequest) returns (ForkTimelineResponse);
@@ -37,11 +41,12 @@ message SemVer {
 }
 
 // =============================================================================
-// Messages
+// Sessions
 // =============================================================================
 
 message StartSessionRequest {
   string agent_name = 1;
+  string external_id = 8;
 }
 
 message StartSessionResponse {
@@ -49,20 +54,147 @@ message StartSessionResponse {
   int64 default_branch_id = 2;
 }
 
-message RunAgentRequest {
-  string agent_id = 1;  // ResourceId URI
-  string input = 2;
-  string branch_id = 3;
-  bool sealed = 4;
-  optional string initial_state = 5;
-  string dag_parent = 6;
-  string session_id = 7;
+// =============================================================================
+// Bidirectional streaming messages for RunAgent / RunAgentWithMessages
+// =============================================================================
+
+message RunAgentClientMsg {
+  oneof kind {
+    RunAgentStart start = 1;
+    ApprovalDecisionMsg approval = 2;
+    CancelMsg cancel = 3;
+  }
 }
 
-message RunAgentResponse {
-  string output = 1;
-  optional string error = 2;
+message RunAgentStart {
+  string agent_id = 1;
+  string input = 2;
+  string session_id = 3;
+  string branch_id = 4;
+  bool sealed = 5;
+  optional string initial_state = 6;
+  string dag_parent = 7;
+  ApprovalModeProto approval_mode = 8;
+  // JSON-encoded Vec<Message> for run_agent_with_messages path.
+  // When non-empty, the server routes to run_agent_with_messages instead of run_agent.
+  string messages_json = 9;
 }
+
+enum ApprovalModeProto {
+  AUTONOMOUS = 0;
+  REQUIRE_APPROVAL = 1;
+}
+
+message ApprovalDecisionMsg {
+  string approval_id = 1;
+  oneof decision {
+    google.protobuf.Empty approve = 2;
+    string reject_reason = 3;
+  }
+}
+
+message CancelMsg {
+  // Reserved for future HITL cancellation support.
+  // No fields today — the message itself is the signal.
+}
+
+// =============================================================================
+// Server → client messages
+// =============================================================================
+
+message RunAgentServerMsg {
+  oneof kind {
+    HarnessEventProto event = 1;
+    RunResultProto result = 2;   // terminal on success
+    string error = 3;            // terminal on failure
+  }
+}
+
+// =============================================================================
+// Harness event types
+// =============================================================================
+
+message HarnessEventProto {
+  oneof kind {
+    RunStartedEvt run_started = 1;
+    TurnStartedEvt turn_started = 2;
+    AssistantContentEvt assistant_content = 3;
+    ToolCallApprovalRequiredEvt approval_required = 4;
+    ToolCallStartedEvt tool_call_started = 5;
+    ToolCallCompletedEvt tool_call_completed = 6;
+    TurnCompletedEvt turn_completed = 7;
+  }
+}
+
+message RunStartedEvt {
+  string agent_id = 1;
+  string session_id = 2;
+  string branch_id = 3;
+}
+
+message TurnStartedEvt {
+  uint32 turn_index = 1;
+}
+
+message AssistantContentEvt {
+  uint32 turn_index = 1;
+  string text = 2;
+}
+
+message ToolCallApprovalRequiredEvt {
+  string approval_id = 1;
+  ToolCallProto tool_call = 2;
+}
+
+message ToolCallStartedEvt {
+  ToolCallProto tool_call = 1;
+}
+
+message ToolCallCompletedEvt {
+  ToolTraceProto trace = 1;
+}
+
+message TurnCompletedEvt {
+  uint32 turn_index = 1;
+  TurnTraceProto turn = 2;
+}
+
+// =============================================================================
+// Domain type protos
+// =============================================================================
+
+message ToolCallProto {
+  string id = 1;
+  string name = 2;
+  bytes arguments = 3; // JSON-encoded
+}
+
+message ToolResultProto {
+  string tool_call_id = 1;
+  bytes content = 2;
+}
+
+message ToolTraceProto {
+  ToolCallProto tool_call = 1;
+  ToolResultProto result = 2;
+  uint64 duration_ms = 3;
+}
+
+message TurnTraceProto {
+  optional string assistant_content = 1;
+  repeated ToolTraceProto tool_calls = 2;
+}
+
+message RunResultProto {
+  optional string content = 1;
+  repeated ToolCallProto pending_tool_calls = 2;
+  repeated TurnTraceProto turns = 3;
+  optional string state_snapshot = 4;
+}
+
+// =============================================================================
+// Legacy / Flat messages (preserved for existing RPCs)
+// =============================================================================
 
 message ForkTimelineRequest {
   string agent_name = 1;
