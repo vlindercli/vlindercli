@@ -456,6 +456,7 @@ impl Config {
     /// Panics if no config file exists — create it manually.
     fn load_from_file() -> Self {
         let config_path = config_path();
+        println!("----Loading configuration from {} ---", config_path.display());
         assert!(
             config_path.exists(),
             "Config file not found: {}\n\
