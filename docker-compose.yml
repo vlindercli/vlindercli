@@ -19,7 +19,7 @@ services:
       - "4222:4222"
     command: ["-js"]
   ollama:
-    image: docker.io/library/ollama/ollama:latest
+    image: docker.io/ollama/ollama:latest
     container_name: ollama
     ports:
       - "11434:11434"
