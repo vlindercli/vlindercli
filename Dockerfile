@@ -1,10 +1,11 @@
-FROM rust:latest
+FROM rust:latest AS builder
+RUN apt-get update && apt-get install -y protobuf-compiler
 
 WORKDIR /app
 COPY . .
 
-RUN apt-get update && apt-get install -y protobuf-compiler
-RUN cargo install sccache --locked
+
+RUN #cargo install sccache --locked
 
 RUN cargo build --release
 

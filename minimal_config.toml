@@ -1,0 +1,12 @@
+[logging]
+level = "info"
+
+[ollama]
+endpoint = "http://ollama:11434"
+
+[queue]
+backend = "nats"
+nats_url = "nats://nats-server:4222"
+
+[state]
+backend = "grpc" 

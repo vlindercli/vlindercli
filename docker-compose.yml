@@ -4,15 +4,14 @@ services:
     depends_on:
       - nats
       - ollama
+      - data-loader
     ports:
       - "8080:8080"
     environment:
       - VLINDER_DIR=/config
       - RUST_BACKTRACE=1
     volumes:
-      - type: bind
-        source: ./
-        target: /config
+      - vlinder_data:/config
   nats:
     image: nats:latest
     container_name: nats-server
@@ -24,3 +23,15 @@ services:
     container_name: ollama
     ports:
       - "11434:11434"
+    volumes:
+      - ollama_storage:/root/.ollama
+  data-loader:
+    image: alpine
+    container_name: minimal-config-data-loader
+    volumes:
+      - vlinder_data:/config        # Mount the named volume
+      - ./:/source:ro     # Mount your local folder (Read-Only)
+    command: sh -c "cp -rp /source/minimal_config.toml /config/config.toml"
+volumes:
+  vlinder_data:
+  ollama_storage:
