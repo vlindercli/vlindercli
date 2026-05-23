@@ -13,20 +13,20 @@ services:
     volumes:
       - vlinder_data:/config
   nats:
-    image: nats:latest
+    image: docker.io/library/nats:latest
     container_name: nats-server
     ports:
       - "4222:4222"
     command: ["-js"]
   ollama:
-    image: ollama/ollama:latest
+    image: docker.io/library/ollama/ollama:latest
     container_name: ollama
     ports:
       - "11434:11434"
     volumes:
       - ollama_storage:/root/.ollama
   data-loader:
-    image: alpine
+    image: docker.io/library/alpine
     container_name: minimal-config-data-loader
     volumes:
       - vlinder_data:/config        # Mount the named volume
