@@ -54,6 +54,7 @@ mod tool_result;
 pub mod tool_trace;
 pub mod wire;
 pub mod workers;
+mod workspace_store;
 
 // ============================================================================
 // Agent & Fleet
@@ -173,6 +174,7 @@ pub use session::Session;
 
 pub use identity::{ensure_agent_identity, AgentIdentity, IdentityError};
 pub use secret_store::{InMemorySecretStore, SecretStore, SecretStoreError};
+pub use workspace_store::{WorkspaceError, WorkspaceStore};
 
 // ============================================================================
 // Registry
