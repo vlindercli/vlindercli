@@ -79,7 +79,7 @@ fn agent_domain_to_proto_preserves_fields() {
         requirements: Requirements {
             models: HashMap::from([("phi3".to_string(), "phi3".to_string())]),
             services,
-            mounts: HashMap::new(),
+            mount: None,
             mcp: Vec::new(),
         },
         object_storage: Some(ResourceId::new("sqlite:///data/obj.db")),
@@ -126,7 +126,7 @@ fn agent_proto_to_domain_round_trip() {
         }],
 
         models: vec![],
-        mounts: vec![],
+        mount: None,
         mcp: vec![],
         object_storage: None,
         vector_storage: None,
@@ -168,7 +168,7 @@ fn agent_models_survive_proto_round_trip() {
                 ("embedding_model".to_string(), "nomic-embed".to_string()),
             ]),
             services,
-            mounts: HashMap::new(),
+            mount: None,
             mcp: Vec::new(),
         },
         object_storage: None,
@@ -210,7 +210,7 @@ fn agent_proto_missing_id_fails() {
         services: vec![],
 
         models: vec![],
-        mounts: vec![],
+        mount: None,
         mcp: vec![],
         object_storage: None,
         vector_storage: None,
@@ -234,7 +234,7 @@ fn agent_mcp_survives_proto_round_trip() {
         requirements: Requirements {
             models: HashMap::new(),
             services: HashMap::new(),
-            mounts: HashMap::new(),
+            mount: None,
             mcp: vec!["brave".to_string(), "fetch".to_string()],
         },
         object_storage: None,

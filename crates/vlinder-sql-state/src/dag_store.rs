@@ -2435,7 +2435,7 @@ mod tests {
             requirements: vlinder_core::domain::RequirementsConfig {
                 models: std::collections::HashMap::new(),
                 services: std::collections::HashMap::new(),
-                mounts: std::collections::HashMap::new(),
+                mount: None,
                 mcp: Vec::new(),
             },
             object_storage: None,

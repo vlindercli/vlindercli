@@ -123,18 +123,10 @@ impl From<Agent> for proto::Agent {
                 .into_iter()
                 .map(|(alias, name)| proto::ModelAlias { alias, uri: name })
                 .collect(),
-            mounts: agent
+            mount: agent
                 .requirements
-                .mounts
-                .into_iter()
-                .map(|(name, cfg)| proto::MountEntry {
-                    name,
-                    s3: cfg.s3,
-                    path: cfg.path,
-                    endpoint: cfg.endpoint,
-                    secret: cfg.secret,
-                })
-                .collect(),
+                .mount
+                .map(|w| proto::MountEntry { path: w.path }),
             mcp: agent.requirements.mcp,
         }
     }
@@ -177,21 +169,7 @@ impl TryFrom<proto::Agent> for Agent {
             requirements: Requirements {
                 models: agent.models.into_iter().map(|m| (m.alias, m.uri)).collect(),
                 services,
-                mounts: agent
-                    .mounts
-                    .into_iter()
-                    .map(|m| {
-                        (
-                            m.name,
-                            MountConfig {
-                                s3: m.s3,
-                                path: m.path,
-                                endpoint: m.endpoint,
-                                secret: m.secret,
-                            },
-                        )
-                    })
-                    .collect(),
+                mount: agent.mount.map(|w| MountConfig { path: w.path }),
                 mcp: agent.mcp,
             },
             object_storage: agent

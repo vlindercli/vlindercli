@@ -153,23 +153,15 @@ impl From<toml::de::Error> for ParseError {
     }
 }
 
-/// S3 mount declaration as declared in agent.toml (ADR 107).
+/// Mount declaration as declared in agent.toml (ADR 133).
 ///
-/// Each mount maps an S3 bucket (or prefix) to a read-only directory
-/// inside the agent container. The platform creates a Podman volume
-/// backed by `s3fs-fuse` for each declared mount.
+/// Declares where inside the agent container the platform's versioned
+/// workspace is bind-mounted. The mount is per-(agent, session, branch),
+/// CoW-backed by ZFS, and snapshotted on every invoke complete.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MountConfig {
-    /// S3 bucket and optional prefix (e.g. "vlinder-support/v0.1.0/")
-    pub s3: String,
-    /// Mount point inside the container (e.g. "/knowledge")
+    /// Mount point inside the container (e.g. "/workspaces").
     pub path: String,
-    /// S3-compatible endpoint URL (optional; defaults to AWS)
-    #[serde(default)]
-    pub endpoint: Option<String>,
-    /// Credential reference for private buckets (optional)
-    #[serde(default)]
-    pub secret: Option<String>,
 }
 
 /// Requirements as declared in agent.toml
@@ -183,9 +175,10 @@ pub struct RequirementsConfig {
     pub models: HashMap<String, String>,
     #[serde(default)]
     pub services: HashMap<ServiceType, ServiceConfig>,
-    /// S3 mount declarations (ADR 107).
+    /// Versioned mount (ADR 133). Absent → agent runs without
+    /// a versioned workspace.
     #[serde(default)]
-    pub mounts: HashMap<String, MountConfig>,
+    pub mount: Option<MountConfig>,
     /// MCP provider names (references registered MCP servers by name).
     #[serde(default)]
     pub mcp: Vec<String>,
@@ -492,7 +485,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Mount parsing (ADR 107)
+    // Mount parsing (ADR 133)
     // ========================================================================
 
     #[test]
@@ -503,56 +496,20 @@ mod tests {
             runtime = "container"
             executable = "localhost/support:latest"
 
-            [requirements.mounts.knowledge]
-            s3 = "vlinder-support/v0.1.0/"
-            path = "/knowledge"
+            [requirements.mount]
+            path = "/workspaces"
         "#;
 
         let manifest: AgentManifest = toml::from_str(toml).unwrap();
-        let mount = &manifest.requirements.mounts["knowledge"];
-        assert_eq!(mount.s3, "vlinder-support/v0.1.0/");
-        assert_eq!(mount.path, "/knowledge");
-        assert!(mount.endpoint.is_none());
-        assert!(mount.secret.is_none());
+        let mount = manifest.requirements.mount.as_ref().unwrap();
+        assert_eq!(mount.path, "/workspaces");
     }
 
     #[test]
-    fn parse_manifest_with_multiple_mounts() {
-        let toml = r#"
-            name = "reader"
-            description = "Multi-mount agent"
-            runtime = "container"
-            executable = "localhost/reader:latest"
-
-            [requirements.mounts.knowledge]
-            s3 = "vlinder-support/v0.1.0/"
-            path = "/knowledge"
-
-            [requirements.mounts.datasets]
-            s3 = "team-datasets/current/"
-            path = "/data"
-            endpoint = "https://r2.example.com"
-        "#;
-
-        let manifest: AgentManifest = toml::from_str(toml).unwrap();
-        assert_eq!(manifest.requirements.mounts.len(), 2);
-
-        let knowledge = &manifest.requirements.mounts["knowledge"];
-        assert_eq!(knowledge.s3, "vlinder-support/v0.1.0/");
-        assert_eq!(knowledge.path, "/knowledge");
-        assert!(knowledge.endpoint.is_none());
-
-        let datasets = &manifest.requirements.mounts["datasets"];
-        assert_eq!(datasets.s3, "team-datasets/current/");
-        assert_eq!(datasets.path, "/data");
-        assert_eq!(datasets.endpoint.as_deref(), Some("https://r2.example.com"));
-    }
-
-    #[test]
-    fn parse_manifest_with_no_mounts() {
+    fn parse_manifest_without_mount() {
         let toml = r#"
             name = "simple"
-            description = "No mounts"
+            description = "No mount"
             runtime = "container"
             executable = "localhost/simple:latest"
 
@@ -560,57 +517,18 @@ mod tests {
         "#;
 
         let manifest: AgentManifest = toml::from_str(toml).unwrap();
-        assert!(manifest.requirements.mounts.is_empty());
-    }
-
-    #[test]
-    fn parse_manifest_with_endpoint_override() {
-        let toml = r#"
-            name = "local"
-            description = "LocalStack agent"
-            runtime = "container"
-            executable = "localhost/local:latest"
-
-            [requirements.mounts.knowledge]
-            s3 = "vlinder-support/v0.1.0/"
-            path = "/knowledge"
-            endpoint = "http://host.containers.internal:4566"
-        "#;
-
-        let manifest: AgentManifest = toml::from_str(toml).unwrap();
-        let mount = &manifest.requirements.mounts["knowledge"];
-        assert_eq!(
-            mount.endpoint.as_deref(),
-            Some("http://host.containers.internal:4566")
-        );
-    }
-
-    #[test]
-    fn parse_manifest_mount_missing_s3_fails() {
-        let toml = r#"
-            name = "bad"
-            description = "Missing s3 field"
-            runtime = "container"
-            executable = "localhost/bad:latest"
-
-            [requirements.mounts.knowledge]
-            path = "/knowledge"
-        "#;
-
-        let result: Result<AgentManifest, _> = toml::from_str(toml);
-        assert!(result.is_err());
+        assert!(manifest.requirements.mount.is_none());
     }
 
     #[test]
     fn parse_manifest_mount_missing_path_fails() {
         let toml = r#"
             name = "bad"
-            description = "Missing path field"
+            description = "Missing path"
             runtime = "container"
             executable = "localhost/bad:latest"
 
-            [requirements.mounts.knowledge]
-            s3 = "vlinder-support/v0.1.0/"
+            [requirements.mount]
         "#;
 
         let result: Result<AgentManifest, _> = toml::from_str(toml);
@@ -625,14 +543,13 @@ mod tests {
             runtime = "container"
             executable = "localhost/inline:latest"
 
-            [requirements.mounts]
-            knowledge = { s3 = "vlinder-support/v0.1.0/", path = "/knowledge" }
+            [requirements]
+            mount = { path = "/workspaces" }
         "#;
 
         let manifest: AgentManifest = toml::from_str(toml).unwrap();
-        let mount = &manifest.requirements.mounts["knowledge"];
-        assert_eq!(mount.s3, "vlinder-support/v0.1.0/");
-        assert_eq!(mount.path, "/knowledge");
+        let mount = manifest.requirements.mount.as_ref().unwrap();
+        assert_eq!(mount.path, "/workspaces");
     }
     // ========================================================================
     // MCP provider parsing (now Vec<String> of names)

@@ -178,8 +178,8 @@ pub struct Requirements {
     /// e.g., `inference_model` → "claude-sonnet"
     pub models: HashMap<String, String>,
     pub services: HashMap<ServiceType, ServiceConfig>,
-    /// S3 mount declarations (ADR 107).
-    pub mounts: HashMap<String, MountConfig>,
+    /// Versioned mount declaration (ADR 133).
+    pub mount: Option<MountConfig>,
     /// MCP provider names (references registered MCP servers by name).
     pub mcp: Vec<String>,
 }
@@ -190,7 +190,7 @@ impl Requirements {
         Requirements {
             models: config.models,
             services: config.services,
-            mounts: config.mounts,
+            mount: config.mount,
             mcp: config.mcp,
         }
     }
@@ -416,7 +416,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn from_toml_with_mounts() {
+    fn from_toml_with_mount() {
         let agent = make_agent(
             r#"
             name = "support"
@@ -424,26 +424,18 @@ mod tests {
             runtime = "container"
             executable = "localhost/support:latest"
 
-            [requirements.mounts.knowledge]
-            s3 = "vlinder-support/v0.1.0/"
-            path = "/knowledge"
-            endpoint = "http://host.containers.internal:4566"
+            [requirements.mount]
+            path = "/workspaces"
         "#,
         )
         .unwrap();
 
-        assert_eq!(agent.requirements.mounts.len(), 1);
-        let mount = &agent.requirements.mounts["knowledge"];
-        assert_eq!(mount.s3, "vlinder-support/v0.1.0/");
-        assert_eq!(mount.path, "/knowledge");
-        assert_eq!(
-            mount.endpoint.as_deref(),
-            Some("http://host.containers.internal:4566")
-        );
+        let mount = agent.requirements.mount.as_ref().unwrap();
+        assert_eq!(mount.path, "/workspaces");
     }
 
     #[test]
-    fn from_toml_without_mounts_has_empty_map() {
+    fn from_toml_without_mount() {
         let agent = make_agent(
             r#"
             name = "echo"
@@ -456,11 +448,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(agent.requirements.mounts.is_empty());
+        assert!(agent.requirements.mount.is_none());
     }
 
     #[test]
-    fn config_differs_on_mounts() {
+    fn config_differs_on_mount() {
         let a = make_agent(
             r#"
             name = "echo"
@@ -478,9 +470,8 @@ mod tests {
             description = "Echoes"
             runtime = "container"
             executable = "localhost/echo:latest"
-            [requirements.mounts.knowledge]
-            s3 = "vlinder-support/v0.1.0/"
-            path = "/knowledge"
+            [requirements.mount]
+            path = "/workspaces"
         "#,
         )
         .unwrap();

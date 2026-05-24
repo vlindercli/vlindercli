@@ -180,7 +180,7 @@ impl StoredAgent {
         let requirements = RequirementsJson {
             models: agent.requirements.models.clone(),
             services: agent.requirements.services.clone(),
-            mounts: agent.requirements.mounts.clone(),
+            mount: agent.requirements.mount.clone(),
             mcp: agent.requirements.mcp.clone(),
         };
 
@@ -251,7 +251,7 @@ impl StoredAgent {
             requirements: Requirements {
                 models,
                 services: requirements.services,
-                mounts: requirements.mounts,
+                mount: requirements.mount,
                 mcp: requirements.mcp,
             },
         })
@@ -264,7 +264,7 @@ struct RequirementsJson {
     models: HashMap<String, String>,
     services: HashMap<ServiceType, ServiceConfig>,
     #[serde(default)]
-    mounts: HashMap<String, MountConfig>,
+    mount: Option<MountConfig>,
     #[serde(default)]
     mcp: Vec<String>,
 }
@@ -289,7 +289,7 @@ mod tests {
             requirements: Requirements {
                 models: HashMap::new(),
                 services: HashMap::new(),
-                mounts: HashMap::new(),
+                mount: None,
                 mcp: Vec::new(),
             },
         }
@@ -324,7 +324,7 @@ mod tests {
             requirements: Requirements {
                 models,
                 services,
-                mounts: HashMap::new(),
+                mount: None,
                 mcp: Vec::new(),
             },
         }

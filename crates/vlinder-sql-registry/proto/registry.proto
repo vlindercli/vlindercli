@@ -83,7 +83,7 @@ message Agent {
   VectorStorageConfig vector_storage = 7;
   string runtime = 8;     // Runtime type (e.g., "container")
   string executable = 9;  // Native artifact ref (e.g., OCI image)
-  repeated MountEntry mounts = 10;  // S3-backed read-only mounts (ADR 107)
+  optional MountEntry mount = 10;  // Versioned mount (ADR 133)
   repeated ModelAlias models = 11;  // Agent's model alias → URI map
   repeated string mcp = 12;  // MCP provider names
 }
@@ -93,13 +93,9 @@ message ModelAlias {
   string uri = 2;       // Registry model_path (e.g., "ollama://localhost:11434/phi3:latest")
 }
 
-// S3 mount declaration (ADR 107).
+// Versioned mount (ADR 133).
 message MountEntry {
-  string name = 1;              // Mount key (e.g., "knowledge")
-  string s3 = 2;                // Bucket/prefix (e.g., "vlinder-support/v0.1.0/")
-  string path = 3;              // Container mount point (e.g., "/knowledge")
-  optional string endpoint = 4; // S3-compatible endpoint URL
-  optional string secret = 5;   // Credential reference
+  string path = 1;              // Container mount point (e.g., "/workspaces")
 }
 
 message ServiceEntry {

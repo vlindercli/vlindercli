@@ -880,7 +880,7 @@ mod tests {
             requirements: RequirementsConfig {
                 models: model_map,
                 services: std::collections::HashMap::new(),
-                mounts: std::collections::HashMap::new(),
+                mount: None,
                 mcp: Vec::new(),
             },
             object_storage: None,

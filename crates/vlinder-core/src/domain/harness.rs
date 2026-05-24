@@ -1243,7 +1243,7 @@ mod tests {
             requirements: crate::domain::Requirements {
                 models: std::collections::HashMap::new(),
                 services: std::collections::HashMap::new(),
-                mounts: std::collections::HashMap::new(),
+                mount: None,
                 mcp: Vec::new(),
             },
             id: ResourceId::new("http://127.0.0.1:9000/agents/test-agent"),
@@ -1526,7 +1526,7 @@ mod tests {
             requirements: crate::domain::Requirements {
                 models: std::collections::HashMap::new(),
                 services: std::collections::HashMap::new(),
-                mounts: std::collections::HashMap::new(),
+                mount: None,
                 mcp: vec!["server-everything".to_string()],
             },
             id: ResourceId::new("http://127.0.0.1:9000/agents/test-agent"),

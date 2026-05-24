@@ -367,7 +367,7 @@ mod tests {
             requirements: Requirements {
                 models: HashMap::new(),
                 services: HashMap::new(),
-                mounts: HashMap::new(),
+                mount: None,
                 mcp: Vec::new(),
             },
         }
@@ -482,7 +482,7 @@ mod tests {
             requirements: Requirements {
                 models,
                 services,
-                mounts: HashMap::new(),
+                mount: None,
                 mcp: Vec::new(),
             },
         };
