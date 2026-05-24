@@ -28,7 +28,14 @@
 # =============================================================================
 
 # Build what's needed for local testing (incremental — fast when little changed)
-build-everything: build build-sidecar
+build-everything: build build-sidecar build-dev-machine
+
+# Build the vlinder-dev-machine bootc OCI image (ZFS + Podman dev VM).
+# Sibling repo at ../vlinder-dev-machine. After this, run
+# `just -f ../vlinder-dev-machine/justfile apply` to activate it on the
+# Podman machine (reboots the VM, so kept out of build-everything).
+build-dev-machine:
+    just -f ../vlinder-dev-machine/justfile build
 
 # Build all workspace crates (incremental — only recompiles what changed)
 build:
