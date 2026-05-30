@@ -46,6 +46,7 @@ COPY crates/vlinder-podman-sidecar/stubs/vlinder-lambda-runtime.toml crates/vlin
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-git-dag.toml crates/vlinder-git-dag/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-s3-storage.toml crates/vlinder-s3-storage/Cargo.toml
 COPY crates/vlinder-podman-sidecar/stubs/vlinder-openai-server.toml crates/vlinder-openai-server/Cargo.toml
+COPY crates/vlinder-podman-sidecar/stubs/vlinder-zfs-storage.toml crates/vlinder-zfs-storage/Cargo.toml
 
 
 # Stub out src directories so Cargo can resolve the workspace
@@ -70,7 +71,8 @@ RUN mkdir -p crates/vlinder-core/src && echo "" > crates/vlinder-core/src/lib.rs
     mkdir -p crates/vlinder-lambda-runtime/src && echo "" > crates/vlinder-lambda-runtime/src/lib.rs && \
     mkdir -p crates/vlinder-git-dag/src && echo "" > crates/vlinder-git-dag/src/lib.rs && \
     mkdir -p crates/vlinder-s3-storage/src && echo "" > crates/vlinder-s3-storage/src/lib.rs && \
-    mkdir -p crates/vlinder-openai-server/src && echo "" > crates/vlinder-openai-server/src/lib.rs
+    mkdir -p crates/vlinder-openai-server/src && echo "" > crates/vlinder-openai-server/src/lib.rs && \
+    mkdir -p crates/vlinder-zfs-storage/src && echo "" > crates/vlinder-zfs-storage/src/lib.rs
 
 # Proto build dependencies (only for dep-chain crates with gRPC)
 COPY crates/vlinder-nats/build.rs crates/vlinder-nats/
