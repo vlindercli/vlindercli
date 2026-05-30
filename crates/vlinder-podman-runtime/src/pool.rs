@@ -1,12 +1,17 @@
 //! `ContainerRuntime` — manages the lifecycle of Podman pods for container agents.
 //!
-//! Each agent runs as a pod containing two containers:
-//! 1. The agent container (user-provided OCI image)
-//! 2. The sidecar container (vlinder-podman-sidecar, mediates queue ↔ agent)
+//! Two pod lifecycles coexist in v1:
+//! 1. Per-agent pods, created at deploy by `start()`. Vestigial under the
+//!    new dispatch model; their sidecar is never targeted by /v1/dispatch.
+//!    Removal is a follow-up cleanup outside this branch's scope.
+//! 2. Per-`(session, branch)` actor pods, created lazily by
+//!    `activate_actor()` on the first invoke for each `(session, branch)`.
+//!    Each carries the agent + sidecar containers, with the sidecar's
+//!    `/v1/dispatch` host port runtime-chosen via `PortMapping`.
 //!
-//! The runtime creates pods, starts them, and tears them down on shutdown.
-//! Dead pod detection is deferred — `ensure_containers` restarts missing pods
-//! on the next tick.
+//! `ensure_containers` is the reconciliation loop: per-agent pod create on
+//! transition to Deploying, tear-down on Deleting. `shutdown` drains both
+//! lifecycles plus all per-agent invoke tasks.
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU16;
@@ -64,8 +69,7 @@ pub struct ContainerRuntime {
     config: PodmanRuntimeConfig,
     image_policy: ImagePolicy,
     podman: Arc<dyn PodmanClient>,
-    /// Queue handle used by the per-agent invoke task (added in this commit,
-    /// hooked up to `deploy_agent` in Phase 5.4).
+    /// Queue handle consumed by the per-agent invoke task.
     queue: Arc<dyn MessageQueue + Send + Sync>,
     /// Optional versioned workspace store (ADR 133). `None` when the daemon
     /// has no `[workspace_store]` configured — agents then run without a
@@ -75,9 +79,8 @@ pub struct ContainerRuntime {
     /// eviction logic runs in v1.
     #[allow(dead_code)]
     actor_ttl: Duration,
-    /// Per-(session, branch) actor registry. Phase 5.3 introduces the field
-    /// and the `spawn_invoke_task` method that mutates it; Phase 5.4 wires
-    /// the task into the deploy flow.
+    /// Per-(session, branch) actor registry. Lazily populated by
+    /// `activate_actor` on the first invoke for each `(session, branch)`.
     actors: Arc<AsyncMutex<HashMap<(SessionId, BranchId), ActorPod>>>,
     /// Per-agent background invoke tasks (mirrors Lambda's pattern).
     invoke_tasks: HashMap<String, (JoinHandle<()>, CancellationToken)>,
@@ -166,9 +169,10 @@ impl ContainerRuntime {
     /// them to per-(session, branch) actor pods. Mirrors the pattern in
     /// `vlinder-lambda-runtime::LambdaRuntime::spawn_invoke_task`.
     ///
-    /// The task is NOT called from anywhere in Phase 5.3; Phase 5.4 hooks it
-    /// into the deploy flow and removes the sidecar's queue polling loop.
-    #[allow(dead_code, clippy::too_many_lines)]
+    /// Called from `ensure_containers` after the per-agent pod is up; the
+    /// task owns queue consumption from then until `undeploy` or `shutdown`
+    /// cancels its child token.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn spawn_invoke_task(&mut self, agent_name: &AgentName) {
         use vlinder_core::domain::{
             CompleteMessage, DataMessageKind, DataRoutingKey, MessageId, QueueError,
