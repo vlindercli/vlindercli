@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
-use vlinder_core::domain::{AgentName, ContainerId, HealthWindow, ImageDigest, ImageRef};
+use vlinder_core::domain::{AgentName, HealthWindow};
 
 use vlinder_provider_server::factory;
 
 use crate::config::SidecarConfig;
-use crate::dispatch::{self, DispatchContext};
+use crate::dispatch::DispatchContext;
 use crate::dispatch_endpoint::{self, DispatchEndpointState};
 use crate::health;
 
@@ -48,18 +48,6 @@ impl Sidecar {
         let store = factory::connect_state_async(&config.state_url).await?;
         let queue = factory::with_recording(queue, store.clone());
         let registry = factory::connect_registry_async(&config.registry_url).await?;
-        let image_ref = config
-            .image_ref
-            .as_ref()
-            .and_then(|r| ImageRef::parse(r).ok());
-        let image_digest = config
-            .image_digest
-            .as_ref()
-            .and_then(|d| ImageDigest::parse(d).ok());
-        let container_id = config
-            .container_id
-            .as_ref()
-            .map_or_else(ContainerId::unknown, ContainerId::new);
 
         Ok(Self {
             dispatch: DispatchContext {
@@ -67,9 +55,6 @@ impl Sidecar {
                 registry,
                 store,
                 container_port: config.container_port,
-                container_id,
-                image_ref,
-                image_digest,
             },
             agent_name: config.agent.clone(),
             health: HealthWindow::new(60_000), // 60 second window
@@ -113,38 +98,5 @@ impl Sidecar {
         dispatch_endpoint::serve(endpoint_state, self.dispatch_port)
             .await
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
-    }
-
-    #[allow(dead_code)]
-    async fn dispatch_one(
-        &mut self,
-        session_provider: &vlinder_provider_server::dispatch::SessionProvider,
-        key: &vlinder_core::domain::DataRoutingKey,
-        invoke: &vlinder_core::domain::InvokeMessage,
-    ) {
-        tracing::debug!(
-            event = "chain_head_trace",
-            site = "sidecar.receive_invoke",
-            session = %key.session,
-            submission = %key.submission,
-            agent = %self.agent_name,
-            msg_dag_id = %invoke.dag_id,
-            msg_dag_parent = %invoke.dag_parent,
-            "sidecar received invoke from queue"
-        );
-        tracing::info!(
-            event = "dispatch.started",
-            submission = %key.submission,
-            session = %key.session,
-            "Dispatching invoke to container"
-        );
-        dispatch::handle_invoke(
-            &self.dispatch,
-            &mut self.health,
-            session_provider,
-            key,
-            invoke,
-        )
-        .await;
     }
 }

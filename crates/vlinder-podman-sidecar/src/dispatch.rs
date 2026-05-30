@@ -1,83 +1,19 @@
-//! Dispatch — handles a single agent invocation.
+//! Sidecar's shared substrate handles.
 //!
-//! Delegates to `vlinder_provider_server::dispatch` for the shared
-//! invoke flow, then adds sidecar-specific concerns (health diagnostics,
-//! container metadata).
+//! After Phase 5.4 the queue-polling dispatch loop is gone; this module
+//! only carries the `DispatchContext` struct that the `Sidecar` uses to
+//! hold its queue/registry/store/container metadata. The struct is plumbed
+//! into the `dispatch_endpoint` HTTP handler via shared `Arc` clones.
 
 use std::sync::Arc;
 
-use vlinder_core::domain::{
-    ContainerId, DagNodeId, DagStore, DataMessageKind, DataRoutingKey, HealthWindow, ImageDigest,
-    ImageRef, InvokeMessage, MessageQueue, Registry, RuntimeDiagnostics,
-};
+use vlinder_core::domain::{DagStore, MessageQueue, Registry};
 
-use vlinder_provider_server::dispatch as shared;
-
-use crate::health;
-
-/// Everything the dispatch loop needs from the sidecar.
+/// Substrate handles shared between `Sidecar::run` and the `/v1/dispatch`
+/// HTTP endpoint state.
 pub struct DispatchContext {
     pub queue: Arc<dyn MessageQueue + Send + Sync>,
     pub registry: Arc<dyn Registry>,
     pub store: Arc<dyn DagStore>,
     pub container_port: u16,
-    pub container_id: ContainerId,
-    pub image_ref: Option<ImageRef>,
-    pub image_digest: Option<ImageDigest>,
-}
-
-/// Handle a single invocation: dispatch to agent and send complete.
-pub async fn handle_invoke(
-    ctx: &DispatchContext,
-    health: &mut HealthWindow,
-    session_provider: &shared::SessionProvider,
-    key: &DataRoutingKey,
-    msg: &InvokeMessage,
-) {
-    let DataMessageKind::Invoke { ref agent, .. } = key.kind else {
-        tracing::error!("handle_invoke called with non-Invoke key");
-        return;
-    };
-
-    match shared::dispatch_one_invoke(session_provider, &*ctx.store, ctx.container_port, key, msg)
-        .await
-    {
-        Ok(result) => {
-            let diagnostics = health::build_diagnostics(
-                health,
-                ctx.container_port,
-                result.duration_ms,
-                &ctx.container_id,
-                ctx.image_ref.as_ref(),
-                ctx.image_digest.as_ref(),
-            );
-            shared::send_complete_with_parsed(
-                ctx.queue.as_ref(),
-                key,
-                agent,
-                result.output,
-                result.content,
-                result.tool_calls,
-                result.state,
-                diagnostics,
-                result.chain_head,
-            )
-            .await;
-        }
-        Err(e) => {
-            tracing::warn!(event = "dispatch.error", error = %e, "Dispatch failed");
-            shared::send_complete_with_parsed(
-                ctx.queue.as_ref(),
-                key,
-                agent,
-                format!("[error] {e}").into_bytes(),
-                None,
-                None,
-                None,
-                RuntimeDiagnostics::placeholder(0),
-                DagNodeId::root(),
-            )
-            .await;
-        }
-    }
 }

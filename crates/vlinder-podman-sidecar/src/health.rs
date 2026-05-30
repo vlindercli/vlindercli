@@ -6,10 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use vlinder_core::domain::{
-    ContainerId, HealthSnapshot, HealthWindow, ImageDigest, ImageRef, RuntimeDiagnostics,
-    RuntimeInfo,
-};
+use vlinder_core::domain::{HealthSnapshot, HealthWindow};
 
 /// Check the agent's health endpoint once and record the observation.
 pub fn check_once(url: &str, health: &mut HealthWindow) -> Option<u16> {
@@ -39,35 +36,6 @@ pub fn check_once(url: &str, health: &mut HealthWindow) -> Option<u16> {
         Some(status_code)
     } else {
         None
-    }
-}
-
-/// Build runtime diagnostics for a completed invocation.
-///
-/// Performs a health check at completion time and includes the snapshot
-/// in the diagnostics.
-pub fn build_diagnostics(
-    health: &mut HealthWindow,
-    port: u16,
-    duration_ms: u64,
-    container_id: &ContainerId,
-    image_ref: Option<&ImageRef>,
-    image_digest: Option<&ImageDigest>,
-) -> RuntimeDiagnostics {
-    let url = format!("http://127.0.0.1:{port}/health");
-    check_once(&url, health);
-    let snapshot = health.latest().cloned();
-
-    RuntimeDiagnostics {
-        stderr: Vec::new(),
-        runtime: RuntimeInfo::Container {
-            engine_version: "sidecar".to_string(),
-            image_ref: image_ref.cloned(),
-            image_digest: image_digest.cloned(),
-            container_id: container_id.clone(),
-        },
-        duration_ms,
-        health: snapshot,
     }
 }
 

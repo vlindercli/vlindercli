@@ -27,20 +27,14 @@ pub struct SidecarConfig {
     /// Port the sidecar binds for the `/v1/dispatch` HTTP endpoint
     /// (default 3546, published to the host by the pod spec — Phase 5.2).
     pub dispatch_port: u16,
-    /// OCI image reference (diagnostics only).
-    pub image_ref: Option<String>,
-    /// Content-addressed image digest (diagnostics only).
-    pub image_digest: Option<String>,
-    /// Container ID (diagnostics only).
-    pub container_id: Option<String>,
 }
 
 impl SidecarConfig {
     /// Parse configuration from environment variables.
     ///
     /// Required: `VLINDER_AGENT`, `VLINDER_NATS_URL`, `VLINDER_REGISTRY_URL`, `VLINDER_STATE_URL`.
-    /// Optional: `VLINDER_CONTAINER_PORT` (default 8080), `VLINDER_IMAGE_REF`,
-    /// `VLINDER_IMAGE_DIGEST`, `VLINDER_CONTAINER_ID`.
+    /// Optional: `VLINDER_CONTAINER_PORT` (default 8080),
+    /// `VLINDER_SIDECAR_DISPATCH_PORT` (default 3546).
     pub fn from_env() -> Result<Self, String> {
         let agent = required_env("VLINDER_AGENT")?;
         let registry_url = required_env("VLINDER_REGISTRY_URL")?;
@@ -67,10 +61,6 @@ impl SidecarConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(3546);
 
-        let image_ref = std::env::var("VLINDER_IMAGE_REF").ok();
-        let image_digest = std::env::var("VLINDER_IMAGE_DIGEST").ok();
-        let container_id = std::env::var("VLINDER_CONTAINER_ID").ok();
-
         Ok(Self {
             agent,
             queue,
@@ -79,9 +69,6 @@ impl SidecarConfig {
             secret_url,
             container_port,
             dispatch_port,
-            image_ref,
-            image_digest,
-            container_id,
         })
     }
 }
