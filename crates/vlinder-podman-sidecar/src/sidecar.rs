@@ -5,7 +5,6 @@
 //! communication between the agent container and the platform.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use vlinder_core::domain::{AgentName, ContainerId, HealthWindow, ImageDigest, ImageRef};
 
@@ -78,34 +77,15 @@ impl Sidecar {
         })
     }
 
-    /// Main loop: wait for agent, then poll invoke/delegate/response queues.
+    /// Main: wait for agent, then run the `/v1/dispatch` HTTP server until
+    /// shutdown.
     ///
-    /// Phase 5.1 also spawns the `/v1/dispatch` HTTP endpoint as a sibling
-    /// tokio task. The endpoint has no caller yet (Phase 5.4 hooks the
-    /// runtime up and removes this queue polling loop) but exists so the
-    /// runtime's eventual port-mapping in Phase 5.2 has something to bind to.
+    /// Phase 5.4 removes queue polling from the sidecar — the runtime now
+    /// owns Invoke consumption and POSTs to the sidecar's `/v1/dispatch`.
+    /// The sidecar still holds queue + registry + store handles (passed to
+    /// the dispatch endpoint state so the lazy `SessionProvider` can use
+    /// them for the agent's provider callbacks).
     pub async fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Spawn the /v1/dispatch HTTP endpoint alongside the queue loop.
-        let endpoint_state = Arc::new(DispatchEndpointState {
-            queue: self.dispatch.queue.clone(),
-            registry: self.dispatch.registry.clone(),
-            store: self.dispatch.store.clone(),
-            container_port: self.dispatch.container_port,
-            agent_name: AgentName::new(&self.agent_name),
-            session_provider: tokio::sync::Mutex::new(None),
-        });
-        let dispatch_port = self.dispatch_port;
-        tokio::spawn(async move {
-            if let Err(e) = dispatch_endpoint::serve(endpoint_state, dispatch_port).await {
-                tracing::error!(
-                    event = "sidecar.dispatch_endpoint.failed",
-                    port = dispatch_port,
-                    error = %e,
-                    "Dispatch HTTP server exited"
-                );
-            }
-        });
-
         health::wait_for_ready(
             &mut self.health,
             self.dispatch.container_port,
@@ -114,48 +94,28 @@ impl Sidecar {
         .await
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-        let agent_id = AgentName::new(&self.agent_name);
+        let endpoint_state = Arc::new(DispatchEndpointState {
+            queue: self.dispatch.queue.clone(),
+            registry: self.dispatch.registry.clone(),
+            store: self.dispatch.store.clone(),
+            container_port: self.dispatch.container_port,
+            agent_name: AgentName::new(&self.agent_name),
+            session_provider: tokio::sync::Mutex::new(None),
+        });
 
-        // Receive the first invoke so we can latch session_id/branch/submission
-        // for the session-scoped ProviderServer. These fields are stable across
-        // every invoke in a run (verified empirically; submission_id is run-scoped,
-        // not invoke-scoped). Retry on receive timeout — that's normal polling
-        // behavior, not a fatal error.
-        let (first_key, first_invoke, first_ack) = loop {
-            match self.dispatch.queue.receive_invoke(&agent_id).await {
-                Ok(tuple) => break tuple,
-                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-        };
-        let _ = first_ack().await;
+        tracing::info!(
+            event = "sidecar.started",
+            agent = %self.agent_name,
+            dispatch_port = self.dispatch_port,
+            "Sidecar serving /v1/dispatch"
+        );
 
-        let session_provider = vlinder_provider_server::dispatch::start_session_provider(
-            &self.dispatch.queue,
-            &self.dispatch.registry,
-            &agent_id,
-            first_key.branch,
-            first_key.submission.clone(),
-            first_key.session.clone(),
-        )
-        .await
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-
-        tracing::info!(event = "sidecar.started", agent = %self.agent_name, "Sidecar loop started");
-
-        // Dispatch the first invoke we already pulled.
-        self.dispatch_one(&session_provider, &first_key, &first_invoke)
-            .await;
-
-        loop {
-            if let Ok((key, invoke, ack)) = self.dispatch.queue.receive_invoke(&agent_id).await {
-                let _ = ack().await;
-                self.dispatch_one(&session_provider, &key, &invoke).await;
-            } else {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
+        dispatch_endpoint::serve(endpoint_state, self.dispatch_port)
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
     }
 
+    #[allow(dead_code)]
     async fn dispatch_one(
         &mut self,
         session_provider: &vlinder_provider_server::dispatch::SessionProvider,

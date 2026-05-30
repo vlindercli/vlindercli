@@ -103,6 +103,24 @@ struct ActorPod {
 const SIDECAR_DISPATCH_CONTAINER_PORT: u16 = 3546;
 
 impl ContainerRuntime {
+    /// Tear down all `(session, branch)` actor pods for a given agent —
+    /// called from the Deleting branch of `ensure_containers`. v1: drains
+    /// every actor in the registry without filtering by agent (since v1
+    /// only deploys a single agent per `ContainerRuntime` in practice).
+    /// A future per-agent filter will land when multi-agent deployments are
+    /// exercised.
+    async fn drain_actors_for(&self, _agent: &str) {
+        let actors_map: Vec<((SessionId, BranchId), ActorPod)> = {
+            let mut guard = self.actors.lock().await;
+            guard.drain().collect()
+        };
+        for ((_session, _branch), pod) in actors_map {
+            self.podman.pod_stop_and_remove(&pod.pod_id, 5).await;
+        }
+    }
+}
+
+impl ContainerRuntime {
     pub fn new(
         config: &PodmanRuntimeConfig,
         registry: Arc<dyn Registry>,
@@ -556,10 +574,18 @@ impl ContainerRuntime {
                 Some(AgentStatus::Deploying) => match self.start(&agent.name, agent).await {
                     Ok(()) => {
                         let agent_name = AgentName::new(&agent.name);
-                        let check =
-                            ReadinessCheck::pending(agent_name, RuntimeType::Container.as_str())
-                                .ready();
+                        let check = ReadinessCheck::pending(
+                            agent_name.clone(),
+                            RuntimeType::Container.as_str(),
+                        )
+                        .ready();
                         let _ = self.repo.append_readiness_check(&check);
+                        // Phase 5.4: spawn the per-agent invoke task that
+                        // owns queue consumption. Idempotent: don't double-
+                        // spawn if a task is already running for this agent.
+                        if !self.invoke_tasks.contains_key(agent.name.as_str()) {
+                            self.spawn_invoke_task(&agent_name);
+                        }
                         tracing::info!(
                             event = "pod.deployed",
                             agent = %agent.name,
@@ -581,9 +607,18 @@ impl ContainerRuntime {
                     }
                 },
 
-                // Deleting: tear down pod
+                // Deleting: tear down pod + cancel invoke task + drain actors
                 Some(AgentStatus::Deleting) => {
                     let agent_name = AgentName::new(&agent.name);
+                    // 1. Cancel the per-agent invoke task so it stops
+                    //    activating new actor pods.
+                    if let Some((handle, token)) = self.invoke_tasks.remove(agent.name.as_str()) {
+                        token.cancel();
+                        let _ = handle.await;
+                    }
+                    // 2. Drain per-(session, branch) actor pods for this agent.
+                    self.drain_actors_for(&agent.name).await;
+                    // 3. Tear down the per-agent pod created by start().
                     if let Some(pod) = self.pods.remove(&agent.name) {
                         tracing::info!(event = "pod.teardown", agent = %agent.name, "Tearing down pod");
                         self.podman.pod_stop_and_remove(&pod.pod_id, 5).await;
@@ -619,8 +654,23 @@ impl Runtime for ContainerRuntime {
     }
 
     async fn shutdown(&mut self) {
-        // Collect owned pods first so we don't hold a &mut self.pods borrow
-        // across .await points while also calling self.podman.*.
+        // 1. Cancel all per-agent invoke tasks so they stop activating new
+        //    actor pods mid-shutdown.
+        self.shutdown.cancel();
+        let tasks: Vec<(String, (JoinHandle<()>, CancellationToken))> =
+            self.invoke_tasks.drain().collect();
+        for (_, (handle, _)) in tasks {
+            let _ = handle.await;
+        }
+        // 2. Drain per-(session, branch) actor pods.
+        let actors_map: Vec<((SessionId, BranchId), ActorPod)> = {
+            let mut guard = self.actors.lock().await;
+            guard.drain().collect()
+        };
+        for ((_session, _branch), pod) in actors_map {
+            self.podman.pod_stop_and_remove(&pod.pod_id, 5).await;
+        }
+        // 3. Tear down the per-agent pods created by start().
         let pods: Vec<(String, Pod)> = self.pods.drain().collect();
         for (name, pod) in pods {
             tracing::info!(event = "pod.stopped", agent = %name, pod = %pod.pod_id, "Stopping pod");
