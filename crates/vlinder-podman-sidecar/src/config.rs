@@ -24,6 +24,9 @@ pub struct SidecarConfig {
     pub secret_url: Option<String>,
     /// Agent container port (default 8080, localhost inside the pod).
     pub container_port: u16,
+    /// Port the sidecar binds for the `/v1/dispatch` HTTP endpoint
+    /// (default 3546, published to the host by the pod spec — Phase 5.2).
+    pub dispatch_port: u16,
     /// OCI image reference (diagnostics only).
     pub image_ref: Option<String>,
     /// Content-addressed image digest (diagnostics only).
@@ -59,6 +62,11 @@ impl SidecarConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(8080);
 
+        let dispatch_port = std::env::var("VLINDER_SIDECAR_DISPATCH_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3546);
+
         let image_ref = std::env::var("VLINDER_IMAGE_REF").ok();
         let image_digest = std::env::var("VLINDER_IMAGE_DIGEST").ok();
         let container_id = std::env::var("VLINDER_CONTAINER_ID").ok();
@@ -70,6 +78,7 @@ impl SidecarConfig {
             state_url,
             secret_url,
             container_port,
+            dispatch_port,
             image_ref,
             image_digest,
             container_id,

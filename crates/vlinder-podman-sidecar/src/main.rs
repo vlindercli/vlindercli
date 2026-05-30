@@ -6,6 +6,7 @@
 
 mod config;
 mod dispatch;
+mod dispatch_endpoint;
 mod health;
 mod sidecar;
 

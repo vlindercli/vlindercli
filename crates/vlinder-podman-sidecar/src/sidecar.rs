@@ -4,6 +4,7 @@
 //! container. Owns queue and registry connections, mediates all
 //! communication between the agent container and the platform.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use vlinder_core::domain::{AgentName, ContainerId, HealthWindow, ImageDigest, ImageRef};
@@ -12,6 +13,7 @@ use vlinder_provider_server::factory;
 
 use crate::config::SidecarConfig;
 use crate::dispatch::{self, DispatchContext};
+use crate::dispatch_endpoint::{self, DispatchEndpointState};
 use crate::health;
 
 /// The sidecar process — mediates between the platform queue and the agent container.
@@ -21,6 +23,8 @@ pub struct Sidecar {
     agent_name: String,
     /// Sliding window of agent health observations.
     health: HealthWindow,
+    /// Port the `/v1/dispatch` HTTP endpoint binds to (Phase 5.1).
+    dispatch_port: u16,
 }
 
 impl Sidecar {
@@ -70,11 +74,38 @@ impl Sidecar {
             },
             agent_name: config.agent.clone(),
             health: HealthWindow::new(60_000), // 60 second window
+            dispatch_port: config.dispatch_port,
         })
     }
 
     /// Main loop: wait for agent, then poll invoke/delegate/response queues.
+    ///
+    /// Phase 5.1 also spawns the `/v1/dispatch` HTTP endpoint as a sibling
+    /// tokio task. The endpoint has no caller yet (Phase 5.4 hooks the
+    /// runtime up and removes this queue polling loop) but exists so the
+    /// runtime's eventual port-mapping in Phase 5.2 has something to bind to.
     pub async fn run(mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Spawn the /v1/dispatch HTTP endpoint alongside the queue loop.
+        let endpoint_state = Arc::new(DispatchEndpointState {
+            queue: self.dispatch.queue.clone(),
+            registry: self.dispatch.registry.clone(),
+            store: self.dispatch.store.clone(),
+            container_port: self.dispatch.container_port,
+            agent_name: AgentName::new(&self.agent_name),
+            session_provider: tokio::sync::Mutex::new(None),
+        });
+        let dispatch_port = self.dispatch_port;
+        tokio::spawn(async move {
+            if let Err(e) = dispatch_endpoint::serve(endpoint_state, dispatch_port).await {
+                tracing::error!(
+                    event = "sidecar.dispatch_endpoint.failed",
+                    port = dispatch_port,
+                    error = %e,
+                    "Dispatch HTTP server exited"
+                );
+            }
+        });
+
         health::wait_for_ready(
             &mut self.health,
             self.dispatch.container_port,

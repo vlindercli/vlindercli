@@ -6629,10 +6629,14 @@ dependencies = [
 name = "vlinder-podman-sidecar"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum",
+ "http-body-util",
  "semver",
  "serde",
  "serde_json",
  "tokio",
+ "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
  "ureq 2.12.1",
