@@ -11,9 +11,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use vlinder_core::domain::{
-    Agent, AgentName, AgentStatus, ImageRef, PodId, ReadinessCheck, Registry, RegistryRepository,
-    ResourceId, Runtime, RuntimeType,
+    Agent, AgentName, AgentStatus, ImageRef, MessageQueue, PodId, ReadinessCheck, Registry,
+    RegistryRepository, ResourceId, Runtime, RuntimeType, WorkspaceStore,
 };
 
 use async_trait::async_trait;
@@ -59,6 +61,20 @@ pub struct ContainerRuntime {
     config: PodmanRuntimeConfig,
     image_policy: ImagePolicy,
     podman: Box<dyn PodmanClient>,
+    /// Queue handle used by the per-agent invoke task (Phase 5.3) to long-poll
+    /// Invoke messages. Held now to keep the construction site change in one
+    /// place; the consumer wiring lands in 5.3 / 5.4.
+    #[allow(dead_code)]
+    queue: Arc<dyn MessageQueue + Send + Sync>,
+    /// Optional versioned workspace store (ADR 133). `None` when the daemon
+    /// has no `[workspace_store]` configured — agents then run without a
+    /// versioned workspace bind-mount.
+    #[allow(dead_code)]
+    workspace_store: Option<Arc<dyn WorkspaceStore>>,
+    /// Per-(session, branch) actor TTL. v1 default = INFINITY (0 secs is
+    /// modeled as infinity below). Eviction logic lands post-v1.
+    #[allow(dead_code)]
+    actor_ttl: Duration,
 }
 
 impl ContainerRuntime {
@@ -67,6 +83,9 @@ impl ContainerRuntime {
         registry: Arc<dyn Registry>,
         repo: Arc<dyn RegistryRepository>,
         podman: Box<dyn PodmanClient>,
+        queue: Arc<dyn MessageQueue + Send + Sync>,
+        workspace_store: Option<Arc<dyn WorkspaceStore>>,
+        actor_ttl: Duration,
     ) -> Self {
         let registry_id = ResourceId::new(&config.registry_addr);
         let id = ResourceId::new(format!(
@@ -76,6 +95,12 @@ impl ContainerRuntime {
         ));
         let image_policy = ImagePolicy::from_config(&config.image_policy);
         tracing::info!(event = "runtime.image_policy", policy = ?image_policy, "Container image policy");
+        tracing::info!(
+            event = "runtime.workspace_store",
+            configured = workspace_store.is_some(),
+            actor_ttl_secs = actor_ttl.as_secs(),
+            "Container runtime substrates wired"
+        );
         Self {
             id,
             registry,
@@ -84,6 +109,9 @@ impl ContainerRuntime {
             config: config.clone(),
             image_policy,
             podman,
+            queue,
+            workspace_store,
+            actor_ttl,
         }
     }
 
@@ -431,6 +459,10 @@ mod tests {
         Arc::new(vlinder_core::domain::InMemoryDagStore::new())
     }
 
+    fn test_queue() -> Arc<dyn MessageQueue + Send + Sync> {
+        Arc::new(vlinder_core::queue::InMemoryQueue::new())
+    }
+
     struct MockPodmanClient;
 
     #[async_trait]
@@ -477,6 +509,9 @@ mod tests {
             test_registry(),
             test_repo(),
             Box::new(MockPodmanClient),
+            test_queue(),
+            None,
+            Duration::from_secs(0),
         )
     }
 
@@ -709,6 +744,9 @@ mod tests {
             test_registry(),
             test_repo(),
             Box::new(FailingPodmanClient),
+            test_queue(),
+            None,
+            Duration::from_secs(0),
         );
         register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);
@@ -788,6 +826,9 @@ mod tests {
             test_registry(),
             test_repo(),
             Box::new(CrashablePodmanClient { pod_alive }),
+            test_queue(),
+            None,
+            Duration::from_secs(0),
         );
         register_test_agent(&mut runtime, "my-agent").await;
         set_agent_status(&runtime, "my-agent", &AgentStatus::Deploying);

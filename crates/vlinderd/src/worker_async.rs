@@ -143,7 +143,27 @@ pub async fn run_agent_container_worker(config: &Config, shutdown: CancellationT
         );
     }
 
-    let mut runtime = ContainerRuntime::new(&podman_config, registry, repo, podman);
+    // Substrates for Phase 4.2: the queue (consumed by the per-agent invoke
+    // task that lands in Phase 5.3) and the workspace store (consumed at pod
+    // creation time once Phase 5.3 wires it in).
+    let queue = crate::queue_factory::from_config_async(config)
+        .await
+        .expect("Failed to create queue for container runtime worker");
+    let workspace_store = config.workspace_store.as_ref().map(|cfg| {
+        cfg.resolve()
+            .expect("Failed to construct WorkspaceStore from [workspace_store] config")
+    });
+    let actor_ttl = std::time::Duration::from_secs(config.runtime.actor_ttl_secs);
+
+    let mut runtime = ContainerRuntime::new(
+        &podman_config,
+        registry,
+        repo,
+        podman,
+        queue,
+        workspace_store,
+        actor_ttl,
+    );
 
     tracing::info!("Container agent worker ready");
 
