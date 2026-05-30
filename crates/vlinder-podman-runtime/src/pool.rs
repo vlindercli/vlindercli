@@ -867,6 +867,20 @@ async fn activate_actor(
         return Err(format!("pod_start: {e}"));
     }
 
+    // 7. Wait for the sidecar's /v1/dispatch port to actually be reachable
+    //    on the host. pod_start returns once conmon has the container; conmon
+    //    may not have bound the published host port yet, AND the sidecar
+    //    inside the pod takes a few hundred ms to start (it waits for the
+    //    agent container's /healthz before binding 3546). Without this poll
+    //    the first invoke after activation races and reqwest reports a
+    //    transport error instead of a real HTTP response.
+    if let Err(e) = wait_for_sidecar_dispatch(host_port, Duration::from_secs(30)).await {
+        podman.pod_stop_and_remove(&pod_id, 0).await;
+        return Err(format!(
+            "sidecar dispatch port {host_port} not reachable: {e}"
+        ));
+    }
+
     tracing::info!(
         event = "actor.activated",
         agent = agent_name.as_str(),
@@ -882,6 +896,25 @@ async fn activate_actor(
         sidecar_dispatch_port: host_port,
         created_at: Instant::now(),
     })
+}
+
+/// Poll `localhost:host_port` until a TCP connect succeeds (sidecar is ready
+/// to accept HTTP) or the deadline is reached.
+async fn wait_for_sidecar_dispatch(host_port: u16, deadline: Duration) -> Result<(), String> {
+    let start = Instant::now();
+    let mut attempt: u32 = 0;
+    loop {
+        match tokio::net::TcpStream::connect(("127.0.0.1", host_port)).await {
+            Ok(_) => return Ok(()),
+            Err(e) if start.elapsed() >= deadline => {
+                return Err(format!("timed out after {attempt} attempts: {e}"));
+            }
+            Err(_) => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
 }
 
 /// First 8 characters of a string (for pod name shortening). Pads with `x` if
