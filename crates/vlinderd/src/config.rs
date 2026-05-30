@@ -11,6 +11,9 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use vlinder_core::domain::{WorkspaceError, WorkspaceStore};
 
 // ============================================================================
 // Backend Enums (compile-time safety for queue + state backends)
@@ -118,6 +121,11 @@ pub struct Config {
     pub distributed: DistributedConfig,
     #[serde(default)]
     pub runtime: RuntimeConfig,
+    /// Versioned workspace storage substrate (ADR 133). When `None`, the
+    /// container runtime does not bind-mount per-(session, branch) workspaces;
+    /// agents run without a versioned workspace.
+    #[serde(default)]
+    pub workspace_store: Option<WorkspaceStoreConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -347,6 +355,42 @@ pub struct RuntimeConfig {
 
     /// VPC security group IDs for Lambda ENIs (comma-separated in env).
     pub lambda_vpc_security_group_ids: Vec<String>,
+
+    /// Per-(session, branch) actor TTL in seconds (ADR 133, Phase 4 v1).
+    /// `0` means "infinity" — pods only disappear on agent undeploy or
+    /// vlinderd shutdown. Any positive value reserves a future eviction
+    /// path which is not implemented in v1; surface it now so the config
+    /// shape is stable.
+    pub actor_ttl_secs: u64,
+}
+
+/// Versioned workspace storage substrate (ADR 133).
+///
+/// TOML shape:
+/// ```toml
+/// [workspace_store]
+/// type = "zfs"
+/// url  = "http://localhost:8783"
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum WorkspaceStoreConfig {
+    /// ZFS-backed workspace store. `url` points at the vlinder-zfs-server
+    /// HTTP service that lives inside the bootc image.
+    Zfs { url: String },
+}
+
+impl WorkspaceStoreConfig {
+    /// Construct a runtime-ready `Arc<dyn WorkspaceStore>` from this config.
+    pub fn resolve(&self) -> Result<Arc<dyn WorkspaceStore>, WorkspaceError> {
+        match self {
+            Self::Zfs { url } => {
+                let cfg = vlinder_zfs_storage::ZfsConfig::new(url.clone());
+                let store = vlinder_zfs_storage::ZfsWorkspaceStore::new(cfg)?;
+                Ok(Arc::new(store) as Arc<dyn WorkspaceStore>)
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -450,6 +494,7 @@ impl Default for RuntimeConfig {
             lambda_timeout_secs: 300,
             lambda_vpc_subnet_ids: vec![],
             lambda_vpc_security_group_ids: vec![],
+            actor_ttl_secs: 0,
         }
     }
 }
@@ -515,6 +560,7 @@ impl Config {
                 ..DistributedConfig::default()
             },
             runtime: RuntimeConfig::default(),
+            workspace_store: None,
         }
     }
 
@@ -665,6 +711,28 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
+        }
+        if let Ok(v) = std::env::var("VLINDER_RUNTIME_ACTOR_TTL_SECS") {
+            self.runtime.actor_ttl_secs = v.parse().unwrap_or(0);
+        }
+
+        // Workspace store (ADR 133). The TOML section is `[workspace_store]`;
+        // env override is `VLINDER_WORKSPACE_STORE_{TYPE,URL}` for the zfs
+        // variant. Future variants would add their own env keys.
+        if let Ok(t) = std::env::var("VLINDER_WORKSPACE_STORE_TYPE") {
+            match t.as_str() {
+                "zfs" => {
+                    if let Ok(url) = std::env::var("VLINDER_WORKSPACE_STORE_URL") {
+                        self.workspace_store = Some(WorkspaceStoreConfig::Zfs { url });
+                    }
+                }
+                other => {
+                    tracing::warn!(
+                        value = other,
+                        "Unknown VLINDER_WORKSPACE_STORE_TYPE — ignoring"
+                    );
+                }
+            }
         }
     }
 

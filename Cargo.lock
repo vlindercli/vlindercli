@@ -6817,6 +6817,7 @@ dependencies = [
  "vlinder-sql-state",
  "vlinder-sqlite-kv",
  "vlinder-sqlite-vec",
+ "vlinder-zfs-storage",
  "zerocopy 0.7.35",
 ]
 
