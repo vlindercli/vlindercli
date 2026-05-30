@@ -73,16 +73,36 @@ impl PodmanClient for PodmanApiClient {
 
     // ── Pod operations ────────────────────────────────────────────────
 
-    async fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError> {
+    async fn pod_create(
+        &self,
+        name: &str,
+        host_aliases: &[String],
+        ports: &[crate::podman_client::PortMapping],
+    ) -> Result<PodId, PodmanError> {
         let url = format!("{API_BASE}/pods/create");
         let hostadd = if host_aliases.is_empty() {
             None
         } else {
             Some(host_aliases.to_vec())
         };
+        let port_mappings = if ports.is_empty() {
+            None
+        } else {
+            Some(
+                ports
+                    .iter()
+                    .map(|p| PortMappingSpec {
+                        host_port: p.host_port,
+                        container_port: p.container_port,
+                        protocol: "tcp".to_string(),
+                    })
+                    .collect(),
+            )
+        };
         let spec = PodCreateSpec {
             name: name.to_string(),
             hostadd,
+            portmappings: port_mappings,
         };
         let json_bytes = serde_json::to_vec(&spec)
             .map_err(|e| PodmanError::Run(format!("pod create failed: {e}")))?;
@@ -351,6 +371,17 @@ struct PodCreateSpec {
     /// Host aliases injected into `/etc/hosts` (`hostname:ip` pairs).
     #[serde(skip_serializing_if = "Option::is_none")]
     hostadd: Option<Vec<String>>,
+    /// TCP port publishes attached to the pod's network namespace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    portmappings: Option<Vec<PortMappingSpec>>,
+}
+
+/// Wire shape for the Podman REST API's port mapping entries.
+#[derive(Serialize)]
+struct PortMappingSpec {
+    host_port: u16,
+    container_port: u16,
+    protocol: String,
 }
 
 #[derive(Deserialize)]
@@ -463,10 +494,12 @@ mod tests {
         let spec = PodCreateSpec {
             name: "vlinder-echo".to_string(),
             hostadd: None,
+            portmappings: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains("vlinder-echo"));
         assert!(!json.contains("hostadd"));
+        assert!(!json.contains("portmappings"));
     }
 
     #[test]
@@ -474,9 +507,28 @@ mod tests {
         let spec = PodCreateSpec {
             name: "vlinder-provider-test".to_string(),
             hostadd: Some(vec!["openrouter.vlinder.local:127.0.0.1".to_string()]),
+            portmappings: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains("openrouter.vlinder.local:127.0.0.1"));
+    }
+
+    #[test]
+    fn pod_create_spec_with_port_mappings() {
+        let spec = PodCreateSpec {
+            name: "vlinder-todoapp".to_string(),
+            hostadd: None,
+            portmappings: Some(vec![PortMappingSpec {
+                host_port: 32000,
+                container_port: 3546,
+                protocol: "tcp".to_string(),
+            }]),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("portmappings"));
+        assert!(json.contains("32000"));
+        assert!(json.contains("3546"));
+        assert!(json.contains("\"tcp\""));
     }
 
     #[test]

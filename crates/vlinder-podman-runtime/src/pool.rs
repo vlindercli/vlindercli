@@ -179,9 +179,12 @@ impl ContainerRuntime {
         ];
 
         let pod_name = format!("vlinder-{name}");
+        // Phase 5.2: trait carries port mappings, but pool.rs passes an empty
+        // slice for now. Phase 5.3 introduces the actor registry and starts
+        // populating this with the runtime-chosen sidecar dispatch port.
         let pod_id = self
             .podman
-            .pod_create(&pod_name, &host_aliases)
+            .pod_create(&pod_name, &host_aliases, &[])
             .await
             .map_err(|e| e.to_string())?;
 
@@ -473,7 +476,12 @@ mod tests {
         async fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
             None
         }
-        async fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
+        async fn pod_create(
+            &self,
+            _: &str,
+            _: &[String],
+            _: &[crate::podman_client::PortMapping],
+        ) -> Result<PodId, PodmanError> {
             Ok(PodId::new("mock-pod"))
         }
         async fn container_in_pod(
@@ -709,7 +717,12 @@ mod tests {
             async fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
                 None
             }
-            async fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
+            async fn pod_create(
+                &self,
+                _: &str,
+                _: &[String],
+                _: &[crate::podman_client::PortMapping],
+            ) -> Result<PodId, PodmanError> {
                 Err(PodmanError::Run("simulated failure".into()))
             }
             async fn container_in_pod(
@@ -789,7 +802,12 @@ mod tests {
             async fn image_digest(&self, _: &ImageRef) -> Option<ImageDigest> {
                 None
             }
-            async fn pod_create(&self, _: &str, _: &[String]) -> Result<PodId, PodmanError> {
+            async fn pod_create(
+                &self,
+                _: &str,
+                _: &[String],
+                _: &[crate::podman_client::PortMapping],
+            ) -> Result<PodId, PodmanError> {
                 Ok(PodId::new("mock-pod"))
             }
             async fn container_in_pod(

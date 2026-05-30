@@ -40,6 +40,20 @@ pub enum RunTarget<'a> {
     Digest(&'a ImageDigest),
 }
 
+/// Pod-level TCP port publish. Phase 5.2 surfaces this on `pod_create` so the
+/// runtime can expose the sidecar's `/v1/dispatch` port to the host; Phase 5.3
+/// wires up the runtime-chosen `host_port` per `(session, branch)` pod.
+///
+/// Pods own the network namespace, so port mappings attach at pod-create time
+/// (not per-container). UDP is not modeled in v1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortMapping {
+    /// Port on the Podman host that becomes reachable.
+    pub host_port: u16,
+    /// Port inside the pod that traffic is forwarded to.
+    pub container_port: u16,
+}
+
 impl RunTarget<'_> {
     /// The string to pass to Podman (CLI flag or API field).
     pub(crate) fn as_str(&self) -> &str {
@@ -68,7 +82,16 @@ pub trait PodmanClient: Send + Sync {
     ///
     /// `host_aliases` are `hostname:ip` pairs injected into `/etc/hosts`
     /// (e.g., `["openrouter.vlinder.local:127.0.0.1"]`).
-    async fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError>;
+    ///
+    /// `ports` are TCP port publishes attached to the pod's network namespace.
+    /// The runtime uses this for the sidecar's `/v1/dispatch` endpoint
+    /// (Phase 5.3); pass an empty slice when no ports need to be exposed.
+    async fn pod_create(
+        &self,
+        name: &str,
+        host_aliases: &[String],
+        ports: &[PortMapping],
+    ) -> Result<PodId, PodmanError>;
 
     /// Create a container inside a pod. No port mapping — containers in
     /// a pod share a network namespace (like k8s).

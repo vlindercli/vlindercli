@@ -48,7 +48,12 @@ impl PodmanClient for PodmanCliClient {
 
     // ── Pod operations ────────────────────────────────────────────────
 
-    async fn pod_create(&self, name: &str, host_aliases: &[String]) -> Result<PodId, PodmanError> {
+    async fn pod_create(
+        &self,
+        name: &str,
+        host_aliases: &[String],
+        ports: &[crate::podman_client::PortMapping],
+    ) -> Result<PodId, PodmanError> {
         let mut args = vec!["pod", "create", "--name", name];
         let add_host_args: Vec<String> = host_aliases
             .iter()
@@ -59,6 +64,22 @@ impl PodmanClient for PodmanCliClient {
             .map(std::string::String::as_str)
             .collect();
         args.extend(add_host_refs);
+
+        // Port publishes: --publish HOST:CONTAINER per mapping.
+        let publish_args: Vec<String> = ports
+            .iter()
+            .flat_map(|p| {
+                vec![
+                    "--publish".to_string(),
+                    format!("{}:{}", p.host_port, p.container_port),
+                ]
+            })
+            .collect();
+        let publish_refs: Vec<&str> = publish_args
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
+        args.extend(publish_refs);
 
         let output = Command::new("podman")
             .args(&args)
