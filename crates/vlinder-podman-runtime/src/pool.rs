@@ -9,16 +9,19 @@
 //! on the next tick.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU16;
 use std::sync::Arc;
-
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use vlinder_core::domain::{
-    Agent, AgentName, AgentStatus, ImageRef, MessageQueue, PodId, ReadinessCheck, Registry,
-    RegistryRepository, ResourceId, Runtime, RuntimeType, WorkspaceStore,
+    Agent, AgentName, AgentStatus, BranchId, ImageRef, MessageQueue, PodId, ReadinessCheck,
+    Registry, RegistryRepository, ResourceId, Runtime, RuntimeType, SessionId, WorkspaceStore,
 };
 
 use async_trait::async_trait;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::PodmanRuntimeConfig;
 use crate::podman_client::{PodmanClient, RunTarget};
@@ -60,29 +63,51 @@ pub struct ContainerRuntime {
     pods: HashMap<String, Pod>,
     config: PodmanRuntimeConfig,
     image_policy: ImagePolicy,
-    podman: Box<dyn PodmanClient>,
-    /// Queue handle used by the per-agent invoke task (Phase 5.3) to long-poll
-    /// Invoke messages. Held now to keep the construction site change in one
-    /// place; the consumer wiring lands in 5.3 / 5.4.
-    #[allow(dead_code)]
+    podman: Arc<dyn PodmanClient>,
+    /// Queue handle used by the per-agent invoke task (added in this commit,
+    /// hooked up to `deploy_agent` in Phase 5.4).
     queue: Arc<dyn MessageQueue + Send + Sync>,
     /// Optional versioned workspace store (ADR 133). `None` when the daemon
     /// has no `[workspace_store]` configured — agents then run without a
     /// versioned workspace bind-mount.
-    #[allow(dead_code)]
     workspace_store: Option<Arc<dyn WorkspaceStore>>,
-    /// Per-(session, branch) actor TTL. v1 default = INFINITY (0 secs is
-    /// modeled as infinity below). Eviction logic lands post-v1.
+    /// Per-(session, branch) actor TTL. v1 default = INFINITY (0 secs). No
+    /// eviction logic runs in v1.
     #[allow(dead_code)]
     actor_ttl: Duration,
+    /// Per-(session, branch) actor registry. Phase 5.3 introduces the field
+    /// and the `spawn_invoke_task` method that mutates it; Phase 5.4 wires
+    /// the task into the deploy flow.
+    actors: Arc<AsyncMutex<HashMap<(SessionId, BranchId), ActorPod>>>,
+    /// Per-agent background invoke tasks (mirrors Lambda's pattern).
+    invoke_tasks: HashMap<String, (JoinHandle<()>, CancellationToken)>,
+    /// Parent cancellation token; per-agent tasks get a child token.
+    shutdown: CancellationToken,
+    /// Allocator for runtime-chosen sidecar dispatch ports. Starts at 32000.
+    port_allocator: Arc<AtomicU16>,
 }
+
+/// In-memory record of a per-(session, branch) pod (the "actor's realization").
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct ActorPod {
+    pod_id: PodId,
+    /// Host port the sidecar's `/v1/dispatch` endpoint is published on.
+    sidecar_dispatch_port: u16,
+    /// For future TTL eviction; unused in v1.
+    created_at: Instant,
+}
+
+/// Sidecar dispatch port inside the pod (matches the sidecar's default; the
+/// runtime publishes this to a runtime-chosen host port via `PortMapping`).
+const SIDECAR_DISPATCH_CONTAINER_PORT: u16 = 3546;
 
 impl ContainerRuntime {
     pub fn new(
         config: &PodmanRuntimeConfig,
         registry: Arc<dyn Registry>,
         repo: Arc<dyn RegistryRepository>,
-        podman: Box<dyn PodmanClient>,
+        podman: Arc<dyn PodmanClient>,
         queue: Arc<dyn MessageQueue + Send + Sync>,
         workspace_store: Option<Arc<dyn WorkspaceStore>>,
         actor_ttl: Duration,
@@ -112,7 +137,198 @@ impl ContainerRuntime {
             queue,
             workspace_store,
             actor_ttl,
+            actors: Arc::new(AsyncMutex::new(HashMap::new())),
+            invoke_tasks: HashMap::new(),
+            shutdown: CancellationToken::new(),
+            port_allocator: Arc::new(AtomicU16::new(32000)),
         }
+    }
+
+    /// Spawn a per-agent background task that long-polls invokes and dispatches
+    /// them to per-(session, branch) actor pods. Mirrors the pattern in
+    /// `vlinder-lambda-runtime::LambdaRuntime::spawn_invoke_task`.
+    ///
+    /// The task is NOT called from anywhere in Phase 5.3; Phase 5.4 hooks it
+    /// into the deploy flow and removes the sidecar's queue polling loop.
+    #[allow(dead_code, clippy::too_many_lines)]
+    pub(crate) fn spawn_invoke_task(&mut self, agent_name: &AgentName) {
+        use vlinder_core::domain::{
+            CompleteMessage, DataMessageKind, DataRoutingKey, MessageId, QueueError,
+            RuntimeDiagnostics,
+        };
+
+        let token = self.shutdown.child_token();
+        let child = token.clone();
+        let queue = Arc::clone(&self.queue);
+        let workspace_store = self.workspace_store.clone();
+        let podman = Arc::clone(&self.podman);
+        let actors = Arc::clone(&self.actors);
+        let port_allocator = Arc::clone(&self.port_allocator);
+        let agent_id = agent_name.clone();
+        let registry = Arc::clone(&self.registry);
+        let sidecar_image = self.config.sidecar_image.clone();
+        let pod_runtime_config = self.config.clone();
+
+        let handle = tokio::spawn(async move {
+            let http = reqwest::Client::builder()
+                .timeout(Duration::from_mins(5))
+                .build()
+                .expect("reqwest client must build");
+
+            loop {
+                let received = tokio::select! {
+                    () = child.cancelled() => break,
+                    result = queue.receive_invoke(&agent_id) => result,
+                };
+
+                let (key, invoke, ack) = match received {
+                    Ok(tuple) => tuple,
+                    Err(QueueError::Timeout) => {
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            agent = agent_id.as_str(),
+                            error = %e,
+                            "container invoke receive error"
+                        );
+                        continue;
+                    }
+                };
+                let _ = ack().await;
+
+                let DataMessageKind::Invoke { harness, agent, .. } = &key.kind else {
+                    continue;
+                };
+
+                let session = key.session.clone();
+                let branch = key.branch;
+
+                // 1. HashMap lookup; if miss, activate the actor pod.
+                let dispatch_port = {
+                    let mut guard = actors.lock().await;
+                    if let Some(existing) = guard.get(&(session.clone(), branch)) {
+                        existing.sidecar_dispatch_port
+                    } else {
+                        match activate_actor(
+                            &podman,
+                            workspace_store.as_ref(),
+                            &registry,
+                            &port_allocator,
+                            &pod_runtime_config,
+                            &sidecar_image,
+                            &agent_id,
+                            &session,
+                            branch,
+                            invoke.state.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(pod) => {
+                                let port = pod.sidecar_dispatch_port;
+                                guard.insert((session.clone(), branch), pod);
+                                port
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    event = "actor.activate_failed",
+                                    agent = agent_id.as_str(),
+                                    error = %e,
+                                    "Failed to activate actor pod"
+                                );
+                                send_error_complete(&*queue, &key, agent, *harness, e).await;
+                                continue;
+                            }
+                        }
+                    }
+                };
+
+                // 2. POST to sidecar's /v1/dispatch.
+                let url = format!("http://localhost:{dispatch_port}/v1/dispatch");
+                let body = serde_json::json!({ "key": key, "msg": invoke });
+                let dispatch_result = http.post(&url).json(&body).send().await;
+
+                let resp = match dispatch_result {
+                    Ok(r) if r.status().is_success() => r,
+                    Ok(r) => {
+                        let status = r.status();
+                        let body = r.text().await.unwrap_or_default();
+                        let err = format!("dispatch returned {status}: {body}");
+                        tracing::error!(event = "dispatch.failed", agent = agent_id.as_str(), error = %err);
+                        send_error_complete(&*queue, &key, agent, *harness, err).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        let err = format!("dispatch transport failed: {e}");
+                        tracing::error!(event = "dispatch.failed", agent = agent_id.as_str(), error = %err);
+                        send_error_complete(&*queue, &key, agent, *harness, err).await;
+                        continue;
+                    }
+                };
+
+                let dispatch_resp = match resp.json::<DispatchWire>().await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let err = format!("dispatch response decode failed: {e}");
+                        tracing::error!(event = "dispatch.failed", agent = agent_id.as_str(), error = %err);
+                        send_error_complete(&*queue, &key, agent, *harness, err).await;
+                        continue;
+                    }
+                };
+
+                // 3. workspace_store.snapshot (if configured).
+                let state_pointer = match &workspace_store {
+                    Some(ws) => match ws
+                        .snapshot(&agent_id, &session, &branch, &dispatch_resp.chain_head)
+                        .await
+                    {
+                        Ok(sp) => Some(sp),
+                        Err(e) => {
+                            tracing::warn!(
+                                event = "workspace.snapshot_failed",
+                                agent = agent_id.as_str(),
+                                error = %e,
+                                "Falling back to agent-reported state"
+                            );
+                            dispatch_resp.state.clone()
+                        }
+                    },
+                    None => dispatch_resp.state.clone(),
+                };
+
+                // 4. send_complete.
+                let complete_key = DataRoutingKey {
+                    session,
+                    branch,
+                    submission: key.submission.clone(),
+                    kind: DataMessageKind::Complete {
+                        agent: agent.clone(),
+                        harness: *harness,
+                    },
+                };
+                let complete = CompleteMessage {
+                    id: MessageId::new(),
+                    dag_id: dispatch_resp.chain_head.clone(),
+                    dag_parent: dispatch_resp.chain_head.clone(),
+                    state: state_pointer,
+                    diagnostics: RuntimeDiagnostics::placeholder(dispatch_resp.duration_ms),
+                    content: dispatch_resp.content,
+                    tool_calls: dispatch_resp.tool_calls,
+                    payload: dispatch_resp.output,
+                };
+                if let Err(e) = queue.send_complete(complete_key, complete).await {
+                    tracing::error!(
+                        event = "complete.send_failed",
+                        agent = agent_id.as_str(),
+                        error = %e,
+                    );
+                }
+            }
+        });
+
+        self.invoke_tasks
+            .insert(agent_name.as_str().to_string(), (handle, token));
     }
 
     /// Access the registry (test-only, for integration test setup).
@@ -428,6 +644,238 @@ fn extract_port(url: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+/// Wire shape mirroring `vlinder_podman_sidecar::dispatch_endpoint::DispatchResponse`.
+/// Duplicated here (rather than imported) to avoid a runtime → sidecar
+/// dependency, in the same spirit as the zfs-storage ↔ zfs-server wire types.
+#[derive(serde::Deserialize)]
+struct DispatchWire {
+    output: Vec<u8>,
+    content: Option<String>,
+    tool_calls: Option<Vec<vlinder_core::domain::ToolCall>>,
+    state: Option<String>,
+    duration_ms: u64,
+    chain_head: vlinder_core::domain::DagNodeId,
+}
+
+/// Activate a fresh per-(session, branch) actor pod: allocate a sidecar
+/// dispatch port, materialise the workspace clone (if configured), and
+/// create + start a Podman pod identical in shape to the per-agent pod
+/// created by `ContainerRuntime::start`/`start_in_pod`, but with the
+/// workspace bind-mounted on the agent container and the sidecar's
+/// `/v1/dispatch` port published.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn activate_actor(
+    podman: &Arc<dyn PodmanClient>,
+    workspace_store: Option<&Arc<dyn WorkspaceStore>>,
+    registry: &Arc<dyn Registry>,
+    port_allocator: &Arc<AtomicU16>,
+    pod_runtime_config: &PodmanRuntimeConfig,
+    sidecar_image: &str,
+    agent_name: &AgentName,
+    session: &SessionId,
+    branch: BranchId,
+    parent_state: Option<&str>,
+) -> Result<ActorPod, String> {
+    use std::sync::atomic::Ordering;
+
+    use crate::podman_client::PortMapping;
+
+    // 1. Look up the agent in the registry for its image + mount declaration.
+    let agent = registry
+        .get_agent_by_name(agent_name.as_str())
+        .await
+        .ok_or_else(|| format!("agent '{}' not in registry", agent_name.as_str()))?;
+    let image_ref = ImageRef::parse(&agent.executable)
+        .unwrap_or_else(|_| ImageRef::parse("unknown/unknown").unwrap());
+
+    // 2. Workspace bind-mount (only if both manifest declares a mount and the
+    //    daemon has a workspace_store configured).
+    let mount_pair = match (agent.requirements.mount.as_ref(), workspace_store) {
+        (Some(mount_decl), Some(ws)) => {
+            let host_path = ws
+                .ensure_workspace(agent_name, session, &branch, parent_state)
+                .await
+                .map_err(|e| format!("ensure_workspace: {e}"))?;
+            Some((
+                host_path.to_string_lossy().into_owned(),
+                mount_decl.path.clone(),
+            ))
+        }
+        _ => None,
+    };
+
+    // 3. Allocate the runtime-chosen sidecar dispatch port and create the pod
+    //    with the published port mapping.
+    let host_port = port_allocator.fetch_add(1, Ordering::Relaxed);
+    let pod_name = format!(
+        "vlinder-{}-{}-{}",
+        agent_name.as_str(),
+        short(session.to_string().as_str()),
+        branch.as_i64()
+    );
+    let host_aliases = vec![
+        "vlinder.local:127.0.0.1".to_string(),
+        "metadata.vlinder.local:127.0.0.1".to_string(),
+        "runtime.vlinder.local:127.0.0.1".to_string(),
+        "ollama.vlinder.local:127.0.0.1".to_string(),
+        "openrouter.vlinder.local:127.0.0.1".to_string(),
+        "sqlite-vec.vlinder.local:127.0.0.1".to_string(),
+        "sqlite-kv.vlinder.local:127.0.0.1".to_string(),
+    ];
+    let port_mappings = [PortMapping {
+        host_port,
+        container_port: SIDECAR_DISPATCH_CONTAINER_PORT,
+    }];
+    let pod_id = podman
+        .pod_create(&pod_name, &host_aliases, &port_mappings)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 4. Add the agent container (with optional workspace bind-mount).
+    let volume_owned: Vec<(String, String)> = mount_pair
+        .iter()
+        .map(|(h, c)| (h.clone(), c.clone()))
+        .collect();
+    let volume_refs: Vec<(&str, &str)> = volume_owned
+        .iter()
+        .map(|(h, c)| (h.as_str(), c.as_str()))
+        .collect();
+    let run_target = RunTarget::Ref(&image_ref);
+    if let Err(e) = podman
+        .container_in_pod(run_target, &pod_id, &[], &volume_refs)
+        .await
+    {
+        podman.pod_stop_and_remove(&pod_id, 0).await;
+        return Err(format!("agent container_in_pod: {e}"));
+    }
+
+    // 5. Build sidecar env vars (same shape as the existing per-agent
+    //    `start_in_pod` path; reused intentionally).
+    let sidecar_image_ref = ImageRef::parse(sidecar_image)
+        .unwrap_or_else(|_| ImageRef::parse("localhost/vlinder-podman-sidecar:latest").unwrap());
+    let sidecar_target = RunTarget::Ref(&sidecar_image_ref);
+
+    let registry_url = format!(
+        "http://host.containers.internal:{}",
+        extract_port(&pod_runtime_config.registry_addr, 9090)
+    );
+    let state_url = format!(
+        "http://host.containers.internal:{}",
+        extract_port(&pod_runtime_config.state_addr, 9092)
+    );
+    let secret_url = format!(
+        "http://host.containers.internal:{}",
+        extract_port(&pod_runtime_config.secret_addr, 9093)
+    );
+    let image_digest_str = podman
+        .image_digest(&image_ref)
+        .await
+        .map(String::from)
+        .unwrap_or_default();
+
+    let dispatch_port_str = SIDECAR_DISPATCH_CONTAINER_PORT.to_string();
+    let mut env_vars: Vec<(&str, String)> = vec![
+        ("VLINDER_AGENT", agent_name.as_str().to_string()),
+        (
+            "VLINDER_QUEUE_BACKEND",
+            pod_runtime_config.queue_backend.clone(),
+        ),
+        ("VLINDER_REGISTRY_URL", registry_url),
+        ("VLINDER_STATE_URL", state_url),
+        ("VLINDER_SECRET_URL", secret_url),
+        ("VLINDER_CONTAINER_PORT", "8080".to_string()),
+        ("VLINDER_SIDECAR_DISPATCH_PORT", dispatch_port_str),
+        ("VLINDER_IMAGE_REF", image_ref.as_str().to_string()),
+        ("VLINDER_IMAGE_DIGEST", image_digest_str),
+    ];
+    if pod_runtime_config.queue_backend == "amqp" {
+        let amqp_url = rewrite_host_for_container(&pod_runtime_config.amqp_url);
+        env_vars.push(("VLINDER_AMQP_URL", amqp_url));
+    } else {
+        let nats_url = format!(
+            "nats://host.containers.internal:{}",
+            extract_port(&pod_runtime_config.nats_url, 4222)
+        );
+        env_vars.push(("VLINDER_NATS_URL", nats_url));
+    }
+    let env_refs: Vec<(&str, &str)> = env_vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    if let Err(e) = podman
+        .container_in_pod(sidecar_target, &pod_id, &env_refs, &[])
+        .await
+    {
+        podman.pod_stop_and_remove(&pod_id, 0).await;
+        return Err(format!("sidecar container_in_pod: {e}"));
+    }
+
+    // 6. Start the pod.
+    if let Err(e) = podman.pod_start(&pod_id).await {
+        podman.pod_stop_and_remove(&pod_id, 0).await;
+        return Err(format!("pod_start: {e}"));
+    }
+
+    tracing::info!(
+        event = "actor.activated",
+        agent = agent_name.as_str(),
+        session = %session,
+        branch = branch.as_i64(),
+        pod = %pod_id,
+        sidecar_dispatch_port = host_port,
+        "Per-(session, branch) actor pod activated"
+    );
+
+    Ok(ActorPod {
+        pod_id,
+        sidecar_dispatch_port: host_port,
+        created_at: Instant::now(),
+    })
+}
+
+/// First 8 characters of a string (for pod name shortening). Pads with `x` if
+/// shorter; safe for `(SessionId, BranchId)` UUIDs and arbitrary names.
+fn short(s: &str) -> String {
+    let mut out: String = s.chars().take(8).collect();
+    while out.len() < 8 {
+        out.push('x');
+    }
+    out
+}
+
+/// Construct a Complete carrying an error payload and send it on the queue.
+/// Used by `spawn_invoke_task` whenever a stage in the dispatch pipeline
+/// (activation, transport, decode, response) fails for an individual invoke.
+async fn send_error_complete(
+    queue: &(dyn vlinder_core::domain::MessageQueue + Send + Sync),
+    invoke_key: &vlinder_core::domain::DataRoutingKey,
+    agent: &AgentName,
+    harness: vlinder_core::domain::HarnessType,
+    err: impl std::fmt::Display,
+) {
+    use vlinder_core::domain::{
+        CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey, MessageId, RuntimeDiagnostics,
+    };
+
+    let complete_key = DataRoutingKey {
+        session: invoke_key.session.clone(),
+        branch: invoke_key.branch,
+        submission: invoke_key.submission.clone(),
+        kind: DataMessageKind::Complete {
+            agent: agent.clone(),
+            harness,
+        },
+    };
+    let complete = CompleteMessage {
+        id: MessageId::new(),
+        dag_id: DagNodeId::root(),
+        dag_parent: DagNodeId::root(),
+        state: None,
+        diagnostics: RuntimeDiagnostics::placeholder(0),
+        content: None,
+        tool_calls: None,
+        payload: format!("[error] {err}").into_bytes(),
+    };
+    let _ = queue.send_complete(complete_key, complete).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,7 +964,7 @@ mod tests {
             &test_config(),
             test_registry(),
             test_repo(),
-            Box::new(MockPodmanClient),
+            Arc::new(MockPodmanClient),
             test_queue(),
             None,
             Duration::from_secs(0),
@@ -756,7 +1204,7 @@ mod tests {
             &test_config(),
             test_registry(),
             test_repo(),
-            Box::new(FailingPodmanClient),
+            Arc::new(FailingPodmanClient),
             test_queue(),
             None,
             Duration::from_secs(0),
@@ -843,7 +1291,7 @@ mod tests {
             &test_config(),
             test_registry(),
             test_repo(),
-            Box::new(CrashablePodmanClient { pod_alive }),
+            Arc::new(CrashablePodmanClient { pod_alive }),
             test_queue(),
             None,
             Duration::from_secs(0),

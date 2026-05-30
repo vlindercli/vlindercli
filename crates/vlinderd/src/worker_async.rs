@@ -123,14 +123,14 @@ pub async fn run_agent_container_worker(config: &Config, shutdown: CancellationT
         secret_addr: config.distributed.secret_addr.clone(),
     };
 
-    let podman: Box<dyn vlinder_podman_runtime::PodmanClient> = if let Some(path) =
+    let podman: Arc<dyn vlinder_podman_runtime::PodmanClient> = if let Some(path) =
         vlinder_podman_runtime::resolve_socket(&config.runtime.podman_socket)
     {
         tracing::info!(event = "podman.socket", path = %path.display(), "Using Podman socket API");
-        Box::new(vlinder_podman_runtime::PodmanApiClient::new(&path))
+        Arc::new(vlinder_podman_runtime::PodmanApiClient::new(&path))
     } else {
         tracing::info!(event = "podman.cli", "Using Podman CLI");
-        Box::new(vlinder_podman_runtime::PodmanCliClient)
+        Arc::new(vlinder_podman_runtime::PodmanCliClient)
     };
 
     let engine_version = podman.engine_version().await;

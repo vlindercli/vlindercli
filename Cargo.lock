@@ -6615,14 +6615,17 @@ dependencies = [
  "http-body-util",
  "hyper 1.8.1",
  "hyper-util",
+ "reqwest 0.12.28",
  "semver",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tower-service",
  "tracing",
  "vlinder-core",
+ "vlinder-provider-server",
 ]
 
 [[package]]
