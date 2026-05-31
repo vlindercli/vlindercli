@@ -146,7 +146,13 @@ pub async fn run_agent_container_worker(config: &Config, shutdown: CancellationT
     // Substrates for Phase 4.2: the queue (consumed by the per-agent invoke
     // task that lands in Phase 5.3) and the workspace store (consumed at pod
     // creation time once Phase 5.3 wires it in).
-    let queue = crate::queue_factory::from_config_async(config)
+    //
+    // The recording variant is required: Phase 5.4 moved Complete-sending
+    // from the sidecar (which used the recording queue) into the runtime.
+    // Without recording here, send_complete reaches NATS but never lands
+    // in the DAG, leaving every session as invoke-only and breaking
+    // session-get/fork/promote.
+    let queue = crate::queue_factory::recording_from_config_async(config)
         .await
         .expect("Failed to create queue for container runtime worker");
     let workspace_store = config.workspace_store.as_ref().map(|cfg| {

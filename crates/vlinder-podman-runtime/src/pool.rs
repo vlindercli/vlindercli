@@ -175,7 +175,7 @@ impl ContainerRuntime {
     #[allow(clippy::too_many_lines)]
     pub(crate) fn spawn_invoke_task(&mut self, agent_name: &AgentName) {
         use vlinder_core::domain::{
-            CompleteMessage, DataMessageKind, DataRoutingKey, MessageId, QueueError,
+            CompleteMessage, DagNodeId, DataMessageKind, DataRoutingKey, MessageId, QueueError,
             RuntimeDiagnostics,
         };
 
@@ -329,9 +329,15 @@ impl ContainerRuntime {
                         harness: *harness,
                     },
                 };
+                // `dag_id` must be the root sentinel — the recording queue
+                // computes the real Complete hash from message+parent before
+                // storing. Reusing chain_head as dag_id collides with the
+                // existing invoke row (dag_nodes PRIMARY KEY hash), making
+                // the Complete drop silently and breaking session-get/fork.
+                // Mirrors `provider_server::dispatch::send_complete_with_parsed`.
                 let complete = CompleteMessage {
                     id: MessageId::new(),
-                    dag_id: dispatch_resp.chain_head.clone(),
+                    dag_id: DagNodeId::root(),
                     dag_parent: dispatch_resp.chain_head.clone(),
                     state: state_pointer,
                     diagnostics: RuntimeDiagnostics::placeholder(dispatch_resp.duration_ms),
