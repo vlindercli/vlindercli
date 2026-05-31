@@ -129,6 +129,19 @@ impl PodmanClient for PodmanCliClient {
             ));
         }
 
+        // Disable SELinux confinement when a bind mount is present. The
+        // host-side ZFS clones don't expose security xattrs, so without
+        // this the container's `container_t` domain can't traverse the
+        // mount even as root. CLI form uses `label=disable` (the CLI parses
+        // it into selinux_opts:["disable"] before calling libpod — the
+        // value-only form is what the REST API takes; this is the CLI's
+        // composite syntax). Verified via probe-zfs-podman.sh and
+        // probe-selinux-behavior.sh in vlinder-dev-machine.
+        if !bind_mounts.is_empty() {
+            args.push("--security-opt".to_string());
+            args.push("label=disable".to_string());
+        }
+
         args.push(image.as_str().to_string());
 
         let output = Command::new("podman")

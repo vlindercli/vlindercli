@@ -181,14 +181,9 @@ impl PodmanClient for PodmanApiClient {
                     options: vec!["rbind".to_string(), "rw".to_string(), "rshared".to_string()],
                 }),
         );
-        // Disable SELinux confinement on containers that carry bind mounts.
-        // The host-side ZFS clones don't expose security xattrs, so the
-        // container's `container_t` domain can't access them even as root.
-        // Value is `"disable"`, not `"label=disable"` — the latter is the
-        // CLI's --security-opt syntax which the CLI splits into
-        // (category, value) before calling libpod. The REST `selinux_opts`
-        // field expects the value-only form; `"label=disable"` is silently
-        // ignored. Verified via probe-selinux-behavior.sh in vlinder-dev-machine.
+        // SelinuxOpts `disable` (not the CLI's `label=disable`) is the
+        // value-only form libpod's REST takes. Required because ZFS clones
+        // don't expose security xattrs (probe-selinux-behavior.sh).
         let selinux_opts = if bind_mounts.is_empty() {
             None
         } else {
@@ -209,6 +204,8 @@ impl PodmanClient for PodmanApiClient {
         let url = format!("{API_BASE}/containers/create");
         let json_bytes = serde_json::to_vec(&spec)
             .map_err(|e| PodmanError::Run(format!("container create in pod failed: {e}")))?;
+        tracing::debug!(event = "podman_api.container_create.request", url = %url,
+            body = %String::from_utf8_lossy(&json_bytes));
 
         let req = Request::builder()
             .method(Method::POST)
@@ -725,5 +722,29 @@ mod tests {
             !json.contains("label=disable"),
             "must NOT use CLI 'label=disable' syntax; libpod ignores it. got {json}"
         );
+    }
+
+    /// Dump the JSON for a fully-realistic todoapp container create.
+    /// Run with `cargo test -p vlinder-podman-runtime dump_realistic -- --nocapture`
+    /// to inspect what vlinderd actually emits.
+    #[test]
+    fn dump_realistic_pod_container_create_spec() {
+        let spec = PodContainerCreateSpec {
+            image: "localhost/todoapp-sqlite-zfs:latest".to_string(),
+            pod: "deadbeef".to_string(),
+            env: Some({
+                let mut m = HashMap::new();
+                m.insert("FOO".into(), "BAR".into());
+                m
+            }),
+            mounts: Some(vec![MountSpec {
+                mount_type: "bind".to_string(),
+                source: "/var/lib/vlinder/agents/todoapp-sqlite-zfs/sessions/abc/1".to_string(),
+                destination: "/workspaces".to_string(),
+                options: vec!["rbind".to_string(), "rw".to_string(), "rshared".to_string()],
+            }]),
+            selinux_opts: Some(vec!["disable".to_string()]),
+        };
+        eprintln!("WIRE JSON >>> {}", serde_json::to_string(&spec).unwrap());
     }
 }
