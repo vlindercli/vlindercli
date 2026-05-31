@@ -898,19 +898,40 @@ async fn activate_actor(
     })
 }
 
-/// Poll `localhost:host_port` until a TCP connect succeeds (sidecar is ready
-/// to accept HTTP) or the deadline is reached.
+/// Poll `localhost:host_port/v1/dispatch` until a real HTTP exchange completes
+/// (the sidecar's full stack is up: conmon proxy + in-pod sidecar + axum
+/// router). Any HTTP status counts as success — even 4xx — because the
+/// dispatch endpoint is alive and answering requests by then. Only transport
+/// errors (connection refused, reset, dial failed) are treated as not-ready.
 async fn wait_for_sidecar_dispatch(host_port: u16, deadline: Duration) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| format!("reqwest builder: {e}"))?;
+    let url = format!("http://127.0.0.1:{host_port}/v1/dispatch");
+
     let start = Instant::now();
     let mut attempt: u32 = 0;
     loop {
-        match tokio::net::TcpStream::connect(("127.0.0.1", host_port)).await {
-            Ok(_) => return Ok(()),
+        attempt += 1;
+        // Empty JSON body — the sidecar will reject this with 422 (missing
+        // fields), which is exactly the success signal we want: the full
+        // request/response cycle worked.
+        match client.post(&url).json(&serde_json::json!({})).send().await {
+            Ok(resp) => {
+                tracing::debug!(
+                    event = "sidecar.dispatch_ready",
+                    port = host_port,
+                    status = resp.status().as_u16(),
+                    attempts = attempt,
+                    "Sidecar dispatch endpoint responding"
+                );
+                return Ok(());
+            }
             Err(e) if start.elapsed() >= deadline => {
                 return Err(format!("timed out after {attempt} attempts: {e}"));
             }
             Err(_) => {
-                attempt += 1;
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
