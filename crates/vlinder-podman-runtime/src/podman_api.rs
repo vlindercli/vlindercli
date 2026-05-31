@@ -160,24 +160,25 @@ impl PodmanClient for PodmanApiClient {
         let mut mounts: Vec<MountSpec> = volumes
             .iter()
             .map(|(vol_name, container_path)| MountSpec {
-                name: vol_name.to_string(),
                 mount_type: "volume".to_string(),
-                source: vol_name.to_string(),
-                destination: container_path.to_string(),
+                source: (*vol_name).to_string(),
+                destination: (*container_path).to_string(),
                 options: vec!["ro".to_string()],
             })
             .collect();
-        // Append bind mounts (ADR 133). Bind mounts are read-write by default
-        // and use the host filesystem path directly (no named-volume lookup).
+        // Append bind mounts (ADR 133). Bind mounts are read-write and
+        // use the host filesystem path directly (no named-volume lookup).
+        // `rshared` propagation lets ZFS mounts created on the host (by
+        // vlinder-zfs-server) under /var/lib/vlinder appear inside the
+        // agent container without re-mounting.
         mounts.extend(
             bind_mounts
                 .iter()
                 .map(|(host_path, container_path)| MountSpec {
-                    name: (*host_path).to_string(),
                     mount_type: "bind".to_string(),
                     source: (*host_path).to_string(),
                     destination: (*container_path).to_string(),
-                    options: vec!["rbind".to_string(), "rw".to_string()],
+                    options: vec!["rbind".to_string(), "rw".to_string(), "rshared".to_string()],
                 }),
         );
         let spec = PodContainerCreateSpec {
@@ -415,17 +416,32 @@ struct PodContainerCreateSpec {
 }
 
 /// OCI mount spec for attaching volumes to containers (ADR 107).
+/// Mount entry on a Podman container-create spec.
+///
+/// Libpod (Podman's REST API) expects **lowercase** JSON field names for
+/// mount entries: `destination`, `source`, `type`, `options`. The earlier
+/// `PascalCase` shape (`Destination`, `Source`, `Type`, `Options`) was
+/// silently ignored by Podman — the container created fine but came up
+/// with `Mounts: []` because Podman didn't recognize any of the fields.
+///
+/// This bit us on the ZFS workspace path: ZFS clones were created and
+/// vlinderd passed the bind-mount to `container_in_pod`, but the agent
+/// container had no `/workspaces` because the mount-spec JSON serialized
+/// with the wrong field names. The volumes path was never exercised in
+/// production (s3fs mounts were unused before being removed in ADR 133)
+/// so the bug went unnoticed.
+///
+/// The `Name` field is not part of libpod's Mount schema and is dropped
+/// here. (Named volumes use a separate `volumes` field on the spec, not
+/// the `mounts` field.)
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 struct MountSpec {
-    #[serde(rename = "Name")]
-    name: String,
-    #[serde(rename = "Type")]
-    mount_type: String,
-    #[serde(rename = "Source")]
-    source: String,
-    #[serde(rename = "Destination")]
     destination: String,
-    #[serde(rename = "Options")]
+    #[serde(skip_serializing_if = "String::is_empty")]
+    source: String,
+    #[serde(rename = "type")]
+    mount_type: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     options: Vec<String>,
 }
 
@@ -586,22 +602,22 @@ mod tests {
     #[test]
     fn mount_spec_serialization() {
         let spec = MountSpec {
-            name: "vlinder-mount-support-knowledge".to_string(),
-            mount_type: "volume".to_string(),
-            source: "vlinder-mount-support-knowledge".to_string(),
-            destination: "/knowledge".to_string(),
-            options: vec!["ro".to_string()],
+            mount_type: "bind".to_string(),
+            source: "/var/lib/vlinder/agents/x/sessions/y/1".to_string(),
+            destination: "/workspaces".to_string(),
+            options: vec!["rbind".to_string(), "rw".to_string(), "rshared".to_string()],
         };
         let json = serde_json::to_string(&spec).unwrap();
-        assert!(json.contains(r#""Type":"volume"#));
-        assert!(json.contains(r#""Destination":"/knowledge"#));
-        assert!(json.contains(r#""Options":["ro"]"#));
+        // Libpod expects lowercase field names.
+        assert!(json.contains(r#""type":"bind"#));
+        assert!(json.contains(r#""destination":"/workspaces"#));
+        assert!(json.contains(r#""source":"/var/lib/vlinder/agents/x/sessions/y/1"#));
+        assert!(json.contains(r#""options":["rbind","rw","rshared"]"#));
     }
 
     #[test]
     fn mount_spec_round_trip() {
         let spec = MountSpec {
-            name: "vol".to_string(),
             mount_type: "volume".to_string(),
             source: "vol".to_string(),
             destination: "/data".to_string(),
@@ -649,7 +665,6 @@ mod tests {
             pod: "pod456".to_string(),
             env: None,
             mounts: Some(vec![MountSpec {
-                name: "vlinder-mount-support-knowledge".to_string(),
                 mount_type: "volume".to_string(),
                 source: "vlinder-mount-support-knowledge".to_string(),
                 destination: "/knowledge".to_string(),
