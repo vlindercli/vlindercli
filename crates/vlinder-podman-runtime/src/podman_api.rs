@@ -178,28 +178,19 @@ impl PodmanClient for PodmanApiClient {
                     mount_type: "bind".to_string(),
                     source: (*host_path).to_string(),
                     destination: (*container_path).to_string(),
-                    // `context=` assigns a SELinux label at mount time
-                    // without touching the source filesystem's xattrs.
-                    // We need this because ZFS-on-this-kernel doesn't
-                    // expose security xattrs in a form Podman's `z`
-                    // relabel can read or write: `ls -lZ` on the host
-                    // ZFS clone shows `?` for the security context,
-                    // which means `z` finds no label to copy from,
-                    // silently does nothing, and the agent container
-                    // (running in `container_t` domain) gets Permission
-                    // denied trying to access an unlabeled directory.
-                    //
-                    // `container_file_t` with the base sensitivity
-                    // (`:s0`, no categories) is the standard label for
-                    // files any `container_t` process may access.
-                    options: vec![
-                        "rbind".to_string(),
-                        "rw".to_string(),
-                        "rshared".to_string(),
-                        "context=system_u:object_r:container_file_t:s0".to_string(),
-                    ],
+                    options: vec!["rbind".to_string(), "rw".to_string(), "rshared".to_string()],
                 }),
         );
+        // Disable SELinux confinement on containers that carry bind mounts.
+        // The host-side ZFS clones don't expose security xattrs, so the
+        // container's `container_t` domain can't access them even as root.
+        // label=disable is per-container; the rest of the system stays
+        // SELinux Enforcing.
+        let selinux_opts = if bind_mounts.is_empty() {
+            None
+        } else {
+            Some(vec!["label=disable".to_string()])
+        };
         let spec = PodContainerCreateSpec {
             image: image.as_str().to_string(),
             pod: pod_id.as_str().to_string(),
@@ -209,6 +200,7 @@ impl PodmanClient for PodmanApiClient {
             } else {
                 Some(mounts)
             },
+            selinux_opts,
         };
 
         let url = format!("{API_BASE}/containers/create");
@@ -432,6 +424,16 @@ struct PodContainerCreateSpec {
     env: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mounts: Option<Vec<MountSpec>>,
+    /// `SELinux` options on the container. Used to set `label=disable` on
+    /// containers that bind-mount workspace paths whose host filesystem
+    /// (ZFS in our case) doesn't carry `SELinux` xattrs — without it,
+    /// `container_t` can't access an unlabeled directory and gets
+    /// Permission denied even when running as uid=0. Per-mount alternatives
+    /// (`z`, `Z`, `context=`) are silently dropped from libpod's mount
+    /// options array; the `SpecGenerator`'s `selinux_opts` field is the
+    /// supported path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selinux_opts: Option<Vec<String>>,
 }
 
 /// OCI mount spec for attaching volumes to containers (ADR 107).
@@ -596,6 +598,7 @@ mod tests {
             pod: "pod123".to_string(),
             env: Some(env),
             mounts: None,
+            selinux_opts: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains("KEY"));
@@ -610,6 +613,7 @@ mod tests {
             pod: "pod123".to_string(),
             env: None,
             mounts: None,
+            selinux_opts: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert!(!json.contains("env"));
@@ -624,12 +628,7 @@ mod tests {
             mount_type: "bind".to_string(),
             source: "/var/lib/vlinder/agents/x/sessions/y/1".to_string(),
             destination: "/workspaces".to_string(),
-            options: vec![
-                "rbind".to_string(),
-                "rw".to_string(),
-                "rshared".to_string(),
-                "context=system_u:object_r:container_file_t:s0".to_string(),
-            ],
+            options: vec!["rbind".to_string(), "rw".to_string(), "rshared".to_string()],
         };
         let json = serde_json::to_string(&spec).unwrap();
         // Libpod expects lowercase field names.
@@ -637,7 +636,6 @@ mod tests {
         assert!(json.contains(r#""destination":"/workspaces"#));
         assert!(json.contains(r#""source":"/var/lib/vlinder/agents/x/sessions/y/1"#));
         assert!(json.contains(r#""rshared""#));
-        assert!(json.contains("context=system_u:object_r:container_file_t:s0"));
     }
 
     #[test]
@@ -695,6 +693,7 @@ mod tests {
                 destination: "/knowledge".to_string(),
                 options: vec!["ro".to_string()],
             }]),
+            selinux_opts: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains("mounts"));
