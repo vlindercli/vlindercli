@@ -178,19 +178,25 @@ impl PodmanClient for PodmanApiClient {
                     mount_type: "bind".to_string(),
                     source: (*host_path).to_string(),
                     destination: (*container_path).to_string(),
-                    // `z` = SELinux shared label. The bootc image runs SELinux
-                    // in Enforcing mode, so without this the agent container
-                    // sees Permission denied on /workspaces even when it's
-                    // running as root — the host-side ZFS clone has a label
-                    // its domain can't read. Shared label (z) is the right
-                    // choice over private (Z) because zfs-server (privileged,
-                    // unconfined) also touches the same path, and shared
-                    // doesn't restrict to a single container's UUID.
+                    // `context=` assigns a SELinux label at mount time
+                    // without touching the source filesystem's xattrs.
+                    // We need this because ZFS-on-this-kernel doesn't
+                    // expose security xattrs in a form Podman's `z`
+                    // relabel can read or write: `ls -lZ` on the host
+                    // ZFS clone shows `?` for the security context,
+                    // which means `z` finds no label to copy from,
+                    // silently does nothing, and the agent container
+                    // (running in `container_t` domain) gets Permission
+                    // denied trying to access an unlabeled directory.
+                    //
+                    // `container_file_t` with the base sensitivity
+                    // (`:s0`, no categories) is the standard label for
+                    // files any `container_t` process may access.
                     options: vec![
                         "rbind".to_string(),
                         "rw".to_string(),
                         "rshared".to_string(),
-                        "z".to_string(),
+                        "context=system_u:object_r:container_file_t:s0".to_string(),
                     ],
                 }),
         );
@@ -622,7 +628,7 @@ mod tests {
                 "rbind".to_string(),
                 "rw".to_string(),
                 "rshared".to_string(),
-                "z".to_string(),
+                "context=system_u:object_r:container_file_t:s0".to_string(),
             ],
         };
         let json = serde_json::to_string(&spec).unwrap();
@@ -630,7 +636,8 @@ mod tests {
         assert!(json.contains(r#""type":"bind"#));
         assert!(json.contains(r#""destination":"/workspaces"#));
         assert!(json.contains(r#""source":"/var/lib/vlinder/agents/x/sessions/y/1"#));
-        assert!(json.contains(r#""options":["rbind","rw","rshared","z"]"#));
+        assert!(json.contains(r#""rshared""#));
+        assert!(json.contains("context=system_u:object_r:container_file_t:s0"));
     }
 
     #[test]
