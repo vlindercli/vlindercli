@@ -702,4 +702,28 @@ mod tests {
         assert!(json.contains("mounts"));
         assert!(json.contains("/knowledge"));
     }
+
+    /// Pins the `SelinuxOpts` wire shape: the value is the option-only form
+    /// (`"disable"`), NOT the CLI's `"label=disable"` syntax. libpod silently
+    /// ignores the CLI form. See probe-selinux-behavior.sh in the
+    /// vlinder-dev-machine repo for the behavioral verification.
+    #[test]
+    fn selinux_opts_emits_value_only_form() {
+        let spec = PodContainerCreateSpec {
+            image: "x".to_string(),
+            pod: "p".to_string(),
+            env: None,
+            mounts: None,
+            selinux_opts: Some(vec!["disable".to_string()]),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(
+            json.contains(r#""selinux_opts":["disable"]"#),
+            "wire shape regressed; got {json}"
+        );
+        assert!(
+            !json.contains("label=disable"),
+            "must NOT use CLI 'label=disable' syntax; libpod ignores it. got {json}"
+        );
+    }
 }
