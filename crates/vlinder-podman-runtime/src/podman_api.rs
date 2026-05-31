@@ -184,12 +184,15 @@ impl PodmanClient for PodmanApiClient {
         // Disable SELinux confinement on containers that carry bind mounts.
         // The host-side ZFS clones don't expose security xattrs, so the
         // container's `container_t` domain can't access them even as root.
-        // label=disable is per-container; the rest of the system stays
-        // SELinux Enforcing.
+        // Value is `"disable"`, not `"label=disable"` — the latter is the
+        // CLI's --security-opt syntax which the CLI splits into
+        // (category, value) before calling libpod. The REST `selinux_opts`
+        // field expects the value-only form; `"label=disable"` is silently
+        // ignored. Verified via probe-selinux-behavior.sh in vlinder-dev-machine.
         let selinux_opts = if bind_mounts.is_empty() {
             None
         } else {
-            Some(vec!["label=disable".to_string()])
+            Some(vec!["disable".to_string()])
         };
         let spec = PodContainerCreateSpec {
             image: image.as_str().to_string(),
