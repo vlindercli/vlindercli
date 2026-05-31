@@ -97,13 +97,19 @@ pub trait PodmanClient: Send + Sync {
     /// a pod share a network namespace (like k8s).
     ///
     /// `volumes` are `(volume_name, container_path)` pairs for read-only
-    /// volume mounts (ADR 107).
+    /// **named volume** mounts (e.g. s3fs-backed volumes, ADR 107).
+    ///
+    /// `bind_mounts` are `(host_path, container_path)` pairs for read-write
+    /// **bind mounts** of host filesystem paths (ADR 133 workspace mount
+    /// uses this — the ZFS clone's mountpoint on the host is bind-mounted
+    /// at the agent's declared mount.path).
     async fn container_in_pod(
         &self,
         image: RunTarget<'_>,
         pod_id: &PodId,
         env_vars: &[(&str, &str)],
         volumes: &[(&str, &str)],
+        bind_mounts: &[(&str, &str)],
     ) -> Result<ContainerId, PodmanError>;
 
     /// Create a named Podman volume with the given driver and options.

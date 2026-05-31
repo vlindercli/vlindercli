@@ -104,6 +104,7 @@ impl PodmanClient for PodmanCliClient {
         pod_id: &PodId,
         env_vars: &[(&str, &str)],
         volumes: &[(&str, &str)],
+        bind_mounts: &[(&str, &str)],
     ) -> Result<ContainerId, PodmanError> {
         let mut args = vec![
             "create".to_string(),
@@ -119,6 +120,13 @@ impl PodmanClient for PodmanCliClient {
         for (vol_name, container_path) in volumes {
             args.push("--volume".to_string());
             args.push(format!("{vol_name}:{container_path}:ro"));
+        }
+
+        for (host_path, container_path) in bind_mounts {
+            args.push("--mount".to_string());
+            args.push(format!(
+                "type=bind,source={host_path},destination={container_path},bind-propagation=rshared"
+            ));
         }
 
         args.push(image.as_str().to_string());

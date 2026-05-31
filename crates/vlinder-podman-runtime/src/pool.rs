@@ -476,7 +476,7 @@ impl ContainerRuntime {
 
         // 3. Add agent container (with mount volumes, no env vars)
         self.podman
-            .container_in_pod(run_target, pod_id, &[], &volume_refs)
+            .container_in_pod(run_target, pod_id, &[], &volume_refs, &[])
             .await
             .map_err(|e| e.to_string())?;
 
@@ -531,7 +531,7 @@ impl ContainerRuntime {
 
         // 5. Add sidecar container (no volumes — sidecar doesn't need file mounts)
         self.podman
-            .container_in_pod(sidecar_target, pod_id, &env_refs, &[])
+            .container_in_pod(sidecar_target, pod_id, &env_refs, &[], &[])
             .await
             .map_err(|e| e.to_string())?;
 
@@ -785,18 +785,21 @@ async fn activate_actor(
         .await
         .map_err(|e| e.to_string())?;
 
-    // 4. Add the agent container (with optional workspace bind-mount).
-    let volume_owned: Vec<(String, String)> = mount_pair
+    // 4. Add the agent container with the workspace as a bind mount.
+    //    mount_pair carries (host_path_of_zfs_clone, container_path) — pass it
+    //    via the bind_mounts param (read-write, type=bind) NOT volumes (which
+    //    are interpreted as named volumes and would silently fail).
+    let bind_owned: Vec<(String, String)> = mount_pair
         .iter()
         .map(|(h, c)| (h.clone(), c.clone()))
         .collect();
-    let volume_refs: Vec<(&str, &str)> = volume_owned
+    let bind_refs: Vec<(&str, &str)> = bind_owned
         .iter()
         .map(|(h, c)| (h.as_str(), c.as_str()))
         .collect();
     let run_target = RunTarget::Ref(&image_ref);
     if let Err(e) = podman
-        .container_in_pod(run_target, &pod_id, &[], &volume_refs)
+        .container_in_pod(run_target, &pod_id, &[], &[], &bind_refs)
         .await
     {
         podman.pod_stop_and_remove(&pod_id, 0).await;
@@ -854,7 +857,7 @@ async fn activate_actor(
     }
     let env_refs: Vec<(&str, &str)> = env_vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
     if let Err(e) = podman
-        .container_in_pod(sidecar_target, &pod_id, &env_refs, &[])
+        .container_in_pod(sidecar_target, &pod_id, &env_refs, &[], &[])
         .await
     {
         podman.pod_stop_and_remove(&pod_id, 0).await;
@@ -1044,6 +1047,7 @@ mod tests {
             &self,
             _: RunTarget<'_>,
             _: &PodId,
+            _: &[(&str, &str)],
             _: &[(&str, &str)],
             _: &[(&str, &str)],
         ) -> Result<ContainerId, PodmanError> {
@@ -1287,6 +1291,7 @@ mod tests {
                 _: &PodId,
                 _: &[(&str, &str)],
                 _: &[(&str, &str)],
+                _: &[(&str, &str)],
             ) -> Result<ContainerId, PodmanError> {
                 Ok(ContainerId::new("x"))
             }
@@ -1370,6 +1375,7 @@ mod tests {
                 &self,
                 _: RunTarget<'_>,
                 _: &PodId,
+                _: &[(&str, &str)],
                 _: &[(&str, &str)],
                 _: &[(&str, &str)],
             ) -> Result<ContainerId, PodmanError> {

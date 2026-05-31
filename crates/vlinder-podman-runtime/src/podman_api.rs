@@ -151,12 +151,13 @@ impl PodmanClient for PodmanApiClient {
         pod_id: &PodId,
         env_vars: &[(&str, &str)],
         volumes: &[(&str, &str)],
+        bind_mounts: &[(&str, &str)],
     ) -> Result<ContainerId, PodmanError> {
         let env: HashMap<String, String> = env_vars
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        let mounts: Vec<MountSpec> = volumes
+        let mut mounts: Vec<MountSpec> = volumes
             .iter()
             .map(|(vol_name, container_path)| MountSpec {
                 name: vol_name.to_string(),
@@ -166,6 +167,19 @@ impl PodmanClient for PodmanApiClient {
                 options: vec!["ro".to_string()],
             })
             .collect();
+        // Append bind mounts (ADR 133). Bind mounts are read-write by default
+        // and use the host filesystem path directly (no named-volume lookup).
+        mounts.extend(
+            bind_mounts
+                .iter()
+                .map(|(host_path, container_path)| MountSpec {
+                    name: (*host_path).to_string(),
+                    mount_type: "bind".to_string(),
+                    source: (*host_path).to_string(),
+                    destination: (*container_path).to_string(),
+                    options: vec!["rbind".to_string(), "rw".to_string()],
+                }),
+        );
         let spec = PodContainerCreateSpec {
             image: image.as_str().to_string(),
             pod: pod_id.as_str().to_string(),
