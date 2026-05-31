@@ -178,7 +178,20 @@ impl PodmanClient for PodmanApiClient {
                     mount_type: "bind".to_string(),
                     source: (*host_path).to_string(),
                     destination: (*container_path).to_string(),
-                    options: vec!["rbind".to_string(), "rw".to_string(), "rshared".to_string()],
+                    // `z` = SELinux shared label. The bootc image runs SELinux
+                    // in Enforcing mode, so without this the agent container
+                    // sees Permission denied on /workspaces even when it's
+                    // running as root — the host-side ZFS clone has a label
+                    // its domain can't read. Shared label (z) is the right
+                    // choice over private (Z) because zfs-server (privileged,
+                    // unconfined) also touches the same path, and shared
+                    // doesn't restrict to a single container's UUID.
+                    options: vec![
+                        "rbind".to_string(),
+                        "rw".to_string(),
+                        "rshared".to_string(),
+                        "z".to_string(),
+                    ],
                 }),
         );
         let spec = PodContainerCreateSpec {
@@ -605,14 +618,19 @@ mod tests {
             mount_type: "bind".to_string(),
             source: "/var/lib/vlinder/agents/x/sessions/y/1".to_string(),
             destination: "/workspaces".to_string(),
-            options: vec!["rbind".to_string(), "rw".to_string(), "rshared".to_string()],
+            options: vec![
+                "rbind".to_string(),
+                "rw".to_string(),
+                "rshared".to_string(),
+                "z".to_string(),
+            ],
         };
         let json = serde_json::to_string(&spec).unwrap();
         // Libpod expects lowercase field names.
         assert!(json.contains(r#""type":"bind"#));
         assert!(json.contains(r#""destination":"/workspaces"#));
         assert!(json.contains(r#""source":"/var/lib/vlinder/agents/x/sessions/y/1"#));
-        assert!(json.contains(r#""options":["rbind","rw","rshared"]"#));
+        assert!(json.contains(r#""options":["rbind","rw","rshared","z"]"#));
     }
 
     #[test]
