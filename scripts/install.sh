@@ -2,7 +2,7 @@
 # Vlinder install script
 # Usage: curl -fsSL https://vlindercli.dev/install.sh | sh
 #
-# Installs the vlinder binary, bootstraps ~/.vlinder, and sets up
+# Installs the vlinder and vlinderd binaries, bootstraps ~/.vlinder, and sets up
 # the daemon as a system service. Safe to re-run for upgrades.
 
 set -eu
@@ -86,7 +86,7 @@ resolve_version() {
 
 # --- Download and install binary ---
 
-install_binary() {
+install_binaries() {
     ARCHIVE="vlinder-${TARGET}.tar.gz"
     URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARCHIVE}"
 
@@ -96,19 +96,21 @@ install_binary() {
     curl -fsSL "$URL" -o "${TMPDIR}/${ARCHIVE}"
     tar xzf "${TMPDIR}/${ARCHIVE}" -C "$TMPDIR"
 
-    if [ ! -f "${TMPDIR}/vlinder" ]; then
-        error "Archive did not contain vlinder binary"
-    fi
+    for binary in vlinder vlinderd; do
+        if [ ! -f "${TMPDIR}/${binary}" ]; then
+            error "Archive did not contain ${binary} binary"
+        fi
 
-    if [ -w "$INSTALL_DIR" ]; then
-        cp "${TMPDIR}/vlinder" "${INSTALL_DIR}/vlinder"
-        chmod +x "${INSTALL_DIR}/vlinder"
-    else
-        sudo cp "${TMPDIR}/vlinder" "${INSTALL_DIR}/vlinder"
-        sudo chmod +x "${INSTALL_DIR}/vlinder"
-    fi
+        if [ -w "$INSTALL_DIR" ]; then
+            cp "${TMPDIR}/${binary}" "${INSTALL_DIR}/${binary}"
+            chmod +x "${INSTALL_DIR}/${binary}"
+        else
+            sudo cp "${TMPDIR}/${binary}" "${INSTALL_DIR}/${binary}"
+            sudo chmod +x "${INSTALL_DIR}/${binary}"
+        fi
 
-    ok "Binary" "${INSTALL_DIR}/vlinder"
+        ok "Binary" "${INSTALL_DIR}/${binary}"
+    done
 }
 
 # --- Bootstrap directory structure ---
@@ -131,7 +133,7 @@ write_config() {
         return
     fi
 
-    cat > "$CONFIG_FILE" << 'EOF'
+    cat > "$CONFIG_FILE" << 'CONFIG'
 # Vlinder configuration
 # Docs: https://github.com/vlindercli/vlindercli
 
@@ -145,28 +147,40 @@ endpoint = "http://localhost:11434"
 backend = "nats"
 nats_url = "nats://localhost:4222"
 
+[state]
+backend = "grpc"
+
 [distributed]
-enabled = true
+registry_backend = "grpc"
 registry_addr = "http://127.0.0.1:9090"
+state_addr = "http://127.0.0.1:9092"
+harness_addr = "http://127.0.0.1:9091"
+secret_addr = "http://127.0.0.1:9093"
+catalog_addr = "http://127.0.0.1:9094"
 
 [distributed.workers]
 registry = 1
+harness = 1
+infra = 1
+dag_git = 1
+session_viewer = 1
+api_server = 1
+mcp = 1
 
 [distributed.workers.agent]
 container = 1
+lambda = 0
 
 [distributed.workers.inference]
 ollama = 1
-
-[distributed.workers.embedding]
-ollama = 1
+openrouter = 0
 
 [distributed.workers.storage.object]
 sqlite = 1
 
 [distributed.workers.storage.vector]
 sqlite = 1
-EOF
+CONFIG
 
     ok "Config" "${CONFIG_FILE}"
 }
@@ -239,6 +253,7 @@ has_existing_nats_service() {
         [ -f "${HOME}/Library/LaunchAgents/homebrew.mxcl.nats-server.plist" ] && return 0
     else
         # Check for systemd NATS services
+        systemctl --user is-enabled vlinder-nats.service >/dev/null 2>&1 && return 0
         systemctl --user is-enabled nats-server.service >/dev/null 2>&1 && return 0
         systemctl is-enabled nats-server.service >/dev/null 2>&1 && return 0
     fi
@@ -358,8 +373,7 @@ install_launchd_service() {
     <string>dev.vlinder.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${INSTALL_DIR}/vlinder</string>
-        <string>daemon</string>
+        <string>${INSTALL_DIR}/vlinderd</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -393,10 +407,10 @@ install_systemd_service() {
     cat > "$UNIT_FILE" << UNIT
 [Unit]
 Description=Vlinder daemon
-After=network.target nats-server.service
+After=network.target vlinder-nats.service
 
 [Service]
-ExecStart=${INSTALL_DIR}/vlinder daemon
+ExecStart=${INSTALL_DIR}/vlinderd
 Restart=on-failure
 RestartSec=5
 
@@ -454,43 +468,40 @@ path = "agents/log-analyst"
 path = "agents/code-analyst"
 FLEET
 
-    cat > "${SUPPORT_FLEET_DIR}/agents/support/agent.toml" << 'AGENT'
+    cat > "${SUPPORT_FLEET_DIR}/agents/support/agent.toml" << 'SUPPORT_AGENT'
 name = "support"
 description = "Grounded support orchestrator that retrieves docs via code-analyst and runtime data via log-analyst, then answers questions or diagnoses problems using a single LLM call."
 runtime = "container"
 executable = "ghcr.io/vlindercli/vlinder-support:latest"
 
 [requirements]
-services = ["infer"]
 
 [requirements.models]
-default = "phi3:latest"
-AGENT
+default = "phi3"
 
-    cat > "${SUPPORT_FLEET_DIR}/agents/code-analyst/agent.toml" << 'AGENT'
+[requirements.services.infer]
+provider = "ollama"
+protocol = "openai"
+models = ["phi3"]
+SUPPORT_AGENT
+
+    cat > "${SUPPORT_FLEET_DIR}/agents/code-analyst/agent.toml" << 'CODE_ANALYST_AGENT'
 name = "code-analyst"
 description = "Documentation server that serves VlinderCLI docs from the public GitHub repo. Supports navigation, page retrieval, and keyword search."
 runtime = "container"
 executable = "ghcr.io/vlindercli/vlinder-code-analyst:latest"
 
 [requirements]
-services = []
-AGENT
+CODE_ANALYST_AGENT
 
-    cat > "${SUPPORT_FLEET_DIR}/agents/log-analyst/agent.toml" << 'AGENT'
+    cat > "${SUPPORT_FLEET_DIR}/agents/log-analyst/agent.toml" << 'LOG_ANALYST_AGENT'
 name = "log-analyst"
 description = "Runtime behavior specialist that searches vlinder logs for relevant entries, correlates timestamps, and identifies error patterns."
 runtime = "container"
 executable = "ghcr.io/vlindercli/vlinder-log-analyst:latest"
 
 [requirements]
-services = []
-
-[[mounts]]
-host_path = "~/.vlinder"
-guest_path = "/vlinder"
-mode = "ro"
-AGENT
+LOG_ANALYST_AGENT
 
     ok "Manifests" "${SUPPORT_FLEET_DIR}"
 }
@@ -524,7 +535,7 @@ main() {
 
     detect_platform
     resolve_version
-    install_binary
+    install_binaries
     bootstrap_dirs
     write_config
     check_prerequisites
