@@ -39,14 +39,15 @@ jobs:
         run: brew install protobuf
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} -p vlinder -p vlinderd
 
       - name: Package
         run: |
           mkdir -p staging
           cp target/${{ matrix.target }}/release/vlinder staging/vlinder
+          cp target/${{ matrix.target }}/release/vlinderd staging/vlinderd
           cd staging
-          tar czf ../vlinder-${{ matrix.target }}.tar.gz vlinder
+          tar czf ../vlinder-${{ matrix.target }}.tar.gz vlinder vlinderd
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

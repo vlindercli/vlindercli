@@ -22,8 +22,8 @@ Vlinder runs in distributed mode for all real usage. The daemon spawns worker pr
 
 This means:
 - NATS is a hard prerequisite, not optional infrastructure
-- `config.toml` must default to `queue.backend = "nats"` and `distributed.enabled = true`
-- `vlinder daemon` is the standard way to run the platform
+- `config.toml` must explicitly configure `queue.backend = "nats"` and `state.backend = "grpc"`
+- `vlinderd` is the standard way to run the platform
 - The in-memory queue should never appear in a user-facing installation path
 
 ### Inference is Ollama-only
@@ -77,7 +77,7 @@ Triggered by pushing a version tag (`v*`). Builds release binaries for all suppo
 
 #### Artifact format
 
-Each target produces a tarball: `vlinder-{target}.tar.gz` containing the `vlinder` binary. These are attached to the GitHub release. The install script downloads the appropriate tarball based on `uname -s` and `uname -m`.
+Each target produces a tarball: `vlinder-{target}.tar.gz` containing the `vlinder` CLI and `vlinderd` daemon binaries. These are attached to the GitHub release. The install script downloads the appropriate tarball based on `uname -s` and `uname -m`.
 
 ### 3. Install script
 
@@ -90,13 +90,13 @@ curl -fsSL https://vlindercli.dev/install.sh | sh
 #### What it does
 
 1. **Detect platform** — Darwin/Linux, x86_64/aarch64
-2. **Download vlinder binary** — from the latest GitHub release
+2. **Download vlinder binaries** — the CLI and daemon from the latest GitHub release
 3. **Create directory structure** — `~/.vlinder/{agents,conversations,logs,registry}`
-4. **Write config** — `config.toml` with `distributed.enabled = true`, `queue.backend = "nats"`
+4. **Write config** — `config.toml` with NATS queues, gRPC state, and the default distributed workers
 5. **Check prerequisites** — NATS, Podman, Ollama. If required deps are missing, print install commands and exit
 6. **Write NATS config** — `~/.vlinder/nats.conf` with JetStream enabled. Preserves existing config
 7. **Start NATS service** — launchd/systemd. Detects existing NATS services and skips with a JetStream reminder
-8. **Start vlinder daemon service** — launchd/systemd
+8. **Start `vlinderd` service** — launchd/systemd
 9. **Pull default model** — `ollama pull phi3` with visible progress (skipped if Ollama not present)
 10. **Register default model** — `vlinder model add phi3`
 11. **Pull support fleet images** — `ghcr.io/vlindercli/vlinder-{support,code-analyst,log-analyst}:latest`
@@ -114,11 +114,11 @@ On re-run, the script detects that the binary and config already exist, skips th
 - **Idempotent**: re-running skips what's already done (existing binaries, existing config, existing services)
 - **Graceful degradation**: if Ollama isn't available, the script skips model setup. The system works for everything except LLM inference
 - **Non-invasive**: the script does not install third-party software. It checks for prerequisites and prints platform-specific install commands
-- **Service-first**: NATS and vlinder daemon both run as user services. No manual terminal management
+- **Service-first**: NATS and `vlinderd` both run as user services. No manual terminal management
 
 #### Platform-specific service management
 
-Two services are managed: `dev.vlinder.nats` (NATS with JetStream) and `dev.vlinder.daemon` (vlinder daemon).
+Two services are managed: `dev.vlinder.nats` (NATS with JetStream) and `dev.vlinder.daemon` (`vlinderd`).
 
 | Concern | macOS | Linux |
 |---------|-------|-------|
@@ -173,7 +173,7 @@ The installer checks for each and reports what's missing. NATS and Podman are ha
 
 - CI workflow: lint, test, license check (no external services)
 - Release workflow: build binaries for 3 targets, publish GitHub release
-- `install.sh`: cross-platform (macOS + Linux), prerequisite check, NATS + daemon service setup, model bootstrap
+- `install.sh`: cross-platform (macOS + Linux), prerequisite check, NATS + `vlinderd` service setup, model bootstrap
 - Improved error message on `vlinder support` when prerequisites are missing
 
 ### Deferred
